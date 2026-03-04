@@ -112,4 +112,4 @@ See [`.env.example`](.env.example) for the full list with descriptions.
 
 ## License
 
-MIT — Built by [Aaryan Guglani](https://x.com/guglaniaaryan)
+Proprietary — © 2026 [Aaryan Guglani](https://x.com/guglaniaaryan). All rights reserved.
