@@ -16,7 +16,7 @@
         "telegram",
         "ai-agent",
         "minimax",
-        "portkey"
+        "bifrost"
     ],
     "author": "LiveClaw",
     "license": "UNLICENSED"

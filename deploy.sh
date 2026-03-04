@@ -132,29 +132,33 @@ ufw --force enable
 ufw allow ssh
 ufw allow 'Nginx Full'
 
-# ── Self-Hosted Portkey Gateway (Docker) ──────────────────────────────────
-# Runs the open-source Portkey AI Gateway on port 8787
-# Docs: https://github.com/portkey-ai/gateway
+# ── Self-Hosted Bifrost AI Gateway (Docker) ──────────────────────────────
+# Bifrost: high-performance Go AI gateway with native Virtual Key management
+# Docs: https://github.com/maximhq/bifrost
 systemctl enable --now docker
 
-if ! docker ps --format '{{.Names}}' | grep -q portkey-gateway; then
-    echo "  Starting Portkey gateway container..."
-    docker pull portkeyai/gateway:latest
+if ! docker ps --format '{{.Names}}' | grep -q bifrost-gateway; then
+    echo "  Starting Bifrost gateway container..."
+    # Stop old Portkey container if exists
+    docker stop portkey-gateway 2>/dev/null || true
+    docker rm portkey-gateway 2>/dev/null || true
+    
+    docker pull maximhq/bifrost:latest
     docker run -d \
-        --name portkey-gateway \
+        --name bifrost-gateway \
         --restart unless-stopped \
-        -p 127.0.0.1:8787:8787 \
-        -e LOG_LEVEL=info \
-        portkeyai/gateway:latest
-    echo "  Portkey gateway running on localhost:8787"
+        -p 127.0.0.1:8080:8080 \
+        -v /opt/liveclaw/bifrost-data:/app/data \
+        maximhq/bifrost:latest
+    echo "  Bifrost gateway running on localhost:8080"
 else
-    echo "  Portkey gateway already running"
+    echo "  Bifrost gateway already running"
     # Update to latest
-    docker pull portkeyai/gateway:latest 2>/dev/null || true
+    docker pull maximhq/bifrost:latest 2>/dev/null || true
 fi
 
 # Directories
-mkdir -p /opt/liveclaw/{backend,frontend,scripts}
+mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data}
 
 # Download picobot binary
 cd /opt/liveclaw/backend
@@ -205,12 +209,14 @@ if [ ! -f ".env" ]; then
 PORT=3000
 NODE_ENV=production
 ALLOWED_ORIGINS=https://liveclaw.xyz,https://www.liveclaw.xyz
-PORTKEY_API_KEY=your_portkey_key
+BIFROST_GATEWAY_URL=http://localhost:8080
 MINIMAX_API_KEY=your_minimax_key
 PICOBOT_PATH=/opt/liveclaw/backend/picobot
 DB_PATH=/opt/liveclaw/backend/liveclaw.db
+BOTS_DIR=/opt/liveclaw/bots
 TURNSTILE_SECRET_KEY=your_turnstile_secret
 APPLIXIR_SECRET_KEY=your_applixir_secret
+TELEGRAM_MASTER_BOT_TOKEN=your_telegram_bot_token
 ENVEOF
     echo "  ⚠️  Created .env with placeholders — edit with real keys!"
 fi

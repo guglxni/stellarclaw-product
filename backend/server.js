@@ -2,7 +2,7 @@
  * LiveClaw Orchestrator — server.js
  *
  * Production-grade Express API that:
- *  1. Creates Portkey.ai Virtual Keys with $0.05 starting budget
+ *  1. Creates Bifrost Virtual Keys with $0.05 starting budget
  *  2. Spawns isolated picobot Go binaries per user
  *  3. Persists process mappings in SQLite
  *  4. Verifies Cloudflare Turnstile CAPTCHA
@@ -24,7 +24,7 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
-const portkey = require('./portkey');
+const bifrost = require('./bifrost');
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 const config = Object.freeze({
@@ -33,7 +33,7 @@ const config = Object.freeze({
     picobotPath: process.env.PICOBOT_PATH || path.join(__dirname, 'picobot'),
     dbPath: process.env.DB_PATH || path.join(__dirname, 'liveclaw.db'),
     botsDir: process.env.BOTS_DIR || path.join(__dirname, '..', 'bots'),
-    portkeyBase: process.env.PORTKEY_GATEWAY_URL || 'http://localhost:8787/v1',
+    bifrostBase: process.env.BIFROST_GATEWAY_URL || 'http://localhost:8080',
     turnstileSecret: process.env.TURNSTILE_SECRET_KEY,
     applixirSecret: process.env.APPLIXIR_SECRET_KEY,
     masterBotToken: process.env.TELEGRAM_MASTER_BOT_TOKEN,
@@ -45,6 +45,97 @@ const config = Object.freeze({
 });
 
 const isProd = config.nodeEnv === 'production';
+
+// ─── Google JWT Verification (Server-Side Auth) ─────────────────────────────
+// Verifies Google ID tokens using Google's public keys (JWKS).
+// This ensures the userId comes from a real Google sign-in, not a spoofed request.
+
+let googleKeysCache = null;
+let googleKeysCacheExpiry = 0;
+
+async function getGooglePublicKeys() {
+    if (googleKeysCache && Date.now() < googleKeysCacheExpiry) {
+        return googleKeysCache;
+    }
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+    if (!res.ok) throw new Error(`Google JWKS fetch failed: ${res.status}`);
+    googleKeysCache = await res.json();
+    // Cache for 6 hours
+    googleKeysCacheExpiry = Date.now() + 6 * 60 * 60 * 1000;
+    return googleKeysCache;
+}
+
+/**
+ * Decodes and verifies a Google ID token.
+ * Returns the payload { sub, email, name, ... } or null if invalid.
+ */
+async function verifyGoogleToken(idToken) {
+    if (!idToken || typeof idToken !== 'string') return null;
+
+    try {
+        // Decode header to find the key ID
+        const [headerB64] = idToken.split('.');
+        const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString());
+        const kid = header.kid;
+
+        const jwks = await getGooglePublicKeys();
+        const key = jwks.keys?.find(k => k.kid === kid);
+        if (!key) return null;
+
+        // Import the public key and verify
+        const publicKey = crypto.createPublicKey({ key, format: 'jwk' });
+        const [, payloadB64, signatureB64] = idToken.split('.');
+        const signedData = `${headerB64}.${payloadB64}`;
+        const signature = Buffer.from(signatureB64, 'base64url');
+
+        const valid = crypto.verify(
+            header.alg === 'RS256' ? 'sha256' : 'sha256',
+            Buffer.from(signedData),
+            publicKey,
+            signature
+        );
+
+        if (!valid) return null;
+
+        const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
+
+        // Check expiry
+        if (payload.exp && payload.exp * 1000 < Date.now()) return null;
+
+        return payload;
+    } catch (err) {
+        console.warn('[auth] Google JWT verification failed:', err.message);
+        return null;
+    }
+}
+
+/**
+ * Middleware that verifies Authorization: Bearer <google_id_token>
+ * Sets req.verifiedUserId and req.verifiedEmail on success.
+ * In dev mode, falls through if no token is provided.
+ */
+async function authMiddleware(req, res, next) {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        if (!isProd) {
+            // Dev mode: allow unauthenticated requests
+            return next();
+        }
+        return res.status(401).json({ error: 'Authorization header required' });
+    }
+
+    const token = authHeader.slice(7);
+    const payload = await verifyGoogleToken(token);
+
+    if (!payload) {
+        return res.status(401).json({ error: 'Invalid or expired Google token' });
+    }
+
+    req.verifiedUserId = payload.sub;
+    req.verifiedEmail = payload.email;
+    next();
+}
 
 // ─── Token Encryption Helpers ───────────────────────────────────────────────
 // Encrypt sensitive tokens at rest in SQLite (AES-256-GCM)
@@ -96,8 +187,8 @@ db.exec(`
         pid             INTEGER NOT NULL,
         model           TEXT    NOT NULL DEFAULT 'minimax-m2.5',
         telegram_token  TEXT    NOT NULL,
-        portkey_vk_id   TEXT,
-        portkey_vk      TEXT    NOT NULL,
+        bifrost_vk_id   TEXT,
+        bifrost_vk      TEXT    NOT NULL,
         credit_limit    REAL    NOT NULL DEFAULT 0.05,
         status          TEXT    NOT NULL DEFAULT 'running'
                         CHECK(status IN ('running','stopped','crashed')),
@@ -129,14 +220,14 @@ db.exec(`
 // Prepared statements (compiled once, reused for perf)
 const stmt = {
     upsertBot: db.prepare(`
-        INSERT INTO bots (user_id, pid, model, telegram_token, portkey_vk_id, portkey_vk, credit_limit, status)
-        VALUES (@user_id, @pid, @model, @telegram_token, @portkey_vk_id, @portkey_vk, @credit_limit, 'running')
+        INSERT INTO bots (user_id, pid, model, telegram_token, bifrost_vk_id, bifrost_vk, credit_limit, status)
+        VALUES (@user_id, @pid, @model, @telegram_token, @bifrost_vk_id, @bifrost_vk, @credit_limit, 'running')
         ON CONFLICT(user_id) DO UPDATE SET
             pid            = excluded.pid,
             model          = excluded.model,
             telegram_token = excluded.telegram_token,
-            portkey_vk_id  = excluded.portkey_vk_id,
-            portkey_vk     = excluded.portkey_vk,
+            bifrost_vk_id  = excluded.bifrost_vk_id,
+            bifrost_vk     = excluded.bifrost_vk,
             credit_limit   = excluded.credit_limit,
             status         = 'running',
             updated_at     = CURRENT_TIMESTAMP
@@ -295,7 +386,7 @@ app.get('/webhook/applixir-reward', webhookLimiter, asyncHandler(async (req, res
     }
 
     const newLimit = bot.credit_limit + config.adRewardUsd;
-    await portkey.topUpCredits(bot.portkey_vk_id, bot.credit_limit, config.adRewardUsd);
+    await bifrost.topUpCredits(bot.bifrost_vk_id, bot.credit_limit, config.adRewardUsd);
     stmt.updateCredit.run(newLimit, userId);
     stmt.markEvent.run(dedupKey, userId, 'ad_reward');
     logEvent(userId, 'ad_reward_credited', {
@@ -361,7 +452,7 @@ app.post('/webhook/telegram-stars', webhookLimiter, asyncHandler(async (req, res
     }
 
     const newLimit = bot.credit_limit + addUsd;
-    await portkey.topUpCredits(bot.portkey_vk_id, bot.credit_limit, addUsd);
+    await bifrost.topUpCredits(bot.bifrost_vk_id, bot.credit_limit, addUsd);
     stmt.updateCredit.run(newLimit, userId);
     stmt.markEvent.run(dedupKey, userId, 'stars_payment');
     logEvent(userId, 'stars_credited', { stars: totalStars, usdAdded: addUsd, newTotal: newLimit, chargeId });
@@ -420,7 +511,7 @@ app.post('/create-invoice', deployLimiter, asyncHandler(async (req, res) => {
 // ─── Spawn picobot ──────────────────────────────────────────────────────────
 // picobot reads ~/.picobot/config.json — env vars only work in Docker.
 // We generate a per-user config.json in an isolated HOME directory.
-function spawnPicobot(userId, telegramToken, portkeyVirtualKey, model = 'minimax-m2.5') {
+function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax-m2.5', telegramAllowFrom = []) {
     // Create isolated workspace per user
     const userDir = path.join(config.botsDir, userId);
     const configDir = path.join(userDir, '.picobot');
@@ -441,15 +532,15 @@ function spawnPicobot(userId, telegramToken, portkeyVirtualKey, model = 'minimax
         },
         providers: {
             openai: {
-                apiKey: portkeyVirtualKey,
-                apiBase: config.portkeyBase,
+                apiKey: bifrostVirtualKey,
+                apiBase: `${config.bifrostBase}/v1`,
             },
         },
         channels: {
             telegram: {
                 enabled: true,
                 token: telegramToken,
-                // allowFrom left empty = allow all (user's own bot)
+                allowFrom: telegramAllowFrom || [], // restrict to specific Telegram user IDs
             },
         },
     };
@@ -490,9 +581,14 @@ function spawnPicobot(userId, telegramToken, portkeyVirtualKey, model = 'minimax
 }
 
 // ─── POST /deploy-bot ───────────────────────────────────────────────────────
-app.post('/deploy-bot', deployLimiter, asyncHandler(async (req, res) => {
-    const { userId, telegramToken, model = 'minimax-m2.5', creditLimit = 0.05 } = req.body;
+app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
+    const { userId, telegramToken, model = 'minimax-m2.5', creditLimit = 0.05, telegramAllowFrom = [] } = req.body;
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+
+    // In production, ensure the userId matches the verified Google token
+    if (isProd && req.verifiedUserId && req.verifiedUserId !== userId) {
+        return res.status(403).json({ error: 'userId does not match authenticated user' });
+    }
 
     // ── Validation ──────────────────────────────────────────────────────────
     if (!userId || typeof userId !== 'string' || userId.length > 128) {
@@ -521,14 +617,14 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(async (req, res) => {
         logEvent(userId, 'existing_bot_stopped', { pid: existing.pid });
     }
 
-    // ── Create Portkey Virtual Key ──────────────────────────────────────────
+    // ── Create Bifrost Virtual Key ──────────────────────────────────────────
     let virtualKey;
     try {
-        virtualKey = await portkey.createVirtualKey(userId, creditLimit);
-        logEvent(userId, 'portkey_vk_created', { id: virtualKey.id });
+        virtualKey = await bifrost.createVirtualKey(userId, model, creditLimit);
+        logEvent(userId, 'bifrost_vk_created', { id: virtualKey.id });
     } catch (err) {
-        console.error('[deploy] Portkey error:', err.message);
-        logEvent(userId, 'portkey_error', err.message);
+        console.error('[deploy] Bifrost error:', err.message);
+        logEvent(userId, 'bifrost_error', err.message);
         const detail = isProd ? undefined : err.message;
         return res.status(502).json({ error: 'Failed to create API key', detail });
     }
@@ -536,8 +632,12 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(async (req, res) => {
     // ── Spawn picobot ───────────────────────────────────────────────────────
     let pid;
     try {
-        pid = spawnPicobot(userId, telegramToken, virtualKey.key, model);
-        logEvent(userId, 'picobot_spawned', { pid, model });
+        // Normalize telegramAllowFrom to array of strings
+        const allowFrom = Array.isArray(telegramAllowFrom)
+            ? telegramAllowFrom.map(String).filter(s => /^\d+$/.test(s))
+            : [];
+        pid = spawnPicobot(userId, telegramToken, virtualKey.key, model, allowFrom);
+        logEvent(userId, 'picobot_spawned', { pid, model, allowFrom: allowFrom.length });
     } catch (err) {
         console.error('[deploy] picobot spawn error:', err.message);
         logEvent(userId, 'picobot_error', err.message);
@@ -551,8 +651,8 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(async (req, res) => {
         pid,
         model,
         telegram_token: encryptToken(telegramToken),
-        portkey_vk_id: virtualKey.id,
-        portkey_vk: virtualKey.key,
+        bifrost_vk_id: virtualKey.id,
+        bifrost_vk: virtualKey.key,
         credit_limit: creditLimit,
     });
 
@@ -566,7 +666,7 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(async (req, res) => {
 }));
 
 // ─── POST /stop-bot ─────────────────────────────────────────────────────────
-app.post('/stop-bot', asyncHandler(async (req, res) => {
+app.post('/stop-bot', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
     const { userId } = req.body;
     if (!userId || typeof userId !== 'string') {
         return res.status(400).json({ error: 'userId is required' });
@@ -604,6 +704,7 @@ app.get('/status/:userId', (req, res) => {
         model: bot.model,
         status: bot.status,
         creditLimit: bot.credit_limit,
+        creditDepleted: bot.credit_limit <= 0.001, // flag for frontend warning
         createdAt: bot.created_at,
         alive,
     });
@@ -631,6 +732,48 @@ app.get('/health', (_req, res) => {
         runningBots,
         ts: new Date().toISOString(),
     });
+});
+
+// ─── GET /admin/stats — Operational Dashboard ───────────────────────────────
+// Protected by a simple admin secret header for now.
+app.get('/admin/stats', (req, res) => {
+    const adminSecret = process.env.ADMIN_SECRET;
+    if (adminSecret && req.headers['x-admin-secret'] !== adminSecret) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!adminSecret && isProd) {
+        return res.status(403).json({ error: 'ADMIN_SECRET not configured' });
+    }
+
+    try {
+        const totalBots = db.prepare('SELECT COUNT(*) as c FROM bots').get().c;
+        const running = db.prepare("SELECT COUNT(*) as c FROM bots WHERE status = 'running'").get().c;
+        const stopped = db.prepare("SELECT COUNT(*) as c FROM bots WHERE status = 'stopped'").get().c;
+        const crashed = db.prepare("SELECT COUNT(*) as c FROM bots WHERE status = 'crashed'").get().c;
+        const totalCredit = db.prepare('SELECT COALESCE(SUM(credit_limit), 0) as c FROM bots').get().c;
+        const depleted = db.prepare('SELECT COUNT(*) as c FROM bots WHERE credit_limit <= 0.001 AND status = \'running\'').get().c;
+        const recentEvents = db.prepare('SELECT event, COUNT(*) as c FROM event_logs WHERE ts > datetime(\'now\', \'-1 hour\') GROUP BY event').all();
+
+        const memUsage = process.memoryUsage();
+
+        return res.json({
+            bots: { total: totalBots, running, stopped, crashed, creditDepleted: depleted },
+            credits: { totalAllocated: parseFloat(totalCredit.toFixed(4)) },
+            recentEventsLastHour: recentEvents,
+            system: {
+                uptime: Math.round(process.uptime()),
+                memoryMB: {
+                    rss: Math.round(memUsage.rss / 1024 / 1024),
+                    heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+                    heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+                },
+                nodeVersion: process.version,
+            },
+            ts: new Date().toISOString(),
+        });
+    } catch (err) {
+        return res.status(500).json({ error: 'Stats query failed', detail: err.message });
+    }
 });
 
 // ─── Global Error Handler ───────────────────────────────────────────────────
@@ -713,7 +856,7 @@ const watchdogTimer = setInterval(() => {
 
                 try {
                     const decryptedToken = decryptToken(bot.telegram_token);
-                    const newPid = spawnPicobot(bot.user_id, decryptedToken, bot.portkey_vk, bot.model);
+                    const newPid = spawnPicobot(bot.user_id, decryptedToken, bot.bifrost_vk, bot.model);
                     stmt.updatePid.run(newPid, 'running', bot.user_id);
                     logEvent(bot.user_id, 'bot_auto_restarted', { oldPid: bot.pid, newPid });
                     console.log(`[watchdog] Restarted bot for user=${bot.user_id} newPid=${newPid}`);

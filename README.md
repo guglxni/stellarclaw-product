@@ -2,7 +2,7 @@
 
 **Deploy your personal AI agent on Telegram in under 1 minute — for free.**
 
-LiveClaw is a freemium, ad-supported AI agent platform native to Telegram. Each user gets their own isolated AI agent powered by the lightweight [picobot](https://github.com/louisho5/picobot) engine, managed by a Node.js orchestrator with financial governance via [Portkey.ai](https://portkey.ai).
+LiveClaw is a freemium, ad-supported AI agent platform native to Telegram. Each user gets their own isolated AI agent powered by the lightweight [picobot](https://github.com/louisho5/picobot) engine, managed by a Node.js orchestrator with financial governance via [Bifrost AI Gateway](https://github.com/maximhq/bifrost).
 
 ## Architecture
 
@@ -15,8 +15,8 @@ LiveClaw is a freemium, ad-supported AI agent platform native to Telegram. Each 
                     ┌─────────────────────────────────────┤
                     │                                     │
               ┌─────▼─────┐   ┌──────────┐   ┌──────────▼──────────┐
-              │  SQLite    │   │ Portkey  │   │  picobot (Go)       │
-              │  (state)   │   │ (billing)│   │  per-user process   │
+              │  SQLite    │   │ Bifrost  │   │  picobot (Go)       │
+              │  (state)   │   │ (budget) │   │  per-user process   │
               └────────────┘   └──────────┘   └─────────────────────┘
 ```
 
@@ -27,7 +27,8 @@ LiveClaw is a freemium, ad-supported AI agent platform native to Telegram. Each 
 | Frontend    | Static HTML/CSS/JS (cloned & rebranded) |
 | Backend     | Node.js 22 + Express 5                  |
 | AI Engine   | [picobot](https://github.com/louisho5/picobot) (Go binary) |
-| LLM         | MiniMax M2.5 via Portkey.ai             |
+| AI Gateway  | [Bifrost](https://github.com/maximhq/bifrost) (Go, <100µs overhead) |
+| LLM         | MiniMax M2.5 via Bifrost gateway        |
 | Database    | SQLite (WAL mode, better-sqlite3)       |
 | Hosting     | DigitalOcean ($12/mo droplet)           |
 | SSL         | Let's Encrypt via Certbot               |
@@ -75,7 +76,7 @@ See [deploy.sh](deploy.sh) for the full provisioning script.
 liveclaw/
 ├── backend/
 │   ├── server.js          # Express orchestrator (main entry)
-│   ├── portkey.js          # Portkey.ai financial governance
+│   ├── bifrost.js          # Bifrost AI Gateway governance
 │   ├── package.json
 │   └── .env.example
 ├── liveclaw-web/
@@ -100,8 +101,10 @@ liveclaw/
 |--------|--------------------------------|-------------------------------------|
 | POST   | `/deploy-bot`                  | Spawn a picobot agent for a user    |
 | POST   | `/stop-bot`                    | Stop a user's agent                 |
+| POST   | `/create-invoice`              | Create Telegram Stars payment link  |
 | GET    | `/status/:userId`              | Check agent status & credits        |
 | GET    | `/health`                      | Health check (DB + running bots)    |
+| GET    | `/admin/stats`                 | Operational dashboard (admin)       |
 | POST   | `/verify-turnstile`            | Cloudflare Turnstile verification   |
 | GET    | `/webhook/applixir-reward`     | AppLixir S2S ad reward callback     |
 | POST   | `/webhook/telegram-stars`      | Telegram Stars payment webhook      |
