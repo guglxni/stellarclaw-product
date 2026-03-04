@@ -42,51 +42,61 @@ jobs:
           key: ${{ secrets.DO_SSH_KEY }}
           command_timeout: 8m
           script: |
-            if [ -d "/opt/liveclaw/backend" ]; then
+            # Check if PM2 exists (indicates a previously successful deploy)
+            if command -v pm2 &>/dev/null && pm2 describe liveclaw-orchestrator &>/dev/null; then
               echo "Droplet already bootstrapped — skipping"
               exit 0
             fi
 
             set -euo pipefail
-            echo "=== Fresh droplet detected — bootstrapping ==="
+            echo "=== Fresh droplet — bootstrapping ==="
 
-            # System deps
-            apt-get update -qq
-            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-            apt-get install -y -qq nodejs nginx docker.io ufw wget rsync
-            npm install -g pm2 --loglevel warn
+            # System deps (idempotent)
+            if ! command -v node &>/dev/null; then
+              apt-get update -qq
+              curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+              apt-get install -y -qq nodejs nginx docker.io ufw wget rsync
+            fi
+            command -v pm2 &>/dev/null || npm install -g pm2 --loglevel warn
 
-            # Firewall
+            # Firewall (idempotent)
             ufw --force enable
             ufw allow ssh
             ufw allow 'Nginx Full'
 
-            # Bifrost AI Gateway (Docker)
+            # Bifrost AI Gateway Docker (idempotent)
             systemctl enable --now docker
-            mkdir -p /opt/liveclaw/bifrost-data
-            docker pull maximhq/bifrost:latest
-            docker run -d \
-              --name bifrost-gateway \
-              --restart unless-stopped \
-              -p 127.0.0.1:8080:8080 \
-              -v /opt/liveclaw/bifrost-data:/app/data \
-              maximhq/bifrost:latest
-            echo "  Bifrost gateway started on localhost:8080"
+            if ! docker ps --format '{{.Names}}' | grep -q bifrost-gateway; then
+              # Remove stopped container if exists
+              docker rm -f bifrost-gateway 2>/dev/null || true
+              docker pull maximhq/bifrost:latest
+              docker run -d \
+                --name bifrost-gateway \
+                --restart unless-stopped \
+                -p 127.0.0.1:8080:8080 \
+                -v /opt/liveclaw/bifrost-data:/app/data \
+                maximhq/bifrost:latest
+              echo "  Bifrost gateway started on localhost:8080"
+            else
+              echo "  Bifrost gateway already running"
+            fi
 
-            # Create directory structure
+            # Directory structure
             mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data}
 
-            # Download picobot binary
-            cd /opt/liveclaw/backend
-            wget -qO picobot.tar.gz \
-              https://github.com/louisho5/picobot/releases/latest/download/picobot-linux-amd64.tar.gz 2>/dev/null || true
-            if [ -s picobot.tar.gz ]; then
-              tar -xf picobot.tar.gz 2>/dev/null || true
-              rm -f picobot.tar.gz
+            # Download picobot binary (idempotent)
+            if [ ! -x "/opt/liveclaw/backend/picobot" ] || [ ! -s "/opt/liveclaw/backend/picobot" ]; then
+              cd /opt/liveclaw/backend
+              wget -qO picobot.tar.gz \
+                https://github.com/louisho5/picobot/releases/latest/download/picobot-linux-amd64.tar.gz 2>/dev/null || true
+              if [ -s picobot.tar.gz ]; then
+                tar -xf picobot.tar.gz 2>/dev/null || true
+                rm -f picobot.tar.gz
+              fi
+              [ -f picobot ] || touch picobot
+              chmod +x picobot
+              echo "  picobot ready"
             fi
-            [ -f picobot ] || touch picobot
-            chmod +x picobot
-            echo "  picobot ready"
 
             echo "=== Bootstrap complete! ==="
 
