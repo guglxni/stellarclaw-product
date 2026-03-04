@@ -21,6 +21,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const portkey = require('./portkey');
@@ -31,13 +32,16 @@ const config = Object.freeze({
     nodeEnv: process.env.NODE_ENV || 'development',
     picobotPath: process.env.PICOBOT_PATH || path.join(__dirname, 'picobot'),
     dbPath: process.env.DB_PATH || path.join(__dirname, 'liveclaw.db'),
+    botsDir: process.env.BOTS_DIR || path.join(__dirname, '..', 'bots'),
     portkeyBase: process.env.PORTKEY_GATEWAY_URL || 'http://localhost:8787/v1',
     turnstileSecret: process.env.TURNSTILE_SECRET_KEY,
     applixirSecret: process.env.APPLIXIR_SECRET_KEY,
+    masterBotToken: process.env.TELEGRAM_MASTER_BOT_TOKEN,
     allowedOrigins: (process.env.ALLOWED_ORIGINS || 'https://liveclaw.xyz').split(','),
     starsToUsdRate: parseFloat(process.env.STARS_TO_USD_RATE) || 0.015,
     adRewardUsd: parseFloat(process.env.AD_REWARD_USD) || 0.02,
     encryptionKey: process.env.TOKEN_ENCRYPTION_KEY || '', // 32-byte hex for AES-256-GCM
+    watchdogIntervalMs: parseInt(process.env.WATCHDOG_INTERVAL_MS, 10) || 30000,
 });
 
 const isProd = config.nodeEnv === 'production';
@@ -110,8 +114,16 @@ db.exec(`
         ts       DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS processed_events (
+        event_id TEXT    PRIMARY KEY,
+        user_id  TEXT    NOT NULL,
+        type     TEXT    NOT NULL,
+        ts       DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
     CREATE INDEX IF NOT EXISTS idx_logs_user   ON event_logs(user_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_pe_user     ON processed_events(user_id);
 `);
 
 // Prepared statements (compiled once, reused for perf)
@@ -132,9 +144,12 @@ const stmt = {
     getBot: db.prepare('SELECT * FROM bots WHERE user_id = ?'),
     updateCredit: db.prepare('UPDATE bots SET credit_limit = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?'),
     updateStatus: db.prepare("UPDATE bots SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?"),
+    updatePid: db.prepare('UPDATE bots SET pid = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?'),
     insertLog: db.prepare('INSERT INTO event_logs (user_id, event, detail, ip) VALUES (?, ?, ?, ?)'),
-    runningBots: db.prepare("SELECT user_id, pid FROM bots WHERE status = 'running'"),
+    runningBots: db.prepare("SELECT * FROM bots WHERE status = 'running'"),
     countRunning: db.prepare("SELECT COUNT(*) as count FROM bots WHERE status = 'running'"),
+    checkEvent: db.prepare('SELECT event_id FROM processed_events WHERE event_id = ?'),
+    markEvent: db.prepare('INSERT OR IGNORE INTO processed_events (event_id, user_id, type) VALUES (?, ?, ?)'),
 };
 
 function logEvent(userId, event, detail = null, ip = null) {
@@ -272,9 +287,17 @@ app.get('/webhook/applixir-reward', webhookLimiter, asyncHandler(async (req, res
         return res.status(404).send('Bot not found');
     }
 
+    // Idempotency: check if this eventId was already processed
+    const dedupKey = `applixir-${eventId || `${userId}-${Date.now()}`}`;
+    if (stmt.checkEvent.get(dedupKey)) {
+        console.log(`[AppLixir] Duplicate event ${dedupKey} — skipping`);
+        return res.send('OK');
+    }
+
     const newLimit = bot.credit_limit + config.adRewardUsd;
     await portkey.topUpCredits(bot.portkey_vk_id, bot.credit_limit, config.adRewardUsd);
     stmt.updateCredit.run(newLimit, userId);
+    stmt.markEvent.run(dedupKey, userId, 'ad_reward');
     logEvent(userId, 'ad_reward_credited', {
         added: config.adRewardUsd, newTotal: newLimit, eventId, gameId,
     });
@@ -287,18 +310,45 @@ app.get('/webhook/applixir-reward', webhookLimiter, asyncHandler(async (req, res
 app.post('/webhook/telegram-stars', webhookLimiter, asyncHandler(async (req, res) => {
     const update = req.body;
 
+    // Handle pre_checkout_query (REQUIRED — must respond within 10 seconds)
+    if (update.pre_checkout_query) {
+        const pcoId = update.pre_checkout_query.id;
+        console.log(`[TelegramStars] pre_checkout_query id=${pcoId}`);
+
+        if (!config.masterBotToken) {
+            console.error('[TelegramStars] TELEGRAM_MASTER_BOT_TOKEN not configured');
+            return res.sendStatus(200);
+        }
+
+        await fetch(`https://api.telegram.org/bot${config.masterBotToken}/answerPreCheckoutQuery`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pre_checkout_query_id: pcoId, ok: true }),
+        });
+
+        return res.sendStatus(200);
+    }
+
+    // Handle successful_payment
     const payment = update?.message?.successful_payment;
     if (!payment) {
-        // Not a payment update — acknowledge silently
-        return res.sendStatus(200);
+        return res.sendStatus(200); // Not a payment update
     }
 
     const userId = payment.invoice_payload;
     const totalStars = payment.total_amount;
     const currency = payment.currency;
+    const chargeId = payment.telegram_payment_charge_id;
 
     if (currency !== 'XTR') {
         console.warn(`[TelegramStars] Unknown currency: ${currency}`);
+        return res.sendStatus(200);
+    }
+
+    // Idempotency: check if this payment was already processed
+    const dedupKey = `tg-stars-${chargeId || `${userId}-${totalStars}-${Date.now()}`}`;
+    if (stmt.checkEvent.get(dedupKey)) {
+        console.log(`[TelegramStars] Duplicate payment ${dedupKey} — skipping`);
         return res.sendStatus(200);
     }
 
@@ -313,29 +363,121 @@ app.post('/webhook/telegram-stars', webhookLimiter, asyncHandler(async (req, res
     const newLimit = bot.credit_limit + addUsd;
     await portkey.topUpCredits(bot.portkey_vk_id, bot.credit_limit, addUsd);
     stmt.updateCredit.run(newLimit, userId);
-    logEvent(userId, 'stars_credited', { stars: totalStars, usdAdded: addUsd, newTotal: newLimit });
+    stmt.markEvent.run(dedupKey, userId, 'stars_payment');
+    logEvent(userId, 'stars_credited', { stars: totalStars, usdAdded: addUsd, newTotal: newLimit, chargeId });
 
     console.log(`[TelegramStars] User ${userId} spent ${totalStars}★ → +$${addUsd.toFixed(4)}`);
     return res.sendStatus(200);
 }));
 
+// ─── POST /create-invoice — Telegram Stars Payment Link ──────────────────────
+app.post('/create-invoice', deployLimiter, asyncHandler(async (req, res) => {
+    const { userId, stars = 10 } = req.body;
+
+    if (!userId || typeof userId !== 'string') {
+        return res.status(400).json({ error: 'userId is required' });
+    }
+    if (!Number.isInteger(stars) || stars < 1 || stars > 10000) {
+        return res.status(400).json({ error: 'stars must be an integer between 1 and 10000' });
+    }
+
+    const bot = stmt.getBot.get(userId);
+    if (!bot) {
+        return res.status(404).json({ error: 'No bot found. Deploy first.' });
+    }
+
+    // Determine which bot token to use for invoice creation
+    const botToken = config.masterBotToken;
+    if (!botToken) {
+        return res.status(500).json({ error: 'Payment system not configured' });
+    }
+
+    const usdValue = (stars * config.starsToUsdRate).toFixed(3);
+
+    const result = await fetch(`https://api.telegram.org/bot${botToken}/createInvoiceLink`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            title: 'LiveClaw Credits',
+            description: `${stars} Telegram Stars → $${usdValue} agent credits`,
+            payload: userId, // Returned in successful_payment.invoice_payload
+            currency: 'XTR',
+            prices: [{ label: 'Agent Credits', amount: stars }],
+        }),
+    });
+
+    const data = await result.json();
+
+    if (data.ok) {
+        logEvent(userId, 'invoice_created', { stars, usdValue });
+        return res.json({ invoiceLink: data.result, stars, usdValue });
+    }
+
+    console.error(`[Invoice] Telegram API error: ${data.description}`);
+    return res.status(502).json({ error: 'Failed to create invoice', detail: data.description });
+}));
+
 // ─── Spawn picobot ──────────────────────────────────────────────────────────
-function spawnPicobot(telegramToken, portkeyVirtualKey, model = 'minimax-m2.5') {
-    const env = {
-        // Only pass what picobot needs — do NOT spread process.env to avoid leaking secrets
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        OPENAI_API_KEY: portkeyVirtualKey,
-        OPENAI_API_BASE: config.portkeyBase,  // Self-hosted Portkey gateway
-        PICOBOT_MODEL: model,
-        PICOBOT_MAX_TOKENS: '8192',
-        TELEGRAM_BOT_TOKEN: telegramToken,
+// picobot reads ~/.picobot/config.json — env vars only work in Docker.
+// We generate a per-user config.json in an isolated HOME directory.
+function spawnPicobot(userId, telegramToken, portkeyVirtualKey, model = 'minimax-m2.5') {
+    // Create isolated workspace per user
+    const userDir = path.join(config.botsDir, userId);
+    const configDir = path.join(userDir, '.picobot');
+    const workspaceDir = path.join(configDir, 'workspace');
+
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    // Write per-user config.json
+    const picobotConfig = {
+        agents: {
+            defaults: {
+                workspace: workspaceDir,
+                model,
+                maxTokens: 8192,
+                temperature: 0.7,
+                maxToolIterations: 200,
+            },
+        },
+        providers: {
+            openai: {
+                apiKey: portkeyVirtualKey,
+                apiBase: config.portkeyBase,
+            },
+        },
+        channels: {
+            telegram: {
+                enabled: true,
+                token: telegramToken,
+                // allowFrom left empty = allow all (user's own bot)
+            },
+        },
     };
+
+    fs.writeFileSync(
+        path.join(configDir, 'config.json'),
+        JSON.stringify(picobotConfig, null, 2),
+        'utf8'
+    );
+
+    // Write default SOUL.md for the agent personality
+    const soulPath = path.join(workspaceDir, 'SOUL.md');
+    if (!fs.existsSync(soulPath)) {
+        fs.writeFileSync(soulPath, [
+            '# LiveClaw Agent',
+            'You are a helpful AI assistant powered by LiveClaw.',
+            'Be concise, friendly, and helpful.',
+        ].join('\n'), 'utf8');
+    }
 
     const child = spawn(config.picobotPath, ['gateway'], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'], // fully detached, no pipe leaks
-        env,
+        env: {
+            PATH: process.env.PATH,
+            HOME: userDir, // picobot reads $HOME/.picobot/config.json
+        },
+        cwd: userDir,
     });
 
     child.unref();
@@ -394,7 +536,7 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(async (req, res) => {
     // ── Spawn picobot ───────────────────────────────────────────────────────
     let pid;
     try {
-        pid = spawnPicobot(telegramToken, virtualKey.key, model);
+        pid = spawnPicobot(userId, telegramToken, virtualKey.key, model);
         logEvent(userId, 'picobot_spawned', { pid, model });
     } catch (err) {
         console.error('[deploy] picobot spawn error:', err.message);
@@ -541,13 +683,51 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 server = app.listen(config.port, () => {
     console.log(`\n🦀 LiveClaw Orchestrator v1.0.0`);
     console.log(`   Environment: ${config.nodeEnv}`);
+    console.log(`   Bots dir:    ${config.botsDir}`);
     console.log(`   Listening:   http://localhost:${config.port}`);
     console.log(`   Endpoints:`);
     console.log(`     POST /deploy-bot`);
     console.log(`     POST /stop-bot`);
+    console.log(`     POST /create-invoice`);
     console.log(`     GET  /status/:userId`);
     console.log(`     GET  /health`);
     console.log(`     POST /verify-turnstile`);
     console.log(`     GET  /webhook/applixir-reward`);
     console.log(`     POST /webhook/telegram-stars\n`);
+
+    // Ensure bots directory exists
+    fs.mkdirSync(config.botsDir, { recursive: true });
 });
+
+// ─── Bot Watchdog ───────────────────────────────────────────────────────────
+// Periodically checks running bots and auto-restarts crashed ones.
+const watchdogTimer = setInterval(() => {
+    try {
+        const bots = stmt.runningBots.all();
+        for (const bot of bots) {
+            let alive = false;
+            try { process.kill(bot.pid, 0); alive = true; } catch (_) { /* not running */ }
+
+            if (!alive) {
+                console.warn(`[watchdog] Bot for user=${bot.user_id} pid=${bot.pid} is dead. Auto-restarting...`);
+
+                try {
+                    const decryptedToken = decryptToken(bot.telegram_token);
+                    const newPid = spawnPicobot(bot.user_id, decryptedToken, bot.portkey_vk, bot.model);
+                    stmt.updatePid.run(newPid, 'running', bot.user_id);
+                    logEvent(bot.user_id, 'bot_auto_restarted', { oldPid: bot.pid, newPid });
+                    console.log(`[watchdog] Restarted bot for user=${bot.user_id} newPid=${newPid}`);
+                } catch (err) {
+                    console.error(`[watchdog] Failed to restart bot for user=${bot.user_id}: ${err.message}`);
+                    stmt.updateStatus.run('crashed', bot.user_id);
+                    logEvent(bot.user_id, 'bot_restart_failed', err.message);
+                }
+            }
+        }
+    } catch (err) {
+        console.error(`[watchdog] Error: ${err.message}`);
+    }
+}, config.watchdogIntervalMs);
+
+// Prevent watchdog from keeping process alive during shutdown
+watchdogTimer.unref();

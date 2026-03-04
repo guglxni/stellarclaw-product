@@ -16,7 +16,7 @@
     "portkey"
   ],
   "author": "Aaryan Guglani",
-  "license": "MIT",
+  "license": "PROPRIETARY",
   "type": "commonjs",
   "engines": {
     "node": ">=22.0.0"
