@@ -1,0 +1,78 @@
+name: LiveClaw Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'scripts/**'
+      - 'liveclaw-web/**'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # Never cancel a running deploy
+
+env:
+  REMOTE_BASE: /opt/liveclaw
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.DO_DROPLET_IP }}" ] || [ -z "${{ secrets.DO_SSH_KEY }}" ]; then
+            echo "::error::Missing required secrets: DO_DROPLET_IP and DO_SSH_KEY"
+            exit 1
+          fi
+
+      - name: Deploy backend via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+
+            echo "=== 1/5 Pull latest code ==="
+            cd ${{ env.REMOTE_BASE }}
+            git pull origin main 2>/dev/null || echo "Not a git repo — rsync-based deployment"
+
+            echo "=== 2/5 Install backend dependencies ==="
+            cd ${{ env.REMOTE_BASE }}/backend
+            npm install --omit=dev --loglevel warn
+
+            echo "=== 3/5 Reload orchestrator (zero-downtime) ==="
+            # pm2 reload does graceful restart — existing detached Go processes survive
+            if pm2 describe liveclaw-orchestrator &>/dev/null; then
+              pm2 reload liveclaw-orchestrator --update-env
+            else
+              pm2 start server.js --name "liveclaw-orchestrator" --max-memory-restart 256M
+            fi
+            pm2 save
+
+            echo "=== 4/5 Reload Nginx ==="
+            nginx -t && systemctl reload nginx
+
+            echo "=== 5/5 Health check ==="
+            sleep 3
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ Health check passed (HTTP $HTTP_CODE)"
+            else
+              echo "⚠ Health check returned HTTP $HTTP_CODE"
+              pm2 logs liveclaw-orchestrator --lines 20 --nostream
+              exit 1
+            fi
+
+            echo "=== ✅ Deploy complete ==="

@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Refuel Agent — LiveClaw</title>
+    <meta name="robots" content="noindex, nofollow" />
+
+    <!-- Telegram Web App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+    <!-- Cloudflare Turnstile (invisible mode) -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+
+    <!-- AppLixir Rewarded Video SDK -->
+    <script src="https://cdn.applixir.com/applixir.sdk3.0m.js" async defer></script>
+
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #09090b;
+            --card: rgba(255,255,255,0.03);
+            --border: rgba(255,255,255,0.06);
+            --text: #e4e4e7;
+            --text-muted: #71717a;
+            --accent: #6366f1;
+            --emerald: #34d399;
+            --red: #f87171;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 380px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+            text-align: center;
+        }
+
+        .logo {
+            width: 56px;
+            height: 56px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3);
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+
+        .subtitle {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .status-card {
+            width: 100%;
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .status-text {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        .status-text.success { color: var(--emerald); }
+        .status-text.error   { color: var(--red); }
+
+        .phase-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            width: 100%;
+        }
+
+        .phase-step {
+            flex: 1;
+            height: 3px;
+            border-radius: 2px;
+            background: var(--border);
+            transition: background 0.5s ease;
+        }
+
+        .phase-step.active { background: var(--accent); }
+        .phase-step.done   { background: var(--emerald); }
+
+        .phase-labels {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            font-size: 0.625rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        .phase-labels span.active { color: var(--accent); font-weight: 600; }
+        .phase-labels span.done   { color: var(--emerald); }
+
+        /* Turnstile container — invisible, zero pixel */
+        #turnstile-container {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 0;
+            height: 0;
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .powered-by {
+            font-size: 0.625rem;
+            color: var(--text-muted);
+            opacity: 0.5;
+            margin-top: auto;
+            padding-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="logo">🦀</div>
+    <h1>Refueling Your Claw Agent</h1>
+    <p class="subtitle">Watch a short video to earn free credits for your AI agent.</p>
+
+    <!-- Progress Indicator -->
+    <div style="width:100%; display:flex; flex-direction:column; gap:0.375rem;">
+        <div class="phase-indicator">
+            <div class="phase-step active" id="phase-1"></div>
+            <div class="phase-step" id="phase-2"></div>
+            <div class="phase-step" id="phase-3"></div>
+        </div>
+        <div class="phase-labels">
+            <span class="active" id="label-1">Verify</span>
+            <span id="label-2">Watch Ad</span>
+            <span id="label-3">Credits</span>
+        </div>
+    </div>
+
+    <!-- Status Card -->
+    <div class="status-card" id="status-card">
+        <div class="spinner" id="spinner"></div>
+        <p class="status-text" id="status-text">Verifying your session…</p>
+    </div>
+
+    <!-- Invisible Turnstile Widget -->
+    <div id="turnstile-container"></div>
+
+    <p class="powered-by">Powered by LiveClaw.xyz</p>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ─── Config ─────────────────────────────────────────────────────────────
+    const API_BASE = '/api'; // Nginx proxies /api → backend :3000
+    const TURNSTILE_SITE_KEY = window.LIVECLAW_TURNSTILE_SITE_KEY || '0x4AAAAAAA-PLACEHOLDER'; // Replace with real key
+    const APPLIXIR_ZONE_ID = window.LIVECLAW_APPLIXIR_ZONE_ID || '0000'; // Replace with real AppLixir zone
+
+    // ─── Telegram WebApp ────────────────────────────────────────────────────
+    const tg = window.Telegram && window.Telegram.WebApp;
+    let userId = null;
+
+    if (tg) {
+        tg.ready();
+        tg.expand();
+        // Extract user ID from Telegram initData
+        if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
+            userId = String(tg.initDataUnsafe.user.id);
+        }
+    }
+
+    // Fallback for dev testing outside Telegram
+    if (!userId) {
+        const params = new URLSearchParams(window.location.search);
+        userId = params.get('userId') || null;
+    }
+
+    // ─── DOM Refs ───────────────────────────────────────────────────────────
+    const statusText = document.getElementById('status-text');
+    const spinner    = document.getElementById('spinner');
+    const phases     = [
+        document.getElementById('phase-1'),
+        document.getElementById('phase-2'),
+        document.getElementById('phase-3'),
+    ];
+    const labels     = [
+        document.getElementById('label-1'),
+        document.getElementById('label-2'),
+        document.getElementById('label-3'),
+    ];
+
+    function setPhase(index) {
+        phases.forEach((p, i) => {
+            p.classList.remove('active', 'done');
+            labels[i].classList.remove('active', 'done');
+            if (i < index) {
+                p.classList.add('done');
+                labels[i].classList.add('done');
+            }
+            if (i === index) {
+                p.classList.add('active');
+                labels[i].classList.add('active');
+            }
+        });
+    }
+
+    function showError(msg) {
+        spinner.style.display = 'none';
+        statusText.textContent = msg;
+        statusText.classList.add('error');
+    }
+
+    function showSuccess(msg) {
+        spinner.style.display = 'none';
+        statusText.textContent = msg;
+        statusText.classList.add('success');
+    }
+
+    // ─── Phase 1: Cloudflare Turnstile (Invisible) ──────────────────────────
+    function startTurnstile() {
+        if (!userId) {
+            showError('Could not identify your Telegram account. Please open this page from your bot.');
+            return;
+        }
+
+        statusText.textContent = 'Running security check…';
+
+        // Wait for Turnstile API to load
+        function tryRenderTurnstile() {
+            if (typeof turnstile === 'undefined') {
+                setTimeout(tryRenderTurnstile, 200);
+                return;
+            }
+
+            turnstile.render('#turnstile-container', {
+                sitekey: TURNSTILE_SITE_KEY,
+                size: 'invisible',
+                callback: onTurnstileSuccess,
+                'error-callback': onTurnstileError,
+                'expired-callback': onTurnstileError,
+            });
+        }
+
+        tryRenderTurnstile();
+    }
+
+    async function onTurnstileSuccess(token) {
+        statusText.textContent = 'Verified ✓ — Preparing ad…';
+        setPhase(1);
+
+        // Send to our backend for server-side verification
+        try {
+            const res = await fetch(API_BASE + '/verify-turnstile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token }),
+            });
+
+            const data = await res.json();
+            if (!data.success) {
+                showError('Security check failed. Please try again.');
+                return;
+            }
+
+            // Move to Phase 2: Show Ad
+            startAppLixirAd();
+        } catch (err) {
+            console.error('[Turnstile] Verification error:', err);
+            showError('Network error during verification.');
+        }
+    }
+
+    function onTurnstileError() {
+        showError('Security check failed. Please close and try again.');
+    }
+
+    // ─── Phase 2: AppLixir Rewarded Video Ad ────────────────────────────────
+    function startAppLixirAd() {
+        statusText.textContent = 'Loading rewarded video…';
+
+        // Wait for AppLixir SDK to load
+        function tryStartAd() {
+            if (typeof invokeApplixirVideoUnit === 'undefined') {
+                setTimeout(tryStartAd, 300);
+                return;
+            }
+
+            // AppLixir options
+            // The S2S callback URL will be configured in the AppLixir dashboard:
+            //   https://liveclaw.xyz/api/webhook/applixir-reward?secretKey={SECRET}&userId={userId}
+            const options = {
+                zoneId: APPLIXIR_ZONE_ID,
+                accountId: userId,
+                siteId: 'liveclaw',
+                customData: userId,
+                adStatusCb: onAdStatus,
+            };
+
+            statusText.textContent = 'Playing ad — watch to earn credits…';
+
+            try {
+                invokeApplixirVideoUnit(options);
+            } catch (err) {
+                console.error('[AppLixir] Failed to invoke ad:', err);
+                showError('Ad failed to load. Credits will be added once the network confirms.');
+                // Close after a delay anyway
+                setTimeout(closeWebApp, 3000);
+            }
+        }
+
+        tryStartAd();
+    }
+
+    function onAdStatus(status) {
+        console.log('[AppLixir] Ad status:', status);
+
+        switch (status) {
+            case 'ad-watched':
+            case 'advancement':
+                // Phase 3: Credits earned!
+                onAdComplete();
+                break;
+
+            case 'ad-blocker':
+                showError('Ad blocker detected. Please disable it to earn credits.');
+                break;
+
+            case 'ads-unavailable':
+                showError('No ads available right now. Please try again later.');
+                setTimeout(closeWebApp, 3000);
+                break;
+
+            case 'cors-error':
+            case 'error':
+                showError('Ad playback error. Your credits will sync shortly.');
+                setTimeout(closeWebApp, 3000);
+                break;
+
+            case 'ad-started':
+                statusText.textContent = 'Watching ad…';
+                break;
+
+            default:
+                // Ignore other statuses like 'bait-detected', etc.
+                break;
+        }
+    }
+
+    // ─── Phase 3: Complete ──────────────────────────────────────────────────
+    function onAdComplete() {
+        setPhase(2); // All 3 phases done
+        phases[2].classList.remove('active');
+        phases[2].classList.add('done');
+        labels[2].classList.remove('active');
+        labels[2].classList.add('done');
+
+        showSuccess('Credits added! Returning to chat…');
+
+        // AppLixir S2S postback happens server-side automatically.
+        // We just need to close the WebView after a brief confirmation.
+        setTimeout(closeWebApp, 2000);
+    }
+
+    function closeWebApp() {
+        if (tg) {
+            try { tg.close(); } catch (_) {}
+        }
+        // Fallback if not in Telegram context
+        window.close();
+    }
+
+    // ─── Start ──────────────────────────────────────────────────────────────
+    startTurnstile();
+})();
+</script>
+
+</body>
+</html>

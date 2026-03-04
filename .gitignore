@@ -1,0 +1,56 @@
+# ═══════════════════════════════════════════════════════════════════
+# LiveClaw — .gitignore
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Dependencies ──────────────────────────────────────────────────
+node_modules/
+
+# ── Environment & Secrets ─────────────────────────────────────────
+.env
+.env.local
+.env.production
+!.env.example
+
+# ── Database ──────────────────────────────────────────────────────
+*.db
+*.db-journal
+*.db-wal
+
+# ── Binaries ──────────────────────────────────────────────────────
+backend/picobot
+picobot
+
+# ── OS & IDE ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Build artifacts ───────────────────────────────────────────────
+dist/
+build/
+.next/
+out/
+
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+pm2-*.log
+
+# ── Temporary build scripts (used during initial setup) ──────────
+fix_all.py
+fix_marquee_footer.py
+refactor_frontend.py
+repomix-output.xml
+
+# ── AI Agent directories ─────────────────────────────────────────
+.agents/
+.agent/
+_agents/
+_agent/
+.gemini/
+*.db-shm
+*.db-wal

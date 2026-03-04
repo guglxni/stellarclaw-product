@@ -1,0 +1,23 @@
+{
+    "name": "liveclaw",
+    "version": "0.1.0",
+    "description": "LiveClaw — Freemium ad-supported AI agent platform native to Telegram",
+    "private": true,
+    "scripts": {
+        "frontend": "python3 -m http.server 3000 --directory liveclaw-web/www.simpleclaw.com",
+        "backend": "node backend/server.js",
+        "dev": "concurrently \"npm run frontend\" \"npm run backend\"",
+        "deploy": "bash deploy.sh",
+        "refactor": "python3 refactor_frontend.py"
+    },
+    "keywords": [
+        "liveclaw",
+        "openclaw",
+        "telegram",
+        "ai-agent",
+        "minimax",
+        "portkey"
+    ],
+    "author": "LiveClaw",
+    "license": "UNLICENSED"
+}
