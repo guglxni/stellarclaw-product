@@ -6,7 +6,14 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "vitest run",
+    "test:unit": "vitest run tests/bifrost.test.js",
+    "test:integration": "vitest run tests/api.test.js",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile=test-results.xml",
+    "lint": "eslint server.js bifrost.js --max-warnings 15",
+    "validate": "npm run lint && npm run test"
   },
   "keywords": [
     "liveclaw",
@@ -28,5 +35,12 @@
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^10.0.2",
+    "supertest": "^7.2.2",
+    "vitest": "^4.0.18"
   }
 }

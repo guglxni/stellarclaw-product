@@ -289,12 +289,15 @@ app.use((req, res, next) => {
 });
 
 // ─── Rate Limiters ──────────────────────────────────────────────────────────
+const isTest = config.nodeEnv === 'test';
+
 const deployLimiter = rateLimit({
     windowMs: 60 * 1000,   // 1 minute
     max: 5,                // 5 deploys per minute per IP
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many deploy requests. Please try again shortly.' },
+    skip: () => isTest,    // Disable in test mode
 });
 
 const webhookLimiter = rateLimit({
@@ -302,6 +305,7 @@ const webhookLimiter = rateLimit({
     max: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => isTest,
 });
 
 const generalLimiter = rateLimit({
@@ -309,6 +313,7 @@ const generalLimiter = rateLimit({
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => isTest,
 });
 
 app.use(generalLimiter);
@@ -823,54 +828,62 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ─── Start ──────────────────────────────────────────────────────────────────
-server = app.listen(config.port, () => {
-    console.log(`\n🦀 LiveClaw Orchestrator v1.0.0`);
-    console.log(`   Environment: ${config.nodeEnv}`);
-    console.log(`   Bots dir:    ${config.botsDir}`);
-    console.log(`   Listening:   http://localhost:${config.port}`);
-    console.log(`   Endpoints:`);
-    console.log(`     POST /deploy-bot`);
-    console.log(`     POST /stop-bot`);
-    console.log(`     POST /create-invoice`);
-    console.log(`     GET  /status/:userId`);
-    console.log(`     GET  /health`);
-    console.log(`     POST /verify-turnstile`);
-    console.log(`     GET  /webhook/applixir-reward`);
-    console.log(`     POST /webhook/telegram-stars\n`);
+// In test mode, DO NOT auto-listen — supertest creates its own ephemeral server.
+if (config.nodeEnv !== 'test') {
+    server = app.listen(config.port, () => {
+        console.log(`\n🦀 LiveClaw Orchestrator v1.0.0`);
+        console.log(`   Environment: ${config.nodeEnv}`);
+        console.log(`   Bots dir:    ${config.botsDir}`);
+        console.log(`   Listening:   http://localhost:${config.port}`);
+        console.log(`   Endpoints:`);
+        console.log(`     POST /deploy-bot`);
+        console.log(`     POST /stop-bot`);
+        console.log(`     POST /create-invoice`);
+        console.log(`     GET  /status/:userId`);
+        console.log(`     GET  /health`);
+        console.log(`     POST /verify-turnstile`);
+        console.log(`     GET  /webhook/applixir-reward`);
+        console.log(`     POST /webhook/telegram-stars\n`);
 
-    // Ensure bots directory exists
-    fs.mkdirSync(config.botsDir, { recursive: true });
-});
+        // Ensure bots directory exists
+        fs.mkdirSync(config.botsDir, { recursive: true });
+    });
 
-// ─── Bot Watchdog ───────────────────────────────────────────────────────────
-// Periodically checks running bots and auto-restarts crashed ones.
-const watchdogTimer = setInterval(() => {
-    try {
-        const bots = stmt.runningBots.all();
-        for (const bot of bots) {
-            let alive = false;
-            try { process.kill(bot.pid, 0); alive = true; } catch (_) { /* not running */ }
+    // ─── Bot Watchdog ───────────────────────────────────────────────────────
+    // Periodically checks running bots and auto-restarts crashed ones.
+    const watchdogTimer = setInterval(() => {
+        try {
+            const bots = stmt.runningBots.all();
+            for (const bot of bots) {
+                let alive = false;
+                try { process.kill(bot.pid, 0); alive = true; } catch (_) { /* not running */ }
 
-            if (!alive) {
-                console.warn(`[watchdog] Bot for user=${bot.user_id} pid=${bot.pid} is dead. Auto-restarting...`);
+                if (!alive) {
+                    console.warn(`[watchdog] Bot for user=${bot.user_id} pid=${bot.pid} is dead. Auto-restarting...`);
 
-                try {
-                    const decryptedToken = decryptToken(bot.telegram_token);
-                    const newPid = spawnPicobot(bot.user_id, decryptedToken, bot.bifrost_vk, bot.model);
-                    stmt.updatePid.run(newPid, 'running', bot.user_id);
-                    logEvent(bot.user_id, 'bot_auto_restarted', { oldPid: bot.pid, newPid });
-                    console.log(`[watchdog] Restarted bot for user=${bot.user_id} newPid=${newPid}`);
-                } catch (err) {
-                    console.error(`[watchdog] Failed to restart bot for user=${bot.user_id}: ${err.message}`);
-                    stmt.updateStatus.run('crashed', bot.user_id);
-                    logEvent(bot.user_id, 'bot_restart_failed', err.message);
+                    try {
+                        const decryptedToken = decryptToken(bot.telegram_token);
+                        const newPid = spawnPicobot(bot.user_id, decryptedToken, bot.bifrost_vk, bot.model);
+                        stmt.updatePid.run(newPid, 'running', bot.user_id);
+                        logEvent(bot.user_id, 'bot_auto_restarted', { oldPid: bot.pid, newPid });
+                        console.log(`[watchdog] Restarted bot for user=${bot.user_id} newPid=${newPid}`);
+                    } catch (err) {
+                        console.error(`[watchdog] Failed to restart bot for user=${bot.user_id}: ${err.message}`);
+                        stmt.updateStatus.run('crashed', bot.user_id);
+                        logEvent(bot.user_id, 'bot_restart_failed', err.message);
+                    }
                 }
             }
+        } catch (err) {
+            console.error(`[watchdog] Error: ${err.message}`);
         }
-    } catch (err) {
-        console.error(`[watchdog] Error: ${err.message}`);
-    }
-}, config.watchdogIntervalMs);
+    }, config.watchdogIntervalMs);
 
-// Prevent watchdog from keeping process alive during shutdown
-watchdogTimer.unref();
+    // Prevent watchdog from keeping process alive during shutdown
+    watchdogTimer.unref();
+}
+
+// ─── Module Exports (for testing) ───────────────────────────────────────────
+// Export app and db so supertest and test harnesses can use them.
+// In production, this export is unused.
+module.exports = { app, db };

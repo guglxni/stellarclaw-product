@@ -1,26 +1,154 @@
-name: LiveClaw Deploy
+name: LiveClaw CI/CD
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'backend/**'
-      - 'scripts/**'
-      - 'liveclaw-web/**'
-      - '.github/workflows/main.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: deploy-production
-  cancel-in-progress: false   # Never cancel a running deploy
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  NODE_VERSION: '22'
   REMOTE_BASE: /opt/liveclaw
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pipeline: Test → Lint → Security → Deploy
+# ═══════════════════════════════════════════════════════════════════════════════
 jobs:
+
+  # ─── Stage 1: Test Suite ─────────────────────────────────────────────────
+  test:
+    name: '🧪 Test Suite'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Run unit tests
+        run: npm run test:unit
+        working-directory: backend
+
+      - name: Run integration tests
+        run: npm run test:integration
+        working-directory: backend
+
+      - name: Run full test suite with coverage
+        run: npx vitest run --coverage
+        working-directory: backend
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: backend/coverage/
+          retention-days: 30
+
+  # ─── Stage 2: Lint & Static Analysis ─────────────────────────────────────
+  lint:
+    name: '🔍 Lint & Validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: ESLint
+        run: npm run lint
+        working-directory: backend
+
+      - name: Syntax validation
+        run: |
+          node -c server.js
+          node -c bifrost.js
+        working-directory: backend
+
+      - name: Check for secrets in code
+        run: |
+          # Scan for common secret patterns (API keys, tokens, passwords)
+          if grep -rn --include="*.js" --include="*.json" --include="*.yml" \
+            -E '(sk-[a-zA-Z0-9]{20,}|AKIA[A-Z0-9]{16}|ghp_[a-zA-Z0-9]{36}|password\s*=\s*['\''"][^'\''"]+['\''"])' \
+            --exclude-dir=node_modules --exclude-dir=.git .; then
+            echo "::error::Potential secrets found in source code!"
+            exit 1
+          fi
+          echo "✓ No secrets detected"
+
+  # ─── Stage 3: Security Audit ─────────────────────────────────────────────
+  security:
+    name: '🛡️ Security Audit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: npm audit (production deps only)
+        run: npm audit --omit=dev --audit-level=high || true
+        working-directory: backend
+
+      - name: Check for known vulnerabilities
+        run: |
+          # Check for critical/high vulnerabilities
+          RESULT=$(npm audit --omit=dev --json 2>/dev/null || echo '{}')
+          CRITICAL=$(echo "$RESULT" | jq '.metadata.vulnerabilities.critical // 0')
+          HIGH=$(echo "$RESULT" | jq '.metadata.vulnerabilities.high // 0')
+          echo "Critical: $CRITICAL, High: $HIGH"
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "::error::$CRITICAL critical vulnerabilities found!"
+            exit 1
+          fi
+          echo "✓ No critical vulnerabilities"
+        working-directory: backend
+
+  # ─── Stage 4: Deploy (only on main push, after all checks pass) ──────────
   deploy:
+    name: '🚀 Deploy to Production'
+    needs: [test, lint, security]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
 
     steps:
@@ -67,7 +195,6 @@ jobs:
             # Bifrost AI Gateway Docker (idempotent)
             systemctl enable --now docker
             if ! docker ps --format '{{.Names}}' | grep -q bifrost-gateway; then
-              # Remove stopped container if exists
               docker rm -f bifrost-gateway 2>/dev/null || true
               docker pull maximhq/bifrost:latest
               docker run -d \
