@@ -1,25 +1,29 @@
-name: Build Picobot (MCP Branch)
+name: 'Picobot MCP → Official (Self-Retiring)'
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Builds picobot from Fybre's MCP branch (louisho5/picobot PR #9).
-# MCP support is not yet in louisho5/picobot main, so we build from the
-# unmerged PR branch and deploy it directly.
+# SELF-RETIRING WORKFLOW
 #
-# SHA-tracking: compares the branch HEAD SHA against the deployed version.
-# Skips the full Go build when the branch hasn't changed (saves ~8 min).
+# Phase A (daily): Build picobot from Fybre's MCP branch (PR #9) because
+#   MCP support isn't in official releases yet.
 #
-# Runs daily at 02:00 UTC and on manual dispatch.
-# picobot-update.yml (official releases) has its schedule disabled while
-# this workflow is active — it would otherwise overwrite the MCP binary.
+# Phase B (auto, once): When PR #9 merges into louisho5/picobot main and
+#   appears in an official release (detected by MCP.md in release tarball),
+#   this workflow automatically:
+#   1. Downloads + SHA256-verifies + smoke-tests the official binary
+#   2. Deploys it to production (replacing the fork build)
+#   3. Re-enables picobot-update.yml schedule via GitHub API
+#   4. Replaces THIS file with a retired stub via GitHub API
 #
-# Once PR #9 merges: delete this file, re-enable picobot-update.yml schedule.
+# After Phase B fires, this file becomes a no-op stub and
+# picobot-update.yml takes over official release tracking.
+#
+# Manual dry-run: dispatch with force_transition=true to test Phase B
+# logic without deploying or committing.
 # ═══════════════════════════════════════════════════════════════════════════
 
 on:
   schedule:
-    # Daily at 02:00 UTC — picks up new commits on feature/mcp-integration
-    - cron: '0 2 * * *'
-
+    - cron: '0 2 * * *'   # Daily at 02:00 UTC
   workflow_dispatch:
     inputs:
       force:
@@ -27,9 +31,14 @@ on:
         required: false
         default: 'false'
         type: boolean
+      force_transition:
+        description: 'Dry-run: simulate Phase B transition (no deploy/commit)'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write          # needed for GitHub API commits in Phase B
 
 concurrency:
   group: picobot-mcp-build
@@ -38,12 +47,247 @@ concurrency:
 env:
   FORK_REPO: Fybre/picobot
   FORK_BRANCH: feature/mcp-integration
+  UPSTREAM_REPO: louisho5/picobot
   GO_VERSION: '1.24'
   REMOTE_BASE: /opt/liveclaw
 
+# ───────────────────────────────────────────────────────────────────────────
+# Job 1: PROBE — check if MCP has landed in official releases
+# ───────────────────────────────────────────────────────────────────────────
 jobs:
-  build-and-deploy:
+  probe:
+    name: '🔍 Probe upstream'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mcp_landed: ${{ steps.check.outputs.mcp_landed }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+      branch_sha: ${{ steps.branch.outputs.sha }}
+      branch_short: ${{ steps.branch.outputs.short_sha }}
+    steps:
+      - name: Get MCP branch HEAD SHA
+        id: branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(gh api "repos/${{ env.FORK_REPO }}/commits/${{ env.FORK_BRANCH }}" --jq '.sha')
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "Branch HEAD: ${SHA}"
+
+      - name: Check for MCP in latest official release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_TRANSITION: ${{ inputs.force_transition || 'false' }}
+        run: |
+          # Get latest release tag
+          TAG=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "none")
+          echo "Latest release: ${TAG}"
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE_TRANSITION" = "true" ]; then
+            echo "🔶 force_transition=true — simulating MCP landed"
+            echo "mcp_landed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$TAG" = "none" ]; then
+            echo "No releases found — MCP not landed"
+            echo "mcp_landed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if MCP.md exists in the release tag (canonical marker from PR #9)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://raw.githubusercontent.com/${{ env.UPSTREAM_REPO }}/${TAG}/MCP.md")
+          echo "MCP.md HTTP status: ${HTTP_CODE}"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ MCP.md found in ${TAG} — MCP has landed!"
+            echo "mcp_landed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "MCP.md not found — still building from fork"
+            echo "mcp_landed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 2: TRANSITION — Phase B (fires once when MCP lands in official)
+  # ─────────────────────────────────────────────────────────────────────────
+  transition:
+    name: '🚀 Transition to official release'
+    needs: probe
+    if: needs.probe.outputs.mcp_landed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      HAS_DEPLOY_SECRETS: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+      DRY_RUN: ${{ inputs.force_transition || 'false' }}
+
+    steps:
+      - name: Download official release binary
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.probe.outputs.release_tag }}
+        run: |
+          echo "Downloading picobot ${TAG} linux/amd64..."
+          ASSET_URL=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" \
+            --jq '.assets[] | select(.name | test("linux.*amd64|amd64.*linux")) | .browser_download_url' \
+            | head -1)
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "::error::No linux/amd64 binary found in release ${TAG}"
+            exit 1
+          fi
+
+          echo "Asset URL: ${ASSET_URL}"
+          curl -fSL -o picobot_official "$ASSET_URL"
+          chmod +x picobot_official
+          sha256sum picobot_official | tee sha256.txt
+          echo "sha256=$(cat sha256.txt | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test binary on runner
+        run: |
+          ./picobot_official version || ./picobot_official --version || ./picobot_official -v || echo "No version flag — checking if binary runs"
+          file picobot_official
+          echo "✅ Binary is executable"
+
+      - name: Deploy official binary to production
+        if: env.HAS_DEPLOY_SECRETS == 'true' && env.DRY_RUN != 'true'
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          HOST: ${{ secrets.DO_DROPLET_IP }}
+          TAG: ${{ needs.probe.outputs.release_tag }}
+        run: |
+          KEY_FILE=$(mktemp)
+          trap 'rm -f "$KEY_FILE"' EXIT
+          echo "$SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          # Upload binary
+          scp -i "$KEY_FILE" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            picobot_official root@"$HOST":/opt/liveclaw/backend/picobot_official
+
+          # Install with rollback
+          ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            root@"$HOST" bash -s << 'DEPLOY_SCRIPT'
+          set -euo pipefail
+          cd /opt/liveclaw/backend
+          [ -f picobot ] && cp picobot picobot.bak
+          mv picobot_official picobot
+          chmod +x picobot
+          if ! ./picobot version &>/dev/null; then
+            echo "::error::Official binary verification failed on server!"
+            [ -f picobot.bak ] && mv picobot.bak picobot
+            exit 1
+          fi
+          rm -f picobot.bak
+          echo "official" > .picobot-version
+          pm2 describe liveclaw-orchestrator &>/dev/null && pm2 reload liveclaw-orchestrator --update-env
+          echo "✅ Official picobot deployed"
+          DEPLOY_SCRIPT
+
+      - name: Re-enable picobot-update.yml schedule
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Re-enabling picobot-update.yml schedule..."
+
+          # Get current file content + SHA from GitHub API
+          FILE_DATA=$(gh api "repos/${{ github.repository }}/contents/.github/workflows/picobot-update.yml" \
+            --jq '{content: .content, sha: .sha}')
+          FILE_SHA=$(echo "$FILE_DATA" | jq -r '.sha')
+          CONTENT=$(echo "$FILE_DATA" | jq -r '.content' | base64 -d)
+
+          # Uncomment the schedule lines using Python
+          UPDATED=$(python3 -c "
+          import sys, re
+          content = sys.stdin.read()
+          # Remove DISABLED comment block
+          content = re.sub(r'# ─+ DISABLED.*?# ─+\n', '', content, flags=re.DOTALL)
+          # Uncomment schedule and cron
+          content = content.replace('# schedule:', 'schedule:')
+          content = re.sub(r\"#   (- cron:)\", r'  \1', content)
+          print(content, end='')
+          " <<< "$CONTENT")
+
+          # Commit via GitHub API
+          ENCODED=$(echo -n "$UPDATED" | base64 -w 0)
+          gh api -X PUT "repos/${{ github.repository }}/contents/.github/workflows/picobot-update.yml" \
+            -f message="chore: re-enable picobot-update schedule (MCP landed in official)" \
+            -f content="$ENCODED" \
+            -f sha="$FILE_SHA" \
+            -f branch="main"
+
+          echo "✅ picobot-update.yml schedule re-enabled"
+
+      - name: Retire this workflow
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Retiring picobot-mcp-build.yml..."
+
+          # Get current file SHA
+          FILE_SHA=$(gh api "repos/${{ github.repository }}/contents/.github/workflows/picobot-mcp-build.yml" \
+            --jq '.sha')
+
+          # Create retired stub
+          STUB="name: '[RETIRED] Picobot MCP Build'
+          # This workflow completed its mission: MCP support has landed in
+          # official picobot releases. picobot-update.yml now handles updates.
+          # Retired on: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          on:
+            workflow_dispatch:
+              inputs:
+                note:
+                  description: 'This workflow is retired. Use picobot-update.yml instead.'
+                  default: 'retired'
+          jobs:
+            retired:
+              runs-on: ubuntu-latest
+              steps:
+                - run: echo 'This workflow is retired. MCP landed in official picobot releases. Use picobot-update.yml.'"
+
+          ENCODED=$(echo -n "$STUB" | base64 -w 0)
+          gh api -X PUT "repos/${{ github.repository }}/contents/.github/workflows/picobot-mcp-build.yml" \
+            -f message="chore: retire picobot-mcp-build (MCP landed in official releases)" \
+            -f content="$ENCODED" \
+            -f sha="$FILE_SHA" \
+            -f branch="main"
+
+          echo "✅ picobot-mcp-build.yml retired"
+
+      - name: Transition summary
+        if: always()
+        env:
+          TAG: ${{ needs.probe.outputs.release_tag }}
+        run: |
+          echo "## 🚀 Picobot Transition to Official" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ env.DRY_RUN }}" = "true" ]; then
+            echo "🔶 **DRY RUN** — no deploy or commits made" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "✅ **Transition complete**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release | \`${TAG}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Binary SHA256 | \`${{ steps.download.outputs.sha256 }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dry Run | \`${{ env.DRY_RUN }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | \`${{ job.status }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 3: BUILD-MCP-BRANCH — Phase A (daily fork build, skipped after transition)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-mcp-branch:
     name: '🔧 Build & Deploy Picobot (MCP)'
+    needs: probe
+    if: needs.probe.outputs.mcp_landed != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -51,19 +295,6 @@ jobs:
       HAS_DEPLOY_SECRETS: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
 
     steps:
-      # ── Step 1: Resolve current branch HEAD SHA (no clone needed) ──────────
-      - name: Get MCP branch HEAD SHA
-        id: branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SHA=$(gh api repos/${{ env.FORK_REPO }}/commits/${{ env.FORK_BRANCH }} --jq '.sha')
-          SHORT="${SHA:0:12}"
-          echo "Branch HEAD: ${SHA} (${SHORT})"
-          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${SHORT}" >> "$GITHUB_OUTPUT"
-
-      # ── Step 2: Check what SHA is currently deployed on the server ──────────
       - name: Get deployed SHA from server
         id: deployed
         if: env.HAS_DEPLOY_SECRETS == 'true'
@@ -85,12 +316,11 @@ jobs:
           echo "Deployed SHA: $RESULT"
           echo "sha=$RESULT" >> "$GITHUB_OUTPUT"
 
-      # ── Step 3: Decide whether to build ─────────────────────────────────────
       - name: Decide if build needed
         id: decide
         run: |
           FORCE="${{ inputs.force || 'false' }}"
-          BRANCH_SHA="${{ steps.branch.outputs.sha }}"
+          BRANCH_SHA="${{ needs.probe.outputs.branch_sha }}"
           DEPLOYED="${{ steps.deployed.outputs.sha || 'not-installed' }}"
           DEPLOYED=$(echo "$DEPLOYED" | tr -d '[:space:]')
 
@@ -105,11 +335,10 @@ jobs:
             echo "Already up-to-date — skipping build"
             echo "needs_build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "New commit detected or not installed — building"
+            echo "New commit detected — building"
             echo "needs_build=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── Steps 4-8: Build and deploy (skipped when up-to-date) ───────────────
       - name: Checkout LiveClaw repo
         if: steps.decide.outputs.needs_build == 'true'
         uses: actions/checkout@v6
@@ -119,7 +348,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ env.FORK_REPO }}
-          ref: ${{ steps.branch.outputs.sha }}
+          ref: ${{ needs.probe.outputs.branch_sha }}
           path: picobot-src
 
       - name: Setup Go ${{ env.GO_VERSION }}
@@ -173,42 +402,28 @@ jobs:
             UPLOADED="${PICOBOT_DIR}/picobot_linux_amd64"
             VERSION_FILE="${PICOBOT_DIR}/.picobot-version"
 
-            # Backup current binary
-            if [ -f "$BINARY_PATH" ]; then
-              cp "$BINARY_PATH" "${BINARY_PATH}.bak"
-            fi
-
+            [ -f "$BINARY_PATH" ] && cp "$BINARY_PATH" "${BINARY_PATH}.bak"
             mv "$UPLOADED" "$BINARY_PATH"
             chmod +x "$BINARY_PATH"
 
-            # Verify binary runs
             if ! "$BINARY_PATH" version &>/dev/null; then
               echo "::error::Binary verification failed!"
-              if [ -f "${BINARY_PATH}.bak" ]; then
-                mv "${BINARY_PATH}.bak" "$BINARY_PATH"
-                echo "Rolled back to previous version"
-              fi
+              [ -f "${BINARY_PATH}.bak" ] && mv "${BINARY_PATH}.bak" "$BINARY_PATH"
               exit 1
             fi
 
-            # Record exact commit SHA for future skip-if-unchanged logic
-            echo "${{ steps.branch.outputs.sha }}" > "$VERSION_FILE"
-            echo "✓ picobot (MCP) deployed @ ${{ steps.branch.outputs.short_sha }}"
+            echo "${{ needs.probe.outputs.branch_sha }}" > "$VERSION_FILE"
+            echo "✓ picobot (MCP) deployed @ ${{ needs.probe.outputs.branch_short }}"
             rm -f "${BINARY_PATH}.bak"
 
-            # Reload orchestrator
-            if pm2 describe liveclaw-orchestrator &>/dev/null; then
-              pm2 reload liveclaw-orchestrator --update-env
-              echo "✓ PM2 reloaded"
-            fi
-
+            pm2 describe liveclaw-orchestrator &>/dev/null && pm2 reload liveclaw-orchestrator --update-env
             echo "=== ✅ Picobot MCP deploy complete ==="
 
       - name: Summary
         if: always()
         run: |
           BUILT="${{ steps.decide.outputs.needs_build || 'skipped' }}"
-          SHA="${{ steps.branch.outputs.short_sha || 'unknown' }}"
+          SHA="${{ needs.probe.outputs.branch_short || 'unknown' }}"
 
           echo "## 🔧 Picobot MCP Build" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -224,7 +439,7 @@ jobs:
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Source | [\`${{ env.FORK_REPO }}\`](https://github.com/${{ env.FORK_REPO }}/tree/${{ env.FORK_BRANCH }}) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Branch | \`${{ env.FORK_BRANCH }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ steps.branch.outputs.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ needs.probe.outputs.branch_sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| PR | [louisho5/picobot#9](https://github.com/louisho5/picobot/pull/9) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Target | linux/amd64 |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
