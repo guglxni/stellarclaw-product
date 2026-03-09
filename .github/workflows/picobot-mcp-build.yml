@@ -1,15 +1,25 @@
 name: Build Picobot (MCP Branch)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Builds picobot from Fybre's MCP branch (louisho5/picobot PR #9) since
-# that feature hasn't been merged to main yet.
+# Builds picobot from Fybre's MCP branch (louisho5/picobot PR #9).
+# MCP support is not yet in louisho5/picobot main, so we build from the
+# unmerged PR branch and deploy it directly.
 #
-# Produces a linux/amd64 binary and deploys it to the production droplet.
-# Once PR #9 is merged upstream, switch back to picobot-update.yml
-# (which pulls official releases) and delete this workflow.
+# SHA-tracking: compares the branch HEAD SHA against the deployed version.
+# Skips the full Go build when the branch hasn't changed (saves ~8 min).
+#
+# Runs daily at 02:00 UTC and on manual dispatch.
+# picobot-update.yml (official releases) has its schedule disabled while
+# this workflow is active — it would otherwise overwrite the MCP binary.
+#
+# Once PR #9 merges: delete this file, re-enable picobot-update.yml schedule.
 # ═══════════════════════════════════════════════════════════════════════════
 
 on:
+  schedule:
+    # Daily at 02:00 UTC — picks up new commits on feature/mcp-integration
+    - cron: '0 2 * * *'
+
   workflow_dispatch:
     inputs:
       force:
@@ -35,29 +45,83 @@ jobs:
   build-and-deploy:
     name: '🔧 Build & Deploy Picobot (MCP)'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
       HAS_DEPLOY_SECRETS: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
 
     steps:
+      # ── Step 1: Resolve current branch HEAD SHA (no clone needed) ──────────
+      - name: Get MCP branch HEAD SHA
+        id: branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(gh api repos/${{ env.FORK_REPO }}/commits/${{ env.FORK_BRANCH }} --jq '.sha')
+          SHORT="${SHA:0:12}"
+          echo "Branch HEAD: ${SHA} (${SHORT})"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT}" >> "$GITHUB_OUTPUT"
+
+      # ── Step 2: Check what SHA is currently deployed on the server ──────────
+      - name: Get deployed SHA from server
+        id: deployed
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 30s
+          script: |
+            cat /opt/liveclaw/backend/.picobot-version 2>/dev/null || echo "not-installed"
+
+      # ── Step 3: Decide whether to build ─────────────────────────────────────
+      - name: Decide if build needed
+        id: decide
+        run: |
+          FORCE="${{ inputs.force || 'false' }}"
+          BRANCH_SHA="${{ steps.branch.outputs.sha }}"
+          DEPLOYED="${{ steps.deployed.outputs.stdout || 'not-installed' }}"
+          DEPLOYED=$(echo "$DEPLOYED" | tr -d '[:space:]')
+
+          echo "Branch SHA: ${BRANCH_SHA}"
+          echo "Deployed:   ${DEPLOYED}"
+          echo "Force:      ${FORCE}"
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force rebuild — proceeding"
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          elif [ "$DEPLOYED" = "$BRANCH_SHA" ]; then
+            echo "Already up-to-date — skipping build"
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commit detected or not installed — building"
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Steps 4-8: Build and deploy (skipped when up-to-date) ───────────────
       - name: Checkout LiveClaw repo
+        if: steps.decide.outputs.needs_build == 'true'
         uses: actions/checkout@v6
 
       - name: Checkout picobot MCP branch
+        if: steps.decide.outputs.needs_build == 'true'
         uses: actions/checkout@v6
         with:
           repository: ${{ env.FORK_REPO }}
-          ref: ${{ env.FORK_BRANCH }}
+          ref: ${{ steps.branch.outputs.sha }}
           path: picobot-src
 
       - name: Setup Go ${{ env.GO_VERSION }}
+        if: steps.decide.outputs.needs_build == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: picobot-src/go.sum
 
       - name: Build linux/amd64 binary
+        if: steps.decide.outputs.needs_build == 'true'
         working-directory: picobot-src
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
@@ -66,6 +130,7 @@ jobs:
           sha256sum ../picobot_linux_amd64
 
       - name: Upload binary artifact
+        if: steps.decide.outputs.needs_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: picobot-mcp-linux-amd64
@@ -73,7 +138,7 @@ jobs:
           retention-days: 30
 
       - name: Upload binary via SCP
-        if: env.HAS_DEPLOY_SECRETS == 'true'
+        if: steps.decide.outputs.needs_build == 'true' && env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -84,7 +149,7 @@ jobs:
           overwrite: true
 
       - name: Install and verify binary
-        if: env.HAS_DEPLOY_SECRETS == 'true'
+        if: steps.decide.outputs.needs_build == 'true' && env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -117,10 +182,9 @@ jobs:
               exit 1
             fi
 
-            # Record version as branch SHA
-            COMMIT_SHA="${{ env.FORK_BRANCH }}@$(date -u +%Y%m%d)"
-            echo "$COMMIT_SHA" > "$VERSION_FILE"
-            echo "✓ picobot (MCP branch) deployed: ${COMMIT_SHA}"
+            # Record exact commit SHA for future skip-if-unchanged logic
+            echo "${{ steps.branch.outputs.sha }}" > "$VERSION_FILE"
+            echo "✓ picobot (MCP) deployed @ ${{ steps.branch.outputs.short_sha }}"
             rm -f "${BINARY_PATH}.bak"
 
             # Reload orchestrator
@@ -134,12 +198,25 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          BUILT="${{ steps.decide.outputs.needs_build || 'skipped' }}"
+          SHA="${{ steps.branch.outputs.short_sha || 'unknown' }}"
+
           echo "## 🔧 Picobot MCP Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BUILT" = "true" ]; then
+            echo "✅ **Built & deployed** \`${SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$BUILT" = "false" ]; then
+            echo "ℹ️ **Already up-to-date** \`${SHA}\` — skipped build" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ **Skipped** (pre-check error)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| | |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Source | [\`${{ env.FORK_REPO }}\`](https://github.com/${{ env.FORK_REPO }}/tree/${{ env.FORK_BRANCH }}) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Branch | \`${{ env.FORK_BRANCH }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| PR | [#9](https://github.com/louisho5/picobot/pull/9) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ steps.branch.outputs.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PR | [louisho5/picobot#9](https://github.com/louisho5/picobot/pull/9) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Target | linux/amd64 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Status | \`${{ job.status }}\` |" >> "$GITHUB_STEP_SUMMARY"

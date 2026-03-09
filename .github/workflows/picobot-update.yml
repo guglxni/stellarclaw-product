@@ -22,9 +22,11 @@ name: Picobot Auto-Update
 # ═══════════════════════════════════════════════════════════════════════════
 
 on:
-  schedule:
-    # Every 6 hours: 00:00, 06:00, 12:00, 18:00 UTC
-    - cron: '0 */6 * * *'
+  # DISABLED: Schedule paused while picobot-mcp-build.yml is active.
+  # picobot-update.yml pulls official releases which lack MCP support (PR #9).
+  # Re-enable once PR #9 is merged into louisho5/picobot main.
+  # schedule:
+  #   - cron: '0 */6 * * *'
 
   workflow_dispatch:
     inputs:
