@@ -9,6 +9,10 @@ export default defineConfig({
         // ── Environment ──
         // Use Node.js environment for backend tests
         environment: 'node',
+        // Prevent dotenv from loading DATABASE_URL; tests must use SQLite
+        env: {
+            DATABASE_URL: '',
+        },
 
         // ── Globals ──
         globals: true,

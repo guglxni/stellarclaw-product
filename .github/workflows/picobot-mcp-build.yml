@@ -1,0 +1,159 @@
+name: Build Picobot (MCP Branch)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Builds picobot from Fybre's MCP branch (louisho5/picobot PR #9) since
+# that feature hasn't been merged to main yet.
+#
+# Produces a linux/amd64 binary and deploys it to the production droplet.
+# Once PR #9 is merged upstream, switch back to picobot-update.yml
+# (which pulls official releases) and delete this workflow.
+# ═══════════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild & deploy even if SHA matches'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: picobot-mcp-build
+  cancel-in-progress: true
+
+env:
+  FORK_REPO: Fybre/picobot
+  FORK_BRANCH: feature/mcp-integration
+  GO_VERSION: '1.24'
+  REMOTE_BASE: /opt/liveclaw
+
+jobs:
+  build-and-deploy:
+    name: '🔧 Build & Deploy Picobot (MCP)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout LiveClaw repo
+        uses: actions/checkout@v4
+
+      - name: Checkout picobot MCP branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORK_REPO }}
+          ref: ${{ env.FORK_BRANCH }}
+          path: picobot-src
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: picobot-src/go.sum
+
+      - name: Build linux/amd64 binary
+        working-directory: picobot-src
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o ../picobot_linux_amd64 ./cmd/picobot
+          ls -lh ../picobot_linux_amd64
+          sha256sum ../picobot_linux_amd64
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: picobot-mcp-linux-amd64
+          path: picobot_linux_amd64
+          retention-days: 30
+
+      - name: Deploy to production
+        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 3m
+          script: |
+            set -euo pipefail
+
+            PICOBOT_DIR="/opt/liveclaw/backend"
+            BINARY_PATH="${PICOBOT_DIR}/picobot"
+            VERSION_FILE="${PICOBOT_DIR}/.picobot-version"
+
+            echo "=== Deploying picobot (MCP branch) ==="
+
+      - name: Upload binary via SCP
+        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          source: picobot_linux_amd64
+          target: /opt/liveclaw/backend/
+          overwrite: true
+
+      - name: Install and verify binary
+        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 1m
+          script: |
+            set -euo pipefail
+
+            PICOBOT_DIR="/opt/liveclaw/backend"
+            BINARY_PATH="${PICOBOT_DIR}/picobot"
+            UPLOADED="${PICOBOT_DIR}/picobot_linux_amd64"
+            VERSION_FILE="${PICOBOT_DIR}/.picobot-version"
+
+            # Backup current binary
+            if [ -f "$BINARY_PATH" ]; then
+              cp "$BINARY_PATH" "${BINARY_PATH}.bak"
+            fi
+
+            mv "$UPLOADED" "$BINARY_PATH"
+            chmod +x "$BINARY_PATH"
+
+            # Verify binary runs
+            if ! "$BINARY_PATH" version &>/dev/null; then
+              echo "::error::Binary verification failed!"
+              if [ -f "${BINARY_PATH}.bak" ]; then
+                mv "${BINARY_PATH}.bak" "$BINARY_PATH"
+                echo "Rolled back to previous version"
+              fi
+              exit 1
+            fi
+
+            # Record version as branch SHA
+            COMMIT_SHA="${{ env.FORK_BRANCH }}@$(date -u +%Y%m%d)"
+            echo "$COMMIT_SHA" > "$VERSION_FILE"
+            echo "✓ picobot (MCP branch) deployed: ${COMMIT_SHA}"
+            rm -f "${BINARY_PATH}.bak"
+
+            # Reload orchestrator
+            if pm2 describe liveclaw-orchestrator &>/dev/null; then
+              pm2 reload liveclaw-orchestrator --update-env
+              echo "✓ PM2 reloaded"
+            fi
+
+            echo "=== ✅ Picobot MCP deploy complete ==="
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🔧 Picobot MCP Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source | [\`${{ env.FORK_REPO }}\`](https://github.com/${{ env.FORK_REPO }}/tree/${{ env.FORK_BRANCH }}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ env.FORK_BRANCH }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PR | [#9](https://github.com/louisho5/picobot/pull/9) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | linux/amd64 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | \`${{ job.status }}\` |" >> "$GITHUB_STEP_SUMMARY"

@@ -8,13 +8,17 @@
  * Test coverage:
  *  - GET  /health
  *  - GET  /admin/stats
+ *  - GET  /admin/revenue
+ *  - GET  /admin/users
+ *  - GET  /admin/users/:userId
+ *  - GET  /admin/events
+ *  - POST /admin/users/:userId/stop
+ *  - POST /admin/users/:userId/credit
  *  - POST /verify-turnstile
- *  - GET  /webhook/applixir-reward
- *  - POST /webhook/telegram-stars
  *  - POST /deploy-bot
  *  - POST /stop-bot
- *  - GET  /status/:userId
- *  - POST /create-invoice
+ *  - POST /register-chat
+ *  - POST /notify-low-credits
  *  - Security: CORS, Helmet headers
  *  - 404 handling
  */
@@ -22,18 +26,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 
-let app, db;
+let app, db, stmt;
 
-beforeAll(() => {
+beforeAll(async () => {
     // Import server — does NOT auto-listen in test mode
     const mod = require('../server');
+    await mod.dbReady;
     app = mod.app;
     db = mod.db;
+    stmt = mod.stmt;
 });
 
-afterAll(() => {
-    if (db && db.open) {
-        db.close();
+afterAll(async () => {
+    if (db) {
+        try { await db.close(); } catch (_) { /* already closed */ }
     }
 });
 
@@ -46,10 +52,16 @@ describe('GET /health', () => {
             .get('/health')
             .expect(200);
 
-        expect(res.body.status).toBe('ok');
+        expect(res.body.status).toMatch(/^(ok|degraded)$/); // bifrost may be unreachable in test
         expect(res.body.service).toBe('LiveClaw Orchestrator');
-        expect(res.body.version).toBe('1.0.0');
+        expect(res.body.version).toBe('2.0.0');
         expect(res.body).toHaveProperty('runningBots');
+        expect(res.body).toHaveProperty('maxBots');
+        expect(res.body).toHaveProperty('checks');
+        expect(res.body.checks).toHaveProperty('db');
+        expect(res.body).toHaveProperty('memory');
+        expect(res.body.memory).toHaveProperty('totalMB');
+        expect(res.body.memory).toHaveProperty('freeMB');
         expect(res.body).toHaveProperty('ts');
     });
 
@@ -83,9 +95,14 @@ describe('GET /admin/stats', () => {
         expect(res.body.bots).toHaveProperty('running');
         expect(res.body.bots).toHaveProperty('stopped');
         expect(res.body.bots).toHaveProperty('crashed');
+        expect(res.body.bots).toHaveProperty('maxConcurrent');
+        expect(res.body.bots).toHaveProperty('capacityPct');
         expect(res.body.credits).toHaveProperty('totalAllocated');
         expect(res.body.system).toHaveProperty('uptime');
-        expect(res.body.system.memoryMB).toHaveProperty('rss');
+        expect(res.body.system.node).toHaveProperty('rssMB');
+        expect(res.body.system.os).toHaveProperty('totalMemMB');
+        expect(res.body.system.os).toHaveProperty('loadAvg');
+        expect(res.body).toHaveProperty('botInstances');
     });
 
     it('rejects wrong admin secret', async () => {
@@ -93,6 +110,238 @@ describe('GET /admin/stats', () => {
             .get('/admin/stats')
             .set('x-admin-secret', 'wrong-secret')
             .expect(401);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /admin/revenue
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /admin/revenue', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/revenue')
+            .expect(401);
+    });
+
+    it('returns revenue data with correct admin secret', async () => {
+        const res = await request(app)
+            .get('/admin/revenue')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body).toHaveProperty('period', '30d');
+        expect(res.body).toHaveProperty('subscriptions');
+        expect(res.body.subscriptions).toHaveProperty('active');
+        expect(res.body.subscriptions).toHaveProperty('churned');
+        expect(res.body.subscriptions).toHaveProperty('mrrUsd');
+        expect(res.body).toHaveProperty('revenue');
+        expect(res.body.revenue).toHaveProperty('payments');
+        expect(res.body.revenue).toHaveProperty('totalUsd');
+        expect(res.body).toHaveProperty('dailyBreakdown');
+        expect(Array.isArray(res.body.dailyBreakdown)).toBe(true);
+    });
+
+    it('accepts period query parameter', async () => {
+        const res = await request(app)
+            .get('/admin/revenue')
+            .query({ period: '7d' })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body.period).toBe('7d');
+    });
+
+    it('defaults to 30d for unknown period', async () => {
+        const res = await request(app)
+            .get('/admin/revenue')
+            .query({ period: 'invalid' })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body.period).toBe('invalid');
+        // Should still return data (uses -30 days fallback)
+        expect(res.body).toHaveProperty('revenue');
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /admin/users
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /admin/users', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/users')
+            .expect(401);
+    });
+
+    it('returns user list with correct admin secret', async () => {
+        const res = await request(app)
+            .get('/admin/users')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body).toHaveProperty('users');
+        expect(Array.isArray(res.body.users)).toBe(true);
+        expect(res.body).toHaveProperty('total');
+        expect(res.body).toHaveProperty('limit');
+        expect(res.body).toHaveProperty('offset');
+    });
+
+    it('filters by status', async () => {
+        const res = await request(app)
+            .get('/admin/users')
+            .query({ status: 'running' })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(Array.isArray(res.body.users)).toBe(true);
+    });
+
+    it('supports pagination', async () => {
+        const res = await request(app)
+            .get('/admin/users')
+            .query({ limit: 5, offset: 0 })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body.limit).toBe(5);
+        expect(res.body.offset).toBe(0);
+    });
+
+    it('caps limit at 200', async () => {
+        const res = await request(app)
+            .get('/admin/users')
+            .query({ limit: 9999 })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body.limit).toBe(200);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /admin/users/:userId
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /admin/users/:userId', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/users/test-user')
+            .expect(401);
+    });
+
+    it('returns 404 for nonexistent user', async () => {
+        await request(app)
+            .get('/admin/users/nonexistent-user')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(404);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /admin/events
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /admin/events', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/events')
+            .expect(401);
+    });
+
+    it('returns event log with correct admin secret', async () => {
+        const res = await request(app)
+            .get('/admin/events')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body).toHaveProperty('events');
+        expect(Array.isArray(res.body.events)).toBe(true);
+        expect(res.body).toHaveProperty('total');
+        expect(res.body).toHaveProperty('eventTypes');
+        expect(Array.isArray(res.body.eventTypes)).toBe(true);
+    });
+
+    it('supports event type filtering', async () => {
+        const res = await request(app)
+            .get('/admin/events')
+            .query({ event: 'deploy_requested' })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(Array.isArray(res.body.events)).toBe(true);
+    });
+
+    it('supports user ID filtering', async () => {
+        const res = await request(app)
+            .get('/admin/events')
+            .query({ userId: 'test-user' })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(Array.isArray(res.body.events)).toBe(true);
+    });
+
+    it('caps limit at 500', async () => {
+        const res = await request(app)
+            .get('/admin/events')
+            .query({ limit: 9999 })
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body.limit).toBe(500);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /admin/users/:userId/stop
+// ═══════════════════════════════════════════════════════════════════════════
+describe('POST /admin/users/:userId/stop', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .post('/admin/users/test-user/stop')
+            .expect(401);
+    });
+
+    it('returns 404 for nonexistent user', async () => {
+        await request(app)
+            .post('/admin/users/nonexistent-user/stop')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(404);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /admin/users/:userId/credit
+// ═══════════════════════════════════════════════════════════════════════════
+describe('POST /admin/users/:userId/credit', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .post('/admin/users/test-user/credit')
+            .send({ amount: 0.05 })
+            .expect(401);
+    });
+
+    it('rejects zero amount', async () => {
+        await request(app)
+            .post('/admin/users/test-user/credit')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ amount: 0 })
+            .expect(400);
+    });
+
+    it('rejects missing amount', async () => {
+        await request(app)
+            .post('/admin/users/test-user/credit')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({})
+            .expect(400);
+    });
+
+    it('returns 404 for nonexistent user', async () => {
+        await request(app)
+            .post('/admin/users/nonexistent-user/credit')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ amount: 0.05 })
+            .expect(404);
     });
 });
 
@@ -121,65 +370,6 @@ describe('POST /verify-turnstile', () => {
             .post('/verify-turnstile')
             .send({ token: 12345 })
             .expect(400);
-    });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// GET /webhook/applixir-reward
-// ═══════════════════════════════════════════════════════════════════════════
-describe('GET /webhook/applixir-reward', () => {
-    it('rejects missing params', async () => {
-        await request(app)
-            .get('/webhook/applixir-reward')
-            .expect(400);
-    });
-
-    it('rejects wrong secretKey', async () => {
-        await request(app)
-            .get('/webhook/applixir-reward')
-            .query({
-                secretKey: 'wrong-secret',
-                userId: 'user-1',
-                gameApiKey: 'gk-1',
-                gameId: 'g-1',
-            })
-            .expect(401);
-    });
-
-    it('rejects unknown userId', async () => {
-        await request(app)
-            .get('/webhook/applixir-reward')
-            .query({
-                secretKey: 'test-applixir-secret',
-                userId: 'nonexistent-user',
-            })
-            .expect(404);
-    });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// POST /webhook/telegram-stars
-// ═══════════════════════════════════════════════════════════════════════════
-describe('POST /webhook/telegram-stars', () => {
-    it('responds 200 to pre_checkout_query', async () => {
-        await request(app)
-            .post('/webhook/telegram-stars')
-            .send({
-                pre_checkout_query: {
-                    id: 'pco-test-123',
-                    from: { id: 12345 },
-                    currency: 'XTR',
-                    total_amount: 10,
-                },
-            })
-            .expect(200);
-    });
-
-    it('handles malformed body gracefully', async () => {
-        await request(app)
-            .post('/webhook/telegram-stars')
-            .send({})
-            .expect(200);  // Webhook should always return 200 to prevent retries
     });
 });
 
@@ -271,35 +461,153 @@ describe('GET /status/:userId', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// POST /create-invoice — Validation
+// POST /register-chat
 // ═══════════════════════════════════════════════════════════════════════════
-describe('POST /create-invoice', () => {
+describe('POST /register-chat', () => {
+    const SEED_USER = 'register-chat-test-user';
+
+    beforeAll(async () => {
+        // Seed a bot for tests
+        await stmt.upsertBot({
+            user_id: SEED_USER,
+            pid: 0,
+            model: 'minimax-m2.5',
+            telegram_token: 'enc:test',
+            bifrost_vk_id: 'vk-test',
+            bifrost_vk: 'enc:vk',
+            credit_limit: 1.0,
+        });
+    });
+
     it('rejects missing userId', async () => {
         await request(app)
-            .post('/create-invoice')
-            .send({ stars: 10 })
+            .post('/register-chat')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ chatId: '12345' })
             .expect(400);
     });
 
-    it('rejects invalid stars value', async () => {
+    it('rejects missing chatId', async () => {
         await request(app)
-            .post('/create-invoice')
-            .send({ userId: 'user-1', stars: -5 })
+            .post('/register-chat')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: SEED_USER })
             .expect(400);
     });
 
-    it('rejects stars > 10000', async () => {
+    it('returns 404 for unknown user', async () => {
         await request(app)
-            .post('/create-invoice')
-            .send({ userId: 'user-1', stars: 99999 })
-            .expect(400);
-    });
-
-    it('returns 404 if no bot deployed', async () => {
-        await request(app)
-            .post('/create-invoice')
-            .send({ userId: 'no-bot-user', stars: 10 })
+            .post('/register-chat')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: 'nonexistent-user', chatId: '12345' })
             .expect(404);
+    });
+
+    it('rejects unauthenticated requests', async () => {
+        await request(app)
+            .post('/register-chat')
+            .send({ userId: SEED_USER, chatId: '12345' })
+            .expect(401);
+    });
+
+    it('registers chat ID successfully', async () => {
+        const res = await request(app)
+            .post('/register-chat')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: SEED_USER, chatId: '999888777' })
+            .expect(200);
+
+        expect(res.body.success).toBe(true);
+
+        // Verify it was persisted
+        const bot = await stmt.getBot(SEED_USER);
+        expect(bot.telegram_chat_id).toBe('999888777');
+    });
+
+    it('accepts numeric chatId', async () => {
+        const res = await request(app)
+            .post('/register-chat')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: SEED_USER, chatId: 111222333 })
+            .expect(200);
+
+        expect(res.body.success).toBe(true);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /notify-low-credits
+// ═══════════════════════════════════════════════════════════════════════════
+describe('POST /notify-low-credits', () => {
+    const SEED_USER = 'notify-test-user';
+    const NO_CHAT_USER = 'notify-no-chat-user';
+
+    beforeAll(async () => {
+        await stmt.upsertBot({
+            user_id: SEED_USER,
+            pid: 0,
+            model: 'minimax-m2.5',
+            telegram_token: 'enc:test',
+            bifrost_vk_id: 'vk-test',
+            bifrost_vk: 'enc:vk',
+            credit_limit: 0.001,
+        });
+        await stmt.updateChatId('12345678', SEED_USER);
+
+        await stmt.upsertBot({
+            user_id: NO_CHAT_USER,
+            pid: 0,
+            model: 'minimax-m2.5',
+            telegram_token: 'enc:test',
+            bifrost_vk_id: 'vk-test',
+            bifrost_vk: 'enc:vk',
+            credit_limit: 0.001,
+        });
+    });
+
+    it('rejects missing userId', async () => {
+        await request(app)
+            .post('/notify-low-credits')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({})
+            .expect(400);
+    });
+
+    it('returns 404 for unknown user', async () => {
+        await request(app)
+            .post('/notify-low-credits')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: 'nonexistent-user' })
+            .expect(404);
+    });
+
+    it('returns 400 when no chat ID registered', async () => {
+        const res = await request(app)
+            .post('/notify-low-credits')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: NO_CHAT_USER })
+            .expect(400);
+
+        expect(res.body.error).toMatch(/chat ID/i);
+    });
+
+    it('rejects unauthenticated requests', async () => {
+        await request(app)
+            .post('/notify-low-credits')
+            .send({ userId: SEED_USER })
+            .expect(401);
+    });
+
+    it('attempts to send Telegram notification (may fail in test env)', async () => {
+        // In test env, Telegram API call will fail since the bot token is fake.
+        // We validate it reaches the Telegram API call and returns 502 (not 400/404).
+        const res = await request(app)
+            .post('/notify-low-credits')
+            .set('x-admin-secret', 'test-admin-secret')
+            .send({ userId: SEED_USER });
+
+        // Should either be 200 (unlikely) or 502 (Telegram API failure with fake token)
+        expect([200, 502]).toContain(res.status);
     });
 });
 

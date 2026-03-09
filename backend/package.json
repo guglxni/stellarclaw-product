@@ -1,6 +1,6 @@
 {
   "name": "liveclaw-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "LiveClaw Orchestrator — spawns isolated picobot agents per Telegram user",
   "main": "server.js",
   "scripts": {
@@ -8,11 +8,13 @@
     "dev": "node --watch server.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/bifrost.test.js",
-    "test:integration": "vitest run tests/api.test.js",
+    "test:integration": "vitest run tests/api.test.js tests/subscription.test.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile=test-results.xml",
-    "lint": "eslint server.js bifrost.js --max-warnings 15",
+    "sync": "node sync.js",
+    "sync:watch": "node sync.js --interval",
+    "lint": "eslint server.js bifrost.js dodo.js --max-warnings 15",
     "validate": "npm run lint && npm run test"
   },
   "keywords": [
@@ -31,10 +33,13 @@
   "dependencies": {
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
+    "dodo-sync": "^0.4.0",
+    "dodopayments": "^2.23.1",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
-    "helmet": "^8.1.0"
+    "helmet": "^8.1.0",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

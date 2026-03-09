@@ -3,9 +3,24 @@ name: LiveClaw CI/CD
 on:
   push:
     branches: [main]
+    # Skip CI for pure documentation or asset changes
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'SECURITY.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'SECURITY.md'
+      - 'LICENSE'
   workflow_dispatch:
+
+# Principle of least privilege — jobs that need extra permissions opt-in below
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -90,6 +105,7 @@ jobs:
         run: |
           node -c server.js
           node -c bifrost.js
+          node -c dodo.js
         working-directory: backend
 
       - name: Check for secrets in code
@@ -161,6 +177,9 @@ jobs:
             echo "::error::Missing required secrets: DO_DROPLET_IP and DO_SSH_KEY"
             exit 1
           fi
+          if [ -z "${{ secrets.DATABASE_URL }}" ]; then
+            echo "::warning::DATABASE_URL secret not set — server will fall back to SQLite"
+          fi
 
       - name: Bootstrap fresh droplet (if needed)
         uses: appleboy/ssh-action@v1.2.0
@@ -211,21 +230,47 @@ jobs:
             # Directory structure
             mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data}
 
-            # Download picobot binary (idempotent)
-            if [ ! -x "/opt/liveclaw/backend/picobot" ] || [ ! -s "/opt/liveclaw/backend/picobot" ]; then
-              cd /opt/liveclaw/backend
-              wget -qO picobot.tar.gz \
-                https://github.com/louisho5/picobot/releases/latest/download/picobot-linux-amd64.tar.gz 2>/dev/null || true
-              if [ -s picobot.tar.gz ]; then
-                tar -xf picobot.tar.gz 2>/dev/null || true
-                rm -f picobot.tar.gz
+            # Download/update picobot binary (always latest)
+            cd /opt/liveclaw/backend
+            CURRENT_VER=""
+            if [ -f ".picobot-version" ]; then
+              CURRENT_VER=$(cat .picobot-version 2>/dev/null || echo "")
+            fi
+            LATEST_VER=$(curl -sf https://api.github.com/repos/louisho5/picobot/releases/latest | grep -o '"tag_name":\s*"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+
+            if [ -n "$LATEST_VER" ] && [ "$CURRENT_VER" != "$LATEST_VER" ]; then
+              echo "  Updating picobot: ${CURRENT_VER:-none} → ${LATEST_VER}"
+              curl -fSL --retry 3 -o picobot.tmp \
+                "https://github.com/louisho5/picobot/releases/download/${LATEST_VER}/picobot_linux_amd64" 2>/dev/null
+              if [ -s picobot.tmp ]; then
+                mv picobot.tmp picobot
+                chmod +x picobot
+                echo "$LATEST_VER" > .picobot-version
+                echo "  picobot updated to ${LATEST_VER}"
+              else
+                rm -f picobot.tmp
+                echo "  Download failed — keeping existing"
               fi
-              [ -f picobot ] || touch picobot
+            elif [ ! -x "/opt/liveclaw/backend/picobot" ] || [ ! -s "/opt/liveclaw/backend/picobot" ]; then
+              curl -fSL --retry 3 -o picobot \
+                "https://github.com/louisho5/picobot/releases/latest/download/picobot_linux_amd64" 2>/dev/null || touch picobot
               chmod +x picobot
+              [ -n "$LATEST_VER" ] && echo "$LATEST_VER" > .picobot-version
               echo "  picobot ready"
+            else
+              echo "  picobot up-to-date: ${CURRENT_VER}"
             fi
 
             echo "=== Bootstrap complete! ==="
+
+      - name: Generate frontend config.js from secrets
+        run: |
+          sed \
+            -e "s|{{LIVECLAW_API_BASE}}||g" \
+            -e "s|{{LIVECLAW_GOOGLE_CLIENT_ID}}|${{ secrets.GOOGLE_CLIENT_ID }}|g" \
+            -e "s|{{LIVECLAW_TURNSTILE_SITE_KEY}}|${{ secrets.LIVECLAW_TURNSTILE_SITE_KEY }}|g" \
+            liveclaw-web/config.js.template > liveclaw-web/www/config.js
+          echo "Generated config.js (Client ID length: $(grep -o 'GOOGLE_CLIENT_ID.*' liveclaw-web/www/config.js | wc -c) chars)"
 
       - name: Upload code via SCP
         uses: appleboy/scp-action@v0.1.7
@@ -248,7 +293,11 @@ jobs:
           script: |
             set -euo pipefail
 
-            echo "=== 1/4 Install backend dependencies ==="
+            echo "=== 1/5 Sync frontend files ==="
+            rsync -a --delete /opt/liveclaw/liveclaw-web/www/ /opt/liveclaw/frontend/
+            echo "  Frontend synced to /opt/liveclaw/frontend/"
+
+            echo "=== 2/5 Install backend dependencies ==="
             cd /opt/liveclaw/backend
             npm install --omit=dev --loglevel warn
 
@@ -257,32 +306,42 @@ jobs:
               cat > .env << 'ENVEOF'
             PORT=3000
             NODE_ENV=production
+            DOMAIN_NAME=https://liveclaw.xyz
             ALLOWED_ORIGINS=https://liveclaw.xyz,https://www.liveclaw.xyz
+            TOKEN_ENCRYPTION_KEY=CHANGE_ME_64_hex_chars
+            ADMIN_SECRET=CHANGE_ME_admin_secret
+            MINI_APP_SECRET=CHANGE_ME_64_hex_chars
             BIFROST_GATEWAY_URL=http://localhost:8080
-            MINIMAX_API_KEY=your_minimax_key
             PICOBOT_PATH=/opt/liveclaw/backend/picobot
             DB_PATH=/opt/liveclaw/backend/liveclaw.db
             BOTS_DIR=/opt/liveclaw/bots
+            WATCHDOG_INTERVAL_MS=30000
+            MAX_CONCURRENT_BOTS=200
             TURNSTILE_SECRET_KEY=your_turnstile_secret
-            APPLIXIR_SECRET_KEY=your_applixir_secret
-            TELEGRAM_MASTER_BOT_TOKEN=your_telegram_bot_token
+            DODO_API_KEY=your_dodo_api_key
+            DODO_WEBHOOK_SECRET=your_dodo_webhook_secret
+            DODO_PRODUCT_ID=your_dodo_product_id
+            OPENROUTER_API_KEY=your_openrouter_api_key
+            # TELEGRAM_MASTER_BOT_TOKEN=  # optional - for low-credit push notifications
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            MCP_SERVERS_CONFIG=
             ENVEOF
               echo "  ⚠️  Created .env with placeholders — SSH in and edit with real keys!"
             fi
 
-            echo "=== 2/4 Reload orchestrator (zero-downtime) ==="
+            echo "=== 3/5 Reload orchestrator (zero-downtime) ==="
             if pm2 describe liveclaw-orchestrator &>/dev/null; then
               pm2 reload liveclaw-orchestrator --update-env
             else
-              pm2 start server.js --name "liveclaw-orchestrator" --max-memory-restart 256M
+              pm2 start server.js --name "liveclaw-orchestrator" --max-memory-restart 512M
             fi
             pm2 save
             pm2 startup 2>/dev/null | tail -n 1 | bash 2>/dev/null || true
 
-            echo "=== 3/4 Nginx ==="
+            echo "=== 4/5 Nginx ==="
             nginx -t && systemctl reload nginx || echo "Nginx config not ready yet — skipping"
 
-            echo "=== 4/4 Health check ==="
+            echo "=== 5/5 Health check ==="
             sleep 3
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
             if [ "$HTTP_CODE" = "200" ]; then
@@ -293,3 +352,20 @@ jobs:
             fi
 
             echo "=== ✅ Deploy complete ==="
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          SHA="${{ github.sha }}"
+          REF="${{ github.ref_name }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          echo "## 🚀 Deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | $([ "$STATUS" = "success" ] && echo '✅ Success' || echo '❌ Failed') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${REF}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | [\`${SHA:0:7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${SHA}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Run | [View logs](${RUN_URL}) |" >> "$GITHUB_STEP_SUMMARY"

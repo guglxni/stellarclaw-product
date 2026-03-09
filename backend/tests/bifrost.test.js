@@ -52,7 +52,7 @@ describe('bifrost.js', () => {
             const body = JSON.parse(options.body);
             expect(body.name).toBe('liveclaw-user-abc');
             expect(body.budget.max_limit).toBe(0.05);
-            expect(body.provider_configs[0].provider).toBe('openai');
+            expect(body.provider_configs[0].provider).toBe('openrouter');
             expect(body.is_active).toBe(true);
             expect(result).toEqual({ id: 'vk-123', key: 'sk-bf-test' });
         });
@@ -75,7 +75,7 @@ describe('bifrost.js', () => {
 
             await bifrost.createVirtualKey('user1');
             const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-            expect(body.provider_configs[0].allowed_models).toContain('minimax-m2.5');
+            expect(body.provider_configs[0].allowed_models).toContain('minimax/minimax-m1');
         });
     });
 
@@ -180,20 +180,20 @@ describe('bifrost.js', () => {
     describe('getProviderConfig()', () => {
         it('returns minimax config for minimax-m2.5', () => {
             const cfg = bifrost.getProviderConfig('minimax-m2.5');
-            expect(cfg.provider).toBe('openai');
-            expect(cfg.allowed_models).toContain('minimax-m2.5');
+            expect(cfg.provider).toBe('openrouter');
+            expect(cfg.allowed_models).toContain('minimax/minimax-m1');
         });
 
         it('returns kimi config for kimi-k2.5', () => {
             const cfg = bifrost.getProviderConfig('kimi-k2.5');
-            expect(cfg.provider).toBe('openai');
-            expect(cfg.allowed_models).toContain('kimi-k2.5');
+            expect(cfg.provider).toBe('openrouter');
+            expect(cfg.allowed_models).toContain('moonshotai/kimi-k2');
         });
 
         it('falls back to minimax for unknown model', () => {
             const cfg = bifrost.getProviderConfig('unknown-model');
-            expect(cfg.provider).toBe('openai');
-            expect(cfg.allowed_models).toContain('minimax-m2.5');
+            expect(cfg.provider).toBe('openrouter');
+            expect(cfg.allowed_models).toContain('minimax/minimax-m1');
         });
     });
 });

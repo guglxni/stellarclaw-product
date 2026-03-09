@@ -1,117 +1,190 @@
-# 🦀 LiveClaw
+# LiveClaw
 
-**Deploy your personal AI agent on Telegram in under 1 minute — for free.**
+> Deploy your personal AI agent on Telegram in 60 seconds — $9.99/mo.
 
-LiveClaw is a freemium, ad-supported AI agent platform native to Telegram. Each user gets their own isolated AI agent powered by the lightweight [picobot](https://github.com/louisho5/picobot) engine, managed by a Node.js orchestrator with financial governance via [Bifrost AI Gateway](https://github.com/maximhq/bifrost).
+LiveClaw is a subscription-based AI agent platform. Each subscriber gets an isolated [picobot](https://github.com/louisho5/picobot) agent instance managed by a Node.js orchestrator with financial governance via [Bifrost AI Gateway](https://github.com/maximhq/bifrost).
+
+**Channels:** Telegram (active) · Discord (planned) · WhatsApp (planned)
+
+---
 
 ## Architecture
 
 ```
-┌──────────────┐     ┌──────────────────────┐     ┌───────────────┐
-│   Frontend   │────▶│  Nginx (SSL/Proxy)   │────▶│  Node.js API  │
-│  Static HTML │     │  :443 → :3000        │     │  (Express)    │
-└──────────────┘     └──────────────────────┘     └───────┬───────┘
-                                                          │
-                    ┌─────────────────────────────────────┤
-                    │                                     │
-              ┌─────▼─────┐   ┌──────────┐   ┌──────────▼──────────┐
-              │  SQLite    │   │ Bifrost  │   │  picobot (Go)       │
-              │  (state)   │   │ (budget) │   │  per-user process   │
-              └────────────┘   └──────────┘   └─────────────────────┘
+                         ┌─────────────────────────────────────┐
+                         │        Frontend Droplet             │
+  Users ────────────────▶│  liveclaw.xyz  (Nginx, static)      │
+                         │  $4/mo · s-1vcpu-512mb              │
+                         └────────────┬────────────────────────┘
+                                      │ HTTPS
+                                      ▼
+                         ┌─────────────────────────────────────┐
+                         │        Backend Droplet              │
+                         │  api.liveclaw.xyz  (Nginx → Node)   │
+                         │  $12/mo · s-2vcpu-2gb               │
+                         │                                     │
+                         │  ┌─────────┐    ┌──────────┐       │
+                         │  │ Express  │    │ Bifrost  │       │
+                         │  │ :3000    │    │ (Docker) │       │
+                         │  └────┬─────┘   └──────────┘       │
+                         │       │                             │
+                         │  ┌────▼─────┐   ┌───────────────┐  │
+                         │  │ SQLite   │   │ picobot ×N    │  │
+                         │  │ (WAL)    │   │ (1 per user)  │  │
+                         │  └──────────┘   └───────────────┘  │
+                         └─────────────────────────────────────┘
 ```
 
 ## Tech Stack
 
-| Layer       | Technology                              |
-|-------------|-----------------------------------------|
-| Frontend    | Static HTML/CSS/JS (cloned & rebranded) |
-| Backend     | Node.js 22 + Express 5                  |
-| AI Engine   | [picobot](https://github.com/louisho5/picobot) (Go binary) |
-| AI Gateway  | [Bifrost](https://github.com/maximhq/bifrost) (Go, <100µs overhead) |
-| LLM         | MiniMax M2.5 via Bifrost gateway        |
-| Database    | SQLite (WAL mode, better-sqlite3)       |
-| Hosting     | DigitalOcean ($12/mo droplet)           |
-| SSL         | Let's Encrypt via Certbot               |
-| CI/CD       | GitHub Actions → SSH deploy             |
-| Ads         | AppLixir Rewarded Video (S2S)           |
-| CAPTCHA     | Cloudflare Turnstile (Invisible)        |
-| Payments    | Telegram Stars                          |
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Static HTML/CSS/JS · Nginx |
+| Backend | Node.js 22 · Express 5 |
+| AI Engine | [picobot](https://github.com/louisho5/picobot) (Go binary) |
+| AI Gateway | [Bifrost](https://github.com/maximhq/bifrost) (<100 µs overhead) |
+| LLM | MiniMax M2.5 via Bifrost |
+| Database | SQLite (WAL mode, better-sqlite3) |
+| Payments | Dodo Payments (MoR — subscriptions) |
+| Auth | Google OAuth 2.0 (JWT) |
+| CAPTCHA | Cloudflare Turnstile (Invisible) |
+| Hosting | DigitalOcean (2 droplets, $16/mo total) |
+| CI/CD | GitHub Actions (test → lint → audit → deploy) |
+| SSL | Let's Encrypt via Certbot |
 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/guglxni/liveclaw.git
-cd liveclaw
+git clone https://github.com/guglxni/liveclaw.git && cd liveclaw
 
 # Backend
 cd backend
-cp .env.example .env   # fill in your API keys
+cp .env.example .env     # fill in CHANGE_ME values (see CREDENTIALS.md)
 npm install
-npm run dev             # starts on :3000 with --watch
+npm run dev               # starts on :3000 with --watch
 
 # Frontend (separate terminal)
-cd liveclaw-web/www.simpleclaw.com
+cd liveclaw-web/www
 python3 -m http.server 8080
 ```
 
 ## Production Deployment
 
 ```bash
-# 1. Set up .env with real keys
-cp .env.example .env && nano .env
+# 1. Configure environment
+cp backend/.env.example backend/.env && nano backend/.env
+cp liveclaw-web/.env.example liveclaw-web/.env && nano liveclaw-web/.env
 
-# 2. Deploy to DigitalOcean
-chmod +x deploy.sh && ./deploy.sh
+# 2. Deploy
+./scripts/deploy-backend.sh          # provisions + deploys backend
+./scripts/deploy-frontend.sh         # provisions + deploys frontend
 
-# 3. Register Telegram webhook
-node scripts/set-webhook.js
+# Quick code-only updates (no full provision):
+./scripts/deploy-backend.sh --code-only
+./scripts/deploy-frontend.sh --code-only
 ```
 
-See [deploy.sh](deploy.sh) for the full provisioning script.
+See [CREDENTIALS.md](CREDENTIALS.md) for step-by-step key setup.
 
 ## Project Structure
 
 ```
 liveclaw/
 ├── backend/
-│   ├── server.js          # Express orchestrator (main entry)
-│   ├── bifrost.js          # Bifrost AI Gateway governance
-│   ├── package.json
-│   └── .env.example
+│   ├── server.js            # Express orchestrator (~1700 lines)
+│   ├── bifrost.js           # Bifrost AI Gateway client
+│   ├── dodo.js              # Dodo Payments subscription module
+│   ├── .env.example         # Backend env vars (canonical)
+│   ├── eslint.config.mjs    # ESLint flat config
+│   ├── vitest.config.js     # Vitest test config
+│   └── tests/
+│       ├── api.test.js      # 85 API integration tests
+│       ├── bifrost.test.js  # 19 Bifrost unit tests
+│       ├── subscription.test.js  # 5 subscription tests
+│       └── setup.js         # Test env bootstrap
 ├── liveclaw-web/
-│   └── www.simpleclaw.com/ # Static frontend
-│       ├── index.html
-│       ├── liveclaw.js     # Frontend ↔ backend integration
-│       └── mini-app/
-│           └── recharge/   # Telegram Mini App (ad recharge)
+│   ├── .env.example         # Frontend public keys
+│   ├── config.js.template   # Runtime config injection
+│   └── www/                 # Static files (Nginx)
+│       ├── index.html       # Landing page
+│       ├── liveclaw.js      # Frontend JS
+│       └── admin/           # Admin dashboard SPA
 ├── scripts/
-│   └── set-webhook.js      # Telegram webhook registration
-├── .github/
-│   └── workflows/
-│       └── main.yml        # CI/CD pipeline
-├── deploy.sh               # DigitalOcean provisioning
-├── .env.example             # All env vars documented
-└── .gitignore
+│   ├── deploy-backend.sh    # Backend droplet provisioning
+│   ├── deploy-frontend.sh   # Frontend droplet provisioning
+│   ├── deploy-single-droplet.sh  # Legacy single-droplet deploy
+│   ├── update-picobot.sh    # Picobot binary auto-updater
+│   ├── keychain-secrets.sh  # macOS Keychain secret management
+│   └── set-webhook.js       # Telegram webhook registration
+├── .github/workflows/
+│   ├── main.yml             # CI/CD pipeline (test → deploy)
+│   └── picobot-update.yml   # Automated picobot version updates
+├── docs/
+│   ├── LAUNCH_PLAN.md       # Pricing, unit economics, revenue model
+│   ├── CHECKPOINT.md        # Development progress tracker
+│   └── security-review.md   # Security audit findings
+├── CREDENTIALS.md           # Credentials acquisition guide
+├── LICENSE                  # Proprietary
+└── README.md                # This file
 ```
 
 ## API Endpoints
 
-| Method | Path                           | Description                         |
-|--------|--------------------------------|-------------------------------------|
-| POST   | `/deploy-bot`                  | Spawn a picobot agent for a user    |
-| POST   | `/stop-bot`                    | Stop a user's agent                 |
-| POST   | `/create-invoice`              | Create Telegram Stars payment link  |
-| GET    | `/status/:userId`              | Check agent status & credits        |
-| GET    | `/health`                      | Health check (DB + running bots)    |
-| GET    | `/admin/stats`                 | Operational dashboard (admin)       |
-| POST   | `/verify-turnstile`            | Cloudflare Turnstile verification   |
-| GET    | `/webhook/applixir-reward`     | AppLixir S2S ad reward callback     |
-| POST   | `/webhook/telegram-stars`      | Telegram Stars payment webhook      |
+### Core
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/deploy-bot` | Google JWT | Spawn a picobot agent |
+| `POST` | `/stop-bot` | Google JWT | Stop a user's agent |
+| `GET` | `/status/:userId` | — | Check agent status |
+| `GET` | `/health` | — | Health check |
+| `POST` | `/verify-turnstile` | — | Cloudflare Turnstile verification |
+| `GET` | `/pricing` | — | Public pricing info |
+
+### Subscriptions (Dodo Payments)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/create-checkout-session` | Google JWT | Create checkout session |
+| `POST` | `/create-portal-session` | Google JWT | Customer portal link |
+| `GET` | `/subscription/:userId` | Google JWT | Subscription status |
+| `POST` | `/webhook/dodo` | Dodo signature | Payment webhook handler |
+| `POST` | `/referral/generate` | Google JWT | Generate referral code |
+| `POST` | `/referral/apply` | Google JWT | Apply referral code |
+
+### Internal (requires `X-Admin-Secret`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/register-chat` | Register Telegram chat ID |
+| `POST` | `/notify-low-credits` | Send low-credit notification |
+
+### Admin (requires `X-Admin-Secret`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/stats` | Dashboard metrics |
+| `GET` | `/admin/revenue` | Revenue analytics |
+| `GET` | `/admin/users` | User listing (paginated) |
+| `GET` | `/admin/users/:userId` | User detail |
+| `GET` | `/admin/events` | Audit event log |
+| `POST` | `/admin/users/:userId/stop` | Force-stop a bot |
+| `POST` | `/admin/users/:userId/credit` | Adjust credits |
+
+## Testing
+
+```bash
+cd backend
+npm test              # 109 tests in ~1s (Vitest + Supertest)
+npm run lint          # ESLint
+npm audit             # Dependency vulnerability scan
+```
 
 ## Environment Variables
 
-See [`.env.example`](.env.example) for the full list with descriptions.
+- **Backend:** [`backend/.env.example`](backend/.env.example)
+- **Frontend:** [`liveclaw-web/.env.example`](liveclaw-web/.env.example)
+- **Credentials guide:** [`CREDENTIALS.md`](CREDENTIALS.md)
 
 ## License
 

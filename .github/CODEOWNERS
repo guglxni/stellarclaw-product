@@ -1,0 +1,22 @@
+# CODEOWNERS – maps file patterns to required reviewers.
+# The last matching rule wins; GitHub enforces a review from each
+# matching owner before a PR can merge (when branch protection is on).
+
+# Default: repo owner reviews everything
+*                                   @guglxni
+
+# Deployment config — extra caution
+deploy.sh                           @guglxni
+scripts/deploy-*.sh                 @guglxni
+.github/workflows/                  @guglxni
+
+# Security-sensitive backend code
+backend/server.js                   @guglxni
+backend/dodo.js                     @guglxni
+backend/bifrost.js                  @guglxni
+
+# Frontend
+liveclaw-web/                       @guglxni
+
+# Credentials reference
+CREDENTIALS.md                      @guglxni

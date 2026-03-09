@@ -16,7 +16,15 @@
 
 'use strict';
 
-require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env') });
+// Load env from backend/.env (canonical location), fall back to root .env
+const path = require('path');
+const fs   = require('fs');
+
+const backendEnv = path.resolve(__dirname, '..', 'backend', '.env');
+const rootEnv    = path.resolve(__dirname, '..', '.env');
+const envPath    = fs.existsSync(backendEnv) ? backendEnv : rootEnv;
+
+require('dotenv').config({ path: envPath });
 
 const BOT_TOKEN = process.env.TELEGRAM_MASTER_BOT_TOKEN;
 const DOMAIN = process.env.DOMAIN_NAME;
@@ -57,7 +65,7 @@ async function main() {
             url: webhookUrl,
             allowed_updates: ['message', 'pre_checkout_query'],
             drop_pending_updates: true,
-            secret_token: process.env.APPLIXIR_SECRET_KEY || undefined, // optional extra auth
+            secret_token: process.env.ADMIN_SECRET || undefined, // optional extra auth
         }),
     });
 

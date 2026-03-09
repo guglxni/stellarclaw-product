@@ -183,19 +183,22 @@ function getGatewayUrl() {
 
 /**
  * Maps LiveClaw model names to Bifrost provider_configs.
- * Bifrost uses the OpenAI-compatible interface for all providers.
+ * All models are routed through OpenRouter (OpenAI-compatible interface).
+ * The 'openrouter' provider must be configured in Bifrost UI with:
+ *   Base URL: https://openrouter.ai/api/v1
+ *   API Key:  $OPENROUTER_API_KEY from .env
  */
 function getProviderConfig(model) {
     const providers = {
         'minimax-m2.5': {
-            provider: 'openai', // MiniMax is OpenAI-compatible
+            provider: 'openrouter',
             weight: 1.0,
-            allowed_models: ['minimax-m2.5', 'MiniMax-Text-01'],
+            allowed_models: ['minimax/minimax-m1'],
         },
         'kimi-k2.5': {
-            provider: 'openai', // Kimi is OpenAI-compatible
+            provider: 'openrouter',
             weight: 1.0,
-            allowed_models: ['kimi-k2.5', 'moonshot-v1-8k'],
+            allowed_models: ['moonshotai/kimi-k2'],
         },
     };
 

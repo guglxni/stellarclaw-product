@@ -6,8 +6,8 @@
 # downloads the picobot binary, and configures Nginx with SSL.
 #
 # Optimized for $200 startup credits:
-#   s-2vcpu-2gb = $12/mo → ~16 months of runway
-#   Each picobot process uses ~10-20MB idle → 80-150 concurrent bots/instance
+#   s-2vcpu-8gb-160gb-intel = $48/mo → ~3.2 months on $200 credit
+#   Each picobot process uses ~10-20MB idle → 200 concurrent bots/instance (8 GB RAM)
 #
 # Usage:
 #   chmod +x deploy.sh
@@ -19,11 +19,11 @@ set -euo pipefail
 # ─── Configuration ───────────────────────────────────────────────────────────
 DOMAIN="liveclaw.xyz"
 ADMIN_EMAIL="admin@${DOMAIN}"
-FRONTEND_DIR="./liveclaw-web/www.simpleclaw.com"
+FRONTEND_DIR="./liveclaw-web/www"
 BACKEND_DIR="./backend"
 DROPLET_NAME="liveclaw-prod"
 REGION="nyc3"
-SIZE="s-2vcpu-2gb"
+SIZE="s-2vcpu-8gb-160gb-intel"
 IMAGE="ubuntu-24-04-x64"
 SSH_KEY_NAME="liveclaw-deploy-key"
 REMOTE_BASE="/opt/liveclaw"
@@ -88,7 +88,7 @@ DROPLET_IP=$(doctl compute droplet get "$DROPLET_NAME" --format PublicIPv4 --no-
 info "Droplet IP: ${DROPLET_IP}"
 
 # Wait for SSH availability
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -i ~/.ssh/liveclaw_deploy"
 
 attempt=0
 while ! ssh $SSH_OPTS root@"$DROPLET_IP" "echo ok" &>/dev/null; do
@@ -160,26 +160,42 @@ fi
 # Directories
 mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data}
 
-# Download picobot binary
+# Download/update picobot binary (always fetch latest)
 cd /opt/liveclaw/backend
-if [ ! -f "picobot" ]; then
-    echo "  Downloading picobot..."
-    wget -qO picobot.tar.gz \
-        https://github.com/louisho5/picobot/releases/latest/download/picobot-linux-amd64.tar.gz 2>/dev/null || true
-    if [ -s picobot.tar.gz ]; then
-        tar -xf picobot.tar.gz 2>/dev/null || true
-        rm -f picobot.tar.gz
+CURRENT_VER=""
+if [ -f ".picobot-version" ]; then
+    CURRENT_VER=$(cat .picobot-version 2>/dev/null || echo "")
+fi
+LATEST_VER=$(curl -sf https://api.github.com/repos/louisho5/picobot/releases/latest | grep -o '"tag_name":\s*"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+
+if [ -n "$LATEST_VER" ] && [ "$CURRENT_VER" != "$LATEST_VER" ]; then
+    echo "  Updating picobot: ${CURRENT_VER:-none} → ${LATEST_VER}"
+    curl -fSL --retry 3 -o picobot.tmp \
+        "https://github.com/louisho5/picobot/releases/download/${LATEST_VER}/picobot_linux_amd64" 2>/dev/null
+    if [ -s picobot.tmp ]; then
+        mv picobot.tmp picobot
+        chmod +x picobot
+        echo "$LATEST_VER" > .picobot-version
+        echo "  picobot ${LATEST_VER}: $(ls -lh picobot | awk '{print $5}')"
+    else
+        rm -f picobot.tmp
+        echo "  ⚠️  Download failed — keeping existing binary"
     fi
-    # Fallback: create placeholder so PM2 doesn't fail
-    [ -f picobot ] || touch picobot
+elif [ ! -f picobot ]; then
+    echo "  Downloading picobot (first install)..."
+    curl -fSL --retry 3 -o picobot \
+        "https://github.com/louisho5/picobot/releases/latest/download/picobot_linux_amd64" 2>/dev/null || touch picobot
     chmod +x picobot
+    [ -n "$LATEST_VER" ] && echo "$LATEST_VER" > .picobot-version
     echo "  picobot ready: $(ls -lh picobot | awk '{print $5}')"
+else
+    echo "  picobot up-to-date: ${CURRENT_VER}"
 fi
 SETUP_EOF
 
 # ─── Upload Code ─────────────────────────────────────────────────────────────
 info "Uploading backend..."
-rsync -az --delete \
+rsync -az --delete -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/liveclaw_deploy" \
     --exclude 'node_modules' \
     --exclude '.env' \
     --exclude 'liveclaw.db' \
@@ -188,7 +204,7 @@ rsync -az --delete \
 
 if [ -d "$FRONTEND_DIR" ]; then
     info "Uploading frontend..."
-    rsync -az --delete "$FRONTEND_DIR/" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/
+    rsync -az --delete -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/liveclaw_deploy" "$FRONTEND_DIR/" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/
 else
     warn "Frontend dir '${FRONTEND_DIR}' not found. Skipping."
 fi
@@ -208,15 +224,21 @@ if [ ! -f ".env" ]; then
     cp .env.example .env 2>/dev/null || cat > .env << 'ENVEOF'
 PORT=3000
 NODE_ENV=production
+DOMAIN_NAME=https://liveclaw.xyz
 ALLOWED_ORIGINS=https://liveclaw.xyz,https://www.liveclaw.xyz
 BIFROST_GATEWAY_URL=http://localhost:8080
-MINIMAX_API_KEY=your_minimax_key
 PICOBOT_PATH=/opt/liveclaw/backend/picobot
 DB_PATH=/opt/liveclaw/backend/liveclaw.db
 BOTS_DIR=/opt/liveclaw/bots
+MAX_CONCURRENT_BOTS=200
 TURNSTILE_SECRET_KEY=your_turnstile_secret
-APPLIXIR_SECRET_KEY=your_applixir_secret
-TELEGRAM_MASTER_BOT_TOKEN=your_telegram_bot_token
+DODO_API_KEY=your_dodo_api_key
+DODO_WEBHOOK_SECRET=your_dodo_webhook_secret
+DODO_PRODUCT_ID=your_dodo_product_id
+OPENROUTER_API_KEY=your_openrouter_api_key
+# TELEGRAM_MASTER_BOT_TOKEN=  # optional
+# DATABASE_URL=postgresql://...  # set to managed PG connection string
+MCP_SERVERS_CONFIG=
 ENVEOF
     echo "  ⚠️  Created .env with placeholders — edit with real keys!"
 fi
@@ -226,7 +248,7 @@ if pm2 describe liveclaw-orchestrator &>/dev/null; then
     pm2 reload liveclaw-orchestrator
     echo "  PM2: reloaded"
 else
-    pm2 start server.js --name "liveclaw-orchestrator" --max-memory-restart 256M
+    pm2 start server.js --name "liveclaw-orchestrator" --max-memory-restart 512M
     echo "  PM2: started"
 fi
 
@@ -258,42 +280,50 @@ server {
     gzip_types text/plain text/css application/json application/javascript text/xml;
     gzip_min_length 256;
 
-    # Static assets caching
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
+    # Next.js static chunks — very long-lived cache
+    location /_next/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files \$uri =404;
+    }
+
+    # Binary static assets
+    location ~* \.(png|jpg|jpeg|gif|ico|svg|woff2?|mp4|webp)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
+        try_files \$uri =404;
     }
 
-    location / {
-        try_files \\\$uri \\\$uri/ /index.html;
+    # Admin panel SPA
+    location /admin {
+        try_files \$uri \$uri/ /admin/index.html;
     }
 
-    # API proxy → Node.js orchestrator
-    location /api/ {
-        proxy_pass http://127.0.0.1:3000/;
-        proxy_http_version 1.1;
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
-        proxy_set_header X-Request-Id \\\$request_id;
-        proxy_read_timeout 30s;
-        proxy_connect_timeout 10s;
-    }
-
-    # Webhook proxy
+    # Webhooks → Node.js (must come before location /)
     location /webhook/ {
         proxy_pass http://127.0.0.1:3000/webhook/;
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     }
 
-    # Turnstile proxy
-    location = /verify-turnstile {
-        proxy_pass http://127.0.0.1:3000/verify-turnstile;
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
+    # Root: try static files first, then fall through to Node.js backend.
+    # This routes all API calls (/health, /pricing, /redeem-beta, etc.) to
+    # the Node.js orchestrator without needing an /api/ prefix.
+    location / {
+        try_files \$uri \$uri/ @backend;
+    }
+
+    location @backend {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Request-Id \$request_id;
+        proxy_read_timeout 30s;
+        proxy_connect_timeout 10s;
     }
 }
 CONF
@@ -342,7 +372,7 @@ SSL_EOF
 
 # ─── Upload & Run Webhook Setup Script ───────────────────────────────────────
 info "Uploading utility scripts..."
-rsync -az ./scripts/ root@"$DROPLET_IP":${REMOTE_BASE}/scripts/
+rsync -az -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/liveclaw_deploy" ./scripts/ root@"$DROPLET_IP":${REMOTE_BASE}/scripts/
 
 info "Setting Telegram webhook..."
 ssh $SSH_OPTS root@"$DROPLET_IP" << 'WEBHOOK_EOF'

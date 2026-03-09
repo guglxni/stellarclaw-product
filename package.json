@@ -1,23 +1,28 @@
 {
     "name": "liveclaw",
-    "version": "0.1.0",
-    "description": "LiveClaw — Freemium ad-supported AI agent platform native to Telegram",
+    "version": "2.0.0",
+    "description": "LiveClaw — Subscription AI agent platform for Telegram",
     "private": true,
     "scripts": {
-        "frontend": "python3 -m http.server 3000 --directory liveclaw-web/www.simpleclaw.com",
-        "backend": "node backend/server.js",
-        "dev": "concurrently \"npm run frontend\" \"npm run backend\"",
-        "deploy": "bash deploy.sh",
-        "refactor": "python3 refactor_frontend.py"
+        "frontend": "python3 -m http.server 8080 --directory liveclaw-web/www",
+        "backend": "cd backend && npm run dev",
+        "test": "cd backend && npm test",
+        "lint": "cd backend && npm run lint",
+        "deploy:backend": "bash scripts/deploy-backend.sh",
+        "deploy:frontend": "bash scripts/deploy-frontend.sh",
+        "deploy:backend:code": "bash scripts/deploy-backend.sh --code-only",
+        "deploy:frontend:code": "bash scripts/deploy-frontend.sh --code-only",
+        "update:picobot": "bash scripts/update-picobot.sh"
     },
     "keywords": [
         "liveclaw",
-        "openclaw",
         "telegram",
         "ai-agent",
+        "picobot",
         "minimax",
-        "bifrost"
+        "bifrost",
+        "subscription"
     ],
-    "author": "LiveClaw",
+    "author": "Aaryan Guglani",
     "license": "UNLICENSED"
 }

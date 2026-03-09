@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveClaw Admin Dashboard</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #09090b;
+            --bg-card: rgba(255,255,255,0.03);
+            --bg-card-hover: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.08);
+            --text: #e4e4e7;
+            --text-muted: #71717a;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --emerald: #34d399;
+            --emerald-bg: rgba(52,211,153,0.1);
+            --amber: #fbbf24;
+            --amber-bg: rgba(251,191,36,0.1);
+            --red: #f87171;
+            --red-bg: rgba(248,113,113,0.1);
+            --blue: #60a5fa;
+            --blue-bg: rgba(96,165,250,0.1);
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Auth Gate ───────────────────────────────────────── */
+        #auth-gate {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 1.5rem;
+        }
+
+        #auth-gate .auth-box {
+            width: 100%;
+            max-width: 380px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+            text-align: center;
+        }
+
+        #auth-gate h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        #auth-gate input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text);
+            font-size: 0.875rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        #auth-gate input:focus {
+            border-color: var(--accent);
+        }
+
+        #auth-gate button {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: var(--radius-sm);
+            border: none;
+            background: var(--accent);
+            color: white;
+            font-weight: 600;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #auth-gate button:hover { background: var(--accent-hover); }
+
+        #auth-gate .error-msg {
+            color: var(--red);
+            font-size: 0.75rem;
+            display: none;
+        }
+
+        /* ── Dashboard Layout ────────────────────────────────── */
+        #dashboard { display: none; }
+        #dashboard.visible { display: block; }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            background: var(--bg);
+            z-index: 50;
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .topbar-logo {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .topbar-badge {
+            font-size: 0.625rem;
+            background: var(--accent);
+            color: white;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .topbar-btn {
+            padding: 0.4rem 0.75rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .topbar-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--text);
+        }
+
+        .topbar-time {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ── Tabs ────────────────────────────────────────────── */
+        .tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            padding: 0 1.5rem;
+            overflow-x: auto;
+        }
+
+        .tab {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+            white-space: nowrap;
+            background: none;
+            border-top: none;
+            border-left: none;
+            border-right: none;
+        }
+
+        .tab:hover { color: var(--text); }
+        .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+        /* ── Main Content ──────────────────────────────────── */
+        .main-content {
+            padding: 1.5rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        /* ── Cards ────────────────────────────────────────────── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 500;
+        }
+
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+        }
+
+        .stat-sub {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .stat-value.emerald { color: var(--emerald); }
+        .stat-value.amber { color: var(--amber); }
+        .stat-value.red { color: var(--red); }
+        .stat-value.blue { color: var(--blue); }
+
+        /* ── Section ─────────────────────────────────────────── */
+        .section {
+            margin-bottom: 2rem;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+
+        .section-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        .section-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .period-btn {
+            padding: 0.3rem 0.6rem;
+            font-size: 0.6875rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .period-btn:hover { background: var(--bg-card-hover); color: var(--text); }
+        .period-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+        /* ── Table ────────────────────────────────────────────── */
+        .table-wrap {
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8125rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+
+        td {
+            padding: 0.625rem 1rem;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+            color: var(--text);
+        }
+
+        tr:last-child td { border-bottom: none; }
+
+        tr:hover td { background: var(--bg-card); }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            font-size: 0.6875rem;
+            font-weight: 600;
+            padding: 0.2rem 0.5rem;
+            border-radius: 999px;
+            text-transform: capitalize;
+        }
+
+        .status-badge.running { background: var(--emerald-bg); color: var(--emerald); }
+        .status-badge.stopped { background: var(--amber-bg); color: var(--amber); }
+        .status-badge.crashed { background: var(--red-bg); color: var(--red); }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; color: var(--text-muted); }
+
+        .btn-sm {
+            padding: 0.3rem 0.6rem;
+            font-size: 0.6875rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-sm:hover { background: var(--bg-card-hover); color: var(--text); }
+        .btn-sm.danger { border-color: rgba(248,113,113,0.3); color: var(--red); }
+        .btn-sm.danger:hover { background: var(--red-bg); }
+
+        /* ── Revenue Chart Bars ──────────────────────────────── */
+        .chart-bars {
+            display: flex;
+            align-items: flex-end;
+            gap: 3px;
+            height: 120px;
+            padding: 0.5rem 0;
+        }
+
+        .chart-bar {
+            flex: 1;
+            min-width: 4px;
+            border-radius: 3px 3px 0 0;
+            transition: height 0.3s ease;
+            position: relative;
+        }
+
+        .chart-bar.ad { background: var(--accent); }
+        .chart-bar.stars { background: var(--emerald); }
+
+        .chart-legend {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.6875rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+
+        .chart-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+
+        .chart-legend-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+        }
+
+        /* ── Pagination ──────────────────────────────────────── */
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .pagination-btns {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        /* ── Filter bar ──────────────────────────────────────── */
+        .filter-bar {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .filter-select, .filter-input {
+            padding: 0.4rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text);
+            outline: none;
+        }
+
+        .filter-select:focus, .filter-input:focus { border-color: var(--accent); }
+
+        /* ── Loading / Empty ─────────────────────────────────── */
+        .loading-msg, .empty-msg {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .spin-icon {
+            display: inline-block;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* ── Responsive ──────────────────────────────────────── */
+        @media (max-width: 640px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .main-content { padding: 1rem; }
+            .topbar { padding: 0.75rem 1rem; }
+            .tabs { padding: 0 1rem; }
+        }
+    </style>
+    <!-- Runtime configuration — generated by deploy-frontend.sh -->
+    <script src="/config.js"></script>
+</head>
+<body>
+
+<!-- ═══════ Auth Gate ═══════ -->
+<div id="auth-gate">
+    <div class="auth-box">
+        <div style="font-size: 2.5rem;">🦀</div>
+        <h1>LiveClaw Admin</h1>
+        <p style="font-size: 0.8125rem; color: var(--text-muted);">Enter your admin secret to access the dashboard.</p>
+        <input type="password" id="secret-input" placeholder="Admin Secret" autocomplete="off" />
+        <p class="error-msg" id="auth-error">Invalid admin secret</p>
+        <button id="auth-btn">Sign In</button>
+    </div>
+</div>
+
+<!-- ═══════ Dashboard ═══════ -->
+<div id="dashboard">
+    <!-- Top bar -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <span class="topbar-logo">🦀 LiveClaw</span>
+            <span class="topbar-badge">Admin</span>
+        </div>
+        <div class="topbar-right">
+            <span class="topbar-time" id="clock"></span>
+            <button class="topbar-btn" id="refresh-btn">↻ Refresh</button>
+            <button class="topbar-btn" id="logout-btn">Sign Out</button>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="revenue">Revenue</button>
+        <button class="tab" data-tab="users">Users</button>
+        <button class="tab" data-tab="events">Event Logs</button>
+    </div>
+
+    <div class="main-content">
+
+        <!-- ═══════ Overview Tab ═══════ -->
+        <div class="tab-panel active" id="panel-overview">
+            <div class="stats-grid" id="overview-stats">
+                <div class="stat-card"><span class="stat-label">Total Users</span><span class="stat-value" id="s-total">—</span></div>
+                <div class="stat-card"><span class="stat-label">Running</span><span class="stat-value emerald" id="s-running">—</span></div>
+                <div class="stat-card"><span class="stat-label">Stopped</span><span class="stat-value amber" id="s-stopped">—</span></div>
+                <div class="stat-card"><span class="stat-label">Crashed</span><span class="stat-value red" id="s-crashed">—</span></div>
+                <div class="stat-card"><span class="stat-label">Credit Depleted</span><span class="stat-value red" id="s-depleted">—</span></div>
+                <div class="stat-card"><span class="stat-label">Total Credit Allocated</span><span class="stat-value blue" id="s-credit">—</span></div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">Recent Events (Last Hour)</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Event</th><th>Count</th></tr></thead>
+                        <tbody id="recent-events-body"><tr><td colspan="2" class="empty-msg">Loading…</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">System</span>
+                </div>
+                <div class="stats-grid" id="system-stats">
+                    <div class="stat-card"><span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span><span class="stat-sub">seconds</span></div>
+                    <div class="stat-card"><span class="stat-label">RSS Memory</span><span class="stat-value" id="s-rss">—</span><span class="stat-sub">MB</span></div>
+                    <div class="stat-card"><span class="stat-label">Heap Used</span><span class="stat-value" id="s-heap">—</span><span class="stat-sub">MB</span></div>
+                    <div class="stat-card"><span class="stat-label">Node Version</span><span class="stat-value" id="s-node" style="font-size:1rem;">—</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════ Revenue Tab ═══════ -->
+        <div class="tab-panel" id="panel-revenue">
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">Revenue Summary</span>
+                    <div class="section-controls">
+                        <button class="period-btn active" data-period="30d">30d</button>
+                        <button class="period-btn" data-period="7d">7d</button>
+                        <button class="period-btn" data-period="24h">24h</button>
+                        <button class="period-btn" data-period="90d">90d</button>
+                        <button class="period-btn" data-period="all">All</button>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-label">Total Revenue</span>
+                        <span class="stat-value emerald" id="r-total">$0.00</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Ad Revenue</span>
+                        <span class="stat-value blue" id="r-ads">$0.00</span>
+                        <span class="stat-sub" id="r-ads-count">0 impressions</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Stars Revenue</span>
+                        <span class="stat-value" style="color: var(--amber);" id="r-stars">$0.00</span>
+                        <span class="stat-sub" id="r-stars-count">0 payments (0★)</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Invoices Created</span>
+                        <span class="stat-value" id="r-invoices">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">Daily Revenue (Last 30 Days)</span>
+                </div>
+                <div class="stat-card">
+                    <div class="chart-bars" id="revenue-chart"></div>
+                    <div class="chart-legend">
+                        <div class="chart-legend-item"><span class="chart-legend-dot" style="background: var(--accent);"></span> Ads</div>
+                        <div class="chart-legend-item"><span class="chart-legend-dot" style="background: var(--emerald);"></span> Stars</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════ Users Tab ═══════ -->
+        <div class="tab-panel" id="panel-users">
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">Bot Users</span>
+                </div>
+                <div class="filter-bar">
+                    <select class="filter-select" id="user-status-filter">
+                        <option value="">All Statuses</option>
+                        <option value="running">Running</option>
+                        <option value="stopped">Stopped</option>
+                        <option value="crashed">Crashed</option>
+                    </select>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>User ID</th>
+                                <th>Model</th>
+                                <th>Status</th>
+                                <th>PID</th>
+                                <th>Credits</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-body"><tr><td colspan="7" class="empty-msg">Loading…</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="pagination">
+                    <span id="users-info">—</span>
+                    <div class="pagination-btns">
+                        <button class="btn-sm" id="users-prev" disabled>← Prev</button>
+                        <button class="btn-sm" id="users-next" disabled>Next →</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════ Events Tab ═══════ -->
+        <div class="tab-panel" id="panel-events">
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">Event Logs</span>
+                </div>
+                <div class="filter-bar">
+                    <select class="filter-select" id="event-type-filter">
+                        <option value="">All Events</option>
+                    </select>
+                    <input class="filter-input" id="event-user-filter" type="text" placeholder="Filter by User ID…" />
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Timestamp</th>
+                                <th>User</th>
+                                <th>Event</th>
+                                <th>Detail</th>
+                                <th>IP</th>
+                            </tr>
+                        </thead>
+                        <tbody id="events-body"><tr><td colspan="6" class="empty-msg">Loading…</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="pagination">
+                    <span id="events-info">—</span>
+                    <div class="pagination-btns">
+                        <button class="btn-sm" id="events-prev" disabled>← Prev</button>
+                        <button class="btn-sm" id="events-next" disabled>Next →</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- main-content -->
+</div><!-- dashboard -->
+
+<script>
+(function () {
+    'use strict';
+
+    // ─── Config ─────────────────────────────────────────────────────────────
+    const API_BASE = window.LIVECLAW_API_BASE || '/api';
+    let ADMIN_SECRET = sessionStorage.getItem('liveclaw_admin_secret') || '';
+
+    // ─── Helpers ────────────────────────────────────────────────────────────
+    function esc(str) {
+        const d = document.createElement('div');
+        d.appendChild(document.createTextNode(String(str ?? '')));
+        return d.innerHTML;
+    }
+
+    function $(id) { return document.getElementById(id); }
+
+    async function api(path, opts = {}) {
+        const res = await fetch(API_BASE + path, {
+            ...opts,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-Secret': ADMIN_SECRET,
+                ...(opts.headers || {}),
+            },
+        });
+        if (res.status === 401) {
+            sessionStorage.removeItem('liveclaw_admin_secret');
+            location.reload();
+            throw new Error('Unauthorized');
+        }
+        return res.json();
+    }
+
+    function fmtDate(iso) {
+        if (!iso) return '—';
+        const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    function fmtUsd(n) { return '$' + (n || 0).toFixed(4); }
+
+    function truncate(str, len = 24) {
+        str = String(str || '');
+        return str.length > len ? str.slice(0, len) + '…' : str;
+    }
+
+    // ─── Auth ───────────────────────────────────────────────────────────────
+    function initAuth() {
+        if (ADMIN_SECRET) {
+            showDashboard();
+            return;
+        }
+
+        $('auth-btn').addEventListener('click', tryAuth);
+        $('secret-input').addEventListener('keydown', e => { if (e.key === 'Enter') tryAuth(); });
+    }
+
+    async function tryAuth() {
+        const secret = $('secret-input').value.trim();
+        if (!secret) return;
+
+        ADMIN_SECRET = secret;
+        try {
+            await api('/admin/stats');
+            sessionStorage.setItem('liveclaw_admin_secret', secret);
+            showDashboard();
+        } catch (_) {
+            $('auth-error').style.display = 'block';
+            $('secret-input').value = '';
+            ADMIN_SECRET = '';
+        }
+    }
+
+    function showDashboard() {
+        $('auth-gate').style.display = 'none';
+        $('dashboard').classList.add('visible');
+        loadOverview();
+        loadRevenue('30d');
+        startClock();
+    }
+
+    // ─── Clock ──────────────────────────────────────────────────────────────
+    function startClock() {
+        function tick() {
+            $('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+        }
+        tick();
+        setInterval(tick, 1000);
+    }
+
+    // ─── Tabs ───────────────────────────────────────────────────────────────
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            $('panel-' + tab.dataset.tab).classList.add('active');
+
+            // Lazy load tabs
+            if (tab.dataset.tab === 'users' && !usersLoaded) loadUsers();
+            if (tab.dataset.tab === 'events' && !eventsLoaded) loadEvents();
+        });
+    });
+
+    // ─── Overview ───────────────────────────────────────────────────────────
+    async function loadOverview() {
+        try {
+            const d = await api('/admin/stats');
+            $('s-total').textContent = d.bots.total;
+            $('s-running').textContent = d.bots.running;
+            $('s-stopped').textContent = d.bots.stopped;
+            $('s-crashed').textContent = d.bots.crashed;
+            $('s-depleted').textContent = d.bots.creditDepleted;
+            $('s-credit').textContent = fmtUsd(d.credits.totalAllocated);
+
+            $('s-uptime').textContent = d.system.uptime.toLocaleString();
+            $('s-rss').textContent = d.system.memoryMB.rss;
+            $('s-heap').textContent = d.system.memoryMB.heapUsed;
+            $('s-node').textContent = d.system.nodeVersion;
+
+            const body = $('recent-events-body');
+            if (d.recentEventsLastHour.length === 0) {
+                body.innerHTML = '<tr><td colspan="2" class="empty-msg">No events in the last hour</td></tr>';
+            } else {
+                body.innerHTML = d.recentEventsLastHour.map(e =>
+                    `<tr><td>${esc(e.event)}</td><td>${e.c}</td></tr>`
+                ).join('');
+            }
+        } catch (err) {
+            console.error('[Admin] Overview load error:', err);
+        }
+    }
+
+    // ─── Revenue ────────────────────────────────────────────────────────────
+    let currentPeriod = '30d';
+
+    document.querySelectorAll('.period-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentPeriod = btn.dataset.period;
+            loadRevenue(currentPeriod);
+        });
+    });
+
+    async function loadRevenue(period) {
+        try {
+            const d = await api('/admin/revenue?period=' + period);
+            $('r-total').textContent = fmtUsd(d.totalRevenueUsd);
+            $('r-ads').textContent = fmtUsd(d.ads.revenueUsd);
+            $('r-ads-count').textContent = d.ads.impressions + ' impressions';
+            $('r-stars').textContent = fmtUsd(d.stars.revenueUsd);
+            $('r-stars-count').textContent = d.stars.payments + ' payments (' + d.stars.totalStars + '★)';
+            $('r-invoices').textContent = d.invoices.created;
+
+            renderChart(d.dailyBreakdown);
+        } catch (err) {
+            console.error('[Admin] Revenue load error:', err);
+        }
+    }
+
+    function renderChart(daily) {
+        const chart = $('revenue-chart');
+        if (!daily || daily.length === 0) {
+            chart.innerHTML = '<div class="empty-msg" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">No data yet</div>';
+            return;
+        }
+
+        // Reverse so oldest is on the left
+        const data = [...daily].reverse();
+        const maxVal = Math.max(...data.map(d => (d.adRevenue || 0) + (d.starsRevenue || 0)), 0.001);
+
+        chart.innerHTML = data.map(d => {
+            const adH = Math.max(((d.adRevenue || 0) / maxVal) * 100, 2);
+            const starsH = Math.max(((d.starsRevenue || 0) / maxVal) * 100, 0);
+            const total = (d.adRevenue || 0) + (d.starsRevenue || 0);
+            return `<div style="flex:1; display:flex; flex-direction:column; align-items:stretch; gap:1px; justify-content:flex-end; height:100%;" title="${d.day}: ${fmtUsd(total)}">
+                <div class="chart-bar ad" style="height:${adH}%;"></div>
+                ${starsH > 0 ? `<div class="chart-bar stars" style="height:${starsH}%;"></div>` : ''}
+            </div>`;
+        }).join('');
+    }
+
+    // ─── Users ──────────────────────────────────────────────────────────────
+    let usersLoaded = false;
+    let usersOffset = 0;
+    const usersLimit = 25;
+
+    $('user-status-filter').addEventListener('change', () => { usersOffset = 0; loadUsers(); });
+    $('users-prev').addEventListener('click', () => { usersOffset = Math.max(0, usersOffset - usersLimit); loadUsers(); });
+    $('users-next').addEventListener('click', () => { usersOffset += usersLimit; loadUsers(); });
+
+    async function loadUsers() {
+        usersLoaded = true;
+        const status = $('user-status-filter').value;
+        const qs = `?limit=${usersLimit}&offset=${usersOffset}` + (status ? `&status=${status}` : '');
+
+        try {
+            const d = await api('/admin/users' + qs);
+            const body = $('users-body');
+
+            if (d.users.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" class="empty-msg">No users found</td></tr>';
+            } else {
+                body.innerHTML = d.users.map(u =>
+                    `<tr>
+                        <td class="mono">${esc(truncate(u.user_id, 20))}</td>
+                        <td>${esc(u.model)}</td>
+                        <td><span class="status-badge ${u.status}"><span class="status-dot"></span>${u.status}</span></td>
+                        <td class="mono">${u.pid}</td>
+                        <td>${fmtUsd(u.credit_limit)}</td>
+                        <td>${fmtDate(u.created_at)}</td>
+                        <td>
+                            ${u.status === 'running' ? `<button class="btn-sm danger" onclick="window.__adminStopBot('${esc(u.user_id)}')">Stop</button>` : ''}
+                            <button class="btn-sm" onclick="window.__adminViewUser('${esc(u.user_id)}')">View</button>
+                        </td>
+                    </tr>`
+                ).join('');
+            }
+
+            $('users-info').textContent = `Showing ${d.offset + 1}–${d.offset + d.users.length} of ${d.total}`;
+            $('users-prev').disabled = d.offset === 0;
+            $('users-next').disabled = d.offset + d.users.length >= d.total;
+        } catch (err) {
+            console.error('[Admin] Users load error:', err);
+        }
+    }
+
+    window.__adminStopBot = async function (userId) {
+        if (!confirm('Stop bot for ' + userId + '?')) return;
+        try {
+            await api('/admin/users/' + encodeURIComponent(userId) + '/stop', { method: 'POST' });
+            loadUsers();
+            loadOverview();
+        } catch (err) {
+            alert('Failed to stop bot: ' + err.message);
+        }
+    };
+
+    window.__adminViewUser = async function (userId) {
+        try {
+            const d = await api('/admin/users/' + encodeURIComponent(userId));
+            const u = d.user;
+            const rev = d.revenue;
+
+            let detail = `User: ${u.userId}\nModel: ${u.model}\nStatus: ${u.status} (alive: ${u.alive})\nPID: ${u.pid}\nCredits: ${fmtUsd(u.creditLimit)}\nCreated: ${u.createdAt}\n\n`;
+            detail += `Revenue:\n  Ads: ${rev.ads.count} impressions, ${fmtUsd(rev.ads.usd)}\n  Stars: ${rev.stars.count} payments, ${fmtUsd(rev.stars.usd)}\n\n`;
+            detail += `Recent Events:\n`;
+            d.recentEvents.slice(0, 15).forEach(e => {
+                detail += `  [${e.ts}] ${e.event}${e.detail ? ' — ' + truncate(e.detail, 60) : ''}\n`;
+            });
+
+            alert(detail);
+        } catch (err) {
+            alert('Failed to load user: ' + err.message);
+        }
+    };
+
+    // ─── Events ─────────────────────────────────────────────────────────────
+    let eventsLoaded = false;
+    let eventsOffset = 0;
+    const eventsLimit = 50;
+
+    $('event-type-filter').addEventListener('change', () => { eventsOffset = 0; loadEvents(); });
+    $('event-user-filter').addEventListener('input', debounce(() => { eventsOffset = 0; loadEvents(); }, 400));
+    $('events-prev').addEventListener('click', () => { eventsOffset = Math.max(0, eventsOffset - eventsLimit); loadEvents(); });
+    $('events-next').addEventListener('click', () => { eventsOffset += eventsLimit; loadEvents(); });
+
+    function debounce(fn, ms) {
+        let t;
+        return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+    }
+
+    async function loadEvents() {
+        eventsLoaded = true;
+        const event = $('event-type-filter').value;
+        const userId = $('event-user-filter').value.trim();
+
+        let qs = `?limit=${eventsLimit}&offset=${eventsOffset}`;
+        if (event) qs += `&event=${encodeURIComponent(event)}`;
+        if (userId) qs += `&userId=${encodeURIComponent(userId)}`;
+
+        try {
+            const d = await api('/admin/events' + qs);
+            const body = $('events-body');
+
+            // Populate event type filter (once)
+            const sel = $('event-type-filter');
+            if (sel.options.length <= 1 && d.eventTypes) {
+                d.eventTypes.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t;
+                    opt.textContent = t;
+                    sel.appendChild(opt);
+                });
+            }
+
+            if (d.events.length === 0) {
+                body.innerHTML = '<tr><td colspan="6" class="empty-msg">No events found</td></tr>';
+            } else {
+                body.innerHTML = d.events.map(e =>
+                    `<tr>
+                        <td class="mono">${e.id}</td>
+                        <td>${fmtDate(e.ts)}</td>
+                        <td class="mono">${esc(truncate(e.user_id, 16))}</td>
+                        <td>${esc(e.event)}</td>
+                        <td class="mono" title="${esc(e.detail || '')}">${esc(truncate(e.detail, 40))}</td>
+                        <td class="mono">${esc(e.ip || '—')}</td>
+                    </tr>`
+                ).join('');
+            }
+
+            $('events-info').textContent = `Showing ${d.offset + 1}–${d.offset + d.events.length} of ${d.total}`;
+            $('events-prev').disabled = d.offset === 0;
+            $('events-next').disabled = d.offset + d.events.length >= d.total;
+        } catch (err) {
+            console.error('[Admin] Events load error:', err);
+        }
+    }
+
+    // ─── Global Actions ─────────────────────────────────────────────────────
+    $('refresh-btn').addEventListener('click', () => {
+        loadOverview();
+        loadRevenue(currentPeriod);
+        if (usersLoaded) loadUsers();
+        if (eventsLoaded) loadEvents();
+    });
+
+    $('logout-btn').addEventListener('click', () => {
+        sessionStorage.removeItem('liveclaw_admin_secret');
+        location.reload();
+    });
+
+    // Auto-refresh every 30s
+    setInterval(() => {
+        if ($('dashboard').classList.contains('visible')) {
+            loadOverview();
+        }
+    }, 30000);
+
+    // ─── Init ───────────────────────────────────────────────────────────────
+    initAuth();
+})();
+</script>
+
+</body>
+</html>
