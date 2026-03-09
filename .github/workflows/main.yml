@@ -182,7 +182,7 @@ jobs:
           fi
 
       - name: Bootstrap fresh droplet (if needed)
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
@@ -284,7 +284,7 @@ jobs:
           strip_components: 0
 
       - name: Deploy & restart services
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root

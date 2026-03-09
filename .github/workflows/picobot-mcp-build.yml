@@ -85,7 +85,7 @@ jobs:
 
       - name: Install and verify binary
         if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root

@@ -126,7 +126,7 @@ jobs:
       - name: Check deployed version on server
         id: deployed
         if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
@@ -168,7 +168,7 @@ jobs:
 
       - name: Deploy updated picobot binary
         if: steps.decide.outputs.updated == 'true' && env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
