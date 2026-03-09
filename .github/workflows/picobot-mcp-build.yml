@@ -42,10 +42,10 @@ jobs:
 
     steps:
       - name: Checkout LiveClaw repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout picobot MCP branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.FORK_REPO }}
           ref: ${{ env.FORK_BRANCH }}
