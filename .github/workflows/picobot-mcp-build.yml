@@ -37,6 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    env:
+      HAS_DEPLOY_SECRETS: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+
     steps:
       - name: Checkout LiveClaw repo
         uses: actions/checkout@v4
@@ -69,25 +72,8 @@ jobs:
           path: picobot_linux_amd64
           retention-days: 30
 
-      - name: Deploy to production
-        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DO_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 3m
-          script: |
-            set -euo pipefail
-
-            PICOBOT_DIR="/opt/liveclaw/backend"
-            BINARY_PATH="${PICOBOT_DIR}/picobot"
-            VERSION_FILE="${PICOBOT_DIR}/.picobot-version"
-
-            echo "=== Deploying picobot (MCP branch) ==="
-
       - name: Upload binary via SCP
-        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        if: env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -98,7 +84,7 @@ jobs:
           overwrite: true
 
       - name: Install and verify binary
-        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        if: env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DO_DROPLET_IP }}

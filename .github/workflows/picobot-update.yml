@@ -60,6 +60,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    env:
+      HAS_DEPLOY_SECRETS: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+
     outputs:
       updated: ${{ steps.check.outputs.updated }}
       old_version: ${{ steps.check.outputs.old_version }}
@@ -122,7 +125,7 @@ jobs:
 
       - name: Check deployed version on server
         id: deployed
-        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        if: env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -164,7 +167,7 @@ jobs:
           fi
 
       - name: Deploy updated picobot binary
-        if: steps.decide.outputs.updated == 'true' && secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != ''
+        if: steps.decide.outputs.updated == 'true' && env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
