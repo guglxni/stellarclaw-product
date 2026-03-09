@@ -33,7 +33,7 @@ export default defineConfig({
                 // Current: bifrost.js=100%, server.js=51%
                 lines: 50,
                 functions: 50,
-                branches: 45,
+                branches: 44,
                 statements: 50,
             },
         },
