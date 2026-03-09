@@ -67,14 +67,23 @@ jobs:
       - name: Get deployed SHA from server
         id: deployed
         if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.DO_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 30s
-          script: |
-            cat /opt/liveclaw/backend/.picobot-version 2>/dev/null || echo "not-installed"
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          HOST: ${{ secrets.DO_DROPLET_IP }}
+        run: |
+          KEY_FILE=$(mktemp)
+          trap 'rm -f "$KEY_FILE"' EXIT
+          echo "$SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          RESULT=$(ssh -i "$KEY_FILE" \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            root@"$HOST" \
+            "cat /opt/liveclaw/backend/.picobot-version 2>/dev/null || echo not-installed" 2>/dev/null \
+            || echo "not-installed")
+          RESULT=$(echo "$RESULT" | tr -d '[:space:]')
+          echo "Deployed SHA: $RESULT"
+          echo "sha=$RESULT" >> "$GITHUB_OUTPUT"
 
       # ── Step 3: Decide whether to build ─────────────────────────────────────
       - name: Decide if build needed
@@ -82,7 +91,7 @@ jobs:
         run: |
           FORCE="${{ inputs.force || 'false' }}"
           BRANCH_SHA="${{ steps.branch.outputs.sha }}"
-          DEPLOYED="${{ steps.deployed.outputs.stdout || 'not-installed' }}"
+          DEPLOYED="${{ steps.deployed.outputs.sha || 'not-installed' }}"
           DEPLOYED=$(echo "$DEPLOYED" | tr -d '[:space:]')
 
           echo "Branch SHA: ${BRANCH_SHA}"
