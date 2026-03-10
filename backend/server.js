@@ -2666,7 +2666,7 @@ app.post('/admin/beta-codes/generate', adminAuth, asyncHandler(async (req, res) 
 
     let created = 0;
     let dodoSynced = 0;
-    let dodoErrors = [];
+    const dodoErrors = [];
     let attempts = 0;
     while (created < toCreate && attempts < toCreate * 5) {
         const code = generateCode();
