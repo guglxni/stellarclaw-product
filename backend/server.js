@@ -1833,6 +1833,9 @@ app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
         eventRows,
         earlyBirdCount,
         trialEndingSoonCount,
+        betaTotalRow,
+        betaUsedRow,
+        betaAllRows,
     ] = await Promise.all([
         db.all('SELECT user_id, pid, model, status, credit_limit, bifrost_vk_id, telegram_chat_id, created_at, updated_at FROM bots ORDER BY created_at DESC'),
         db.get('SELECT COUNT(*) as c FROM bots'),
@@ -1852,6 +1855,9 @@ app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
         db.all('SELECT id, user_id, event, detail, ip, ts FROM event_logs ORDER BY ts DESC LIMIT ?', [eventsLimit]),
         db.get("SELECT COUNT(*) as c FROM subscriptions WHERE early_bird = 1 AND status IN ('active','trialing','past_due')"),
         db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'trialing' AND trial_ends_at IS NOT NULL AND trial_ends_at < datetime('now', '+7 days')"),
+        stmtBeta.countTotal(),
+        stmtBeta.countUsed(),
+        stmtBeta.listAll(),
     ]);
 
     // OS metrics
@@ -2012,6 +2018,21 @@ app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
                 earlyBird: earlyBirdCount.c,
                 trialEndingSoon: trialEndingSoonCount.c,
                 total: activeSubs.c + trialingSubs.c + pastDueSubs.c + cancelledSubs.c,
+            },
+            beta: {
+                total: betaTotalRow?.count || 0,
+                used: betaUsedRow?.count || 0,
+                available: (betaTotalRow?.count || 0) - (betaUsedRow?.count || 0),
+                recentRedemptions: (betaAllRows || [])
+                    .filter(r => r.redeemed_at)
+                    .slice(-20)
+                    .reverse()
+                    .map(r => ({
+                        code: r.code,
+                        redeemedBy: r.redeemed_by,
+                        redeemedAt: r.redeemed_at,
+                        ip: r.redeemed_ip,
+                    })),
             },
             payments: {
                 totalCount: totalPayments.c,

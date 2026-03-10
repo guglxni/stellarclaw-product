@@ -262,7 +262,31 @@ server {
     location /admin/ {
         try_files \\\$uri \\\$uri/ /admin/index.html;
     }
-}
+    # ── API proxy (fallback when config.js LIVECLAW_API_BASE not set) ────────
+    # Strips /api prefix and forwards to the backend droplet (api.liveclaw.xyz).
+    # The admin dashboard primarily uses window.LIVECLAW_API_BASE for direct
+    # cross-origin calls, but this proxy ensures CI/local testing works too.
+    location = /api/admin/login {
+        proxy_pass https://api.liveclaw.xyz/admin/login;
+        proxy_set_header Host api.liveclaw.xyz;
+        proxy_set_header X-Real-IP \\\$remote_addr;
+        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \\\$scheme;
+        proxy_set_header Authorization \\\$http_authorization;
+        proxy_read_timeout 30s;
+    }
+
+    location /api/ {
+        rewrite ^/api/(.*)\$ /\\\$1 break;
+        proxy_pass https://api.liveclaw.xyz;
+        proxy_set_header Host api.liveclaw.xyz;
+        proxy_set_header X-Real-IP \\\$remote_addr;
+        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \\\$scheme;
+        proxy_set_header Authorization \\\$http_authorization;
+        proxy_read_timeout 30s;
+        proxy_connect_timeout 10s;
+    }}
 CONF
 
 ln -sf /etc/nginx/sites-available/liveclaw /etc/nginx/sites-enabled/

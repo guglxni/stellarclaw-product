@@ -504,7 +504,7 @@
             <div class="stats-grid" id="kpi-grid"></div>
 
             <div class="section">
-                <div class="section-header"><span class="section-title">Infra Saturation</span></div>
+                <div class="section-header"><span class="section-title">Bot Droplet Resources</span><span class="section-sub" style="font-size:11px;color:var(--text-muted);margin-left:10px">api.liveclaw.xyz — bot-spawning server only</span></div>
                 <div class="stats-grid">
                     <div class="stat-card"><span class="stat-label">CPU Load (1m / 5m / 15m)</span><span class="stat-value" id="load-triple">—</span></div>
                     <div class="stat-card"><span class="stat-label">RAM Used</span><span class="stat-value" id="ram-used">—</span><span class="stat-sub" id="ram-detail">—</span></div>
@@ -569,8 +569,23 @@
                     <div class="stat-card"><span class="stat-label">Trialing</span><span class="stat-value blue" id="sub-trialing">—</span></div>
                     <div class="stat-card"><span class="stat-label">Past Due</span><span class="stat-value red" id="sub-past">—</span></div>
                     <div class="stat-card"><span class="stat-label">Cancelled</span><span class="stat-value amber" id="sub-cancelled">—</span></div>
-                    <div class="stat-card"><span class="stat-label">Early Bird (🐦)</span><span class="stat-value" id="sub-early-bird">—</span><span class="stat-sub">of 500 spots</span></div>
+                    <div class="stat-card"><span class="stat-label">Early Claw (🦞)</span><span class="stat-value" id="sub-early-bird">—</span><span class="stat-sub">of 500 spots</span></div>
                     <div class="stat-card"><span class="stat-label">Trial Ending ≤7d</span><span class="stat-value red" id="sub-trial-soon">—</span><span class="stat-sub">needs attention</span></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header"><span class="section-title">Beta Program</span></div>
+                <div class="stats-grid">
+                    <div class="stat-card"><span class="stat-label">Total Codes</span><span class="stat-value" id="beta-total">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Redeemed</span><span class="stat-value amber" id="beta-used">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Available</span><span class="stat-value emerald" id="beta-available">—</span></div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Redeemed At</th><th>Code</th><th>User</th><th>IP</th></tr></thead>
+                        <tbody id="beta-body"><tr><td colspan="4" class="empty-msg">No redemptions yet</td></tr></tbody>
+                    </table>
                 </div>
             </div>
 
@@ -853,10 +868,29 @@
             }).join('');
     }
 
+    function renderBeta(d) {
+        const beta = (d.billing && d.billing.beta) || {};
+        $('beta-total').textContent = beta.total != null ? beta.total : '—';
+        $('beta-used').textContent = beta.used != null ? beta.used : '—';
+        $('beta-available').textContent = beta.available != null ? beta.available : '—';
+        const rows = beta.recentRedemptions || [];
+        $('beta-body').innerHTML = rows.length === 0
+            ? '<tr><td colspan="4" class="empty-msg">No redemptions yet</td></tr>'
+            : rows.map(r =>
+                '<tr>' +
+                '<td>' + esc(when(r.redeemedAt)) + '</td>' +
+                '<td class="mono">' + esc(r.code) + '</td>' +
+                '<td class="mono">' + esc(short(r.redeemedBy || '—', 28)) + '</td>' +
+                '<td class="mono">' + esc(r.ip || '—') + '</td>' +
+                '</tr>'
+            ).join('');
+    }
+
     function renderAll(d) {
         renderOverview(d);
         renderAgents(d);
         renderPayments(d);
+        renderBeta(d);
         renderEvents(d);
         renderLlm(d);
     }
