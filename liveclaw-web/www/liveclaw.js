@@ -39,7 +39,7 @@
         const saved = JSON.parse(localStorage.getItem('liveclaw_state'));
         if (saved && typeof saved.userId === 'string' && saved.userId.length < 256) {
             // Only restore known safe keys
-            const safeKeys = ['userId', 'userName', 'userEmail', 'userAvatar', 'idToken', 'selectedModel', 'selectedChannel', 'isDeployed', 'botPid', 'botCreditLimit', 'subscription'];
+            const safeKeys = ['userId', 'userName', 'userEmail', 'userAvatar', 'idToken', 'telegramToken', 'selectedModel', 'selectedChannel', 'isDeployed', 'botPid', 'botCreditLimit', 'subscription'];
             for (const key of safeKeys) {
                 if (key in saved) state[key] = saved[key];
             }
@@ -341,8 +341,11 @@
             ? `<img src="${escapeHtml(state.userAvatar)}" alt="${displayName}" class="size-8 rounded-full object-cover">`
             : `<span class="size-8 rounded-full bg-white/15 text-white text-xs font-semibold flex items-center justify-center">${displayName.slice(0, 1).toUpperCase()}</span>`;
 
+        // Ensure the container has the right ID and classes so re-renders can find it
+        authSection.id = 'liveclaw-auth-flow';
+        authSection.className = 'w-full flex flex-col gap-3 min-w-0';
+
         authSection.innerHTML = `
-            <div class="w-full flex flex-col gap-3 min-w-0" id="liveclaw-auth-flow">
                 <div class="flex items-center gap-2.5 px-0.5 py-0.5 min-w-0">
                     ${avatarHtml}
                     <div class="min-w-0 flex-1">
@@ -370,7 +373,6 @@
                 <div id="liveclaw-pricing-line">
                     <p class="text-[#6A6B6C] font-medium text-sm">${deployDisabled ? 'Connect Telegram to continue.' : ''}</p>
                 </div>
-            </div>
         `;
 
         const signOutBtn = document.getElementById('liveclaw-signout-btn');
