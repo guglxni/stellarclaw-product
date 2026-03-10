@@ -207,7 +207,7 @@
             // Map the selected model to backend model ID
             const modelMap = {
                 'MiniMax M2.5': 'minimax-m2.5',
-                'Kimi k2.5': 'kimi-k2.5',
+                'Kimi K2.5': 'kimi-k2.5',
             };
             const modelId = modelMap[state.selectedModel] || 'minimax-m2.5';
 
@@ -735,9 +735,9 @@
         const allBtns = document.querySelectorAll('button.options-card');
         allBtns.forEach(function (btn) {
             const img = btn.querySelector('img');
-            if (img && (img.alt === 'MiniMax M2.5' || img.alt === 'Kimi k2.5')) {
+            if (img && (img.alt === 'MiniMax M2.5' || img.alt === 'Kimi K2.5')) {
                 btn.addEventListener('click', function () {
-                    if (img.alt === 'Kimi k2.5') return; // disabled / coming soon
+                    if (img.alt === 'Kimi K2.5') return; // disabled / coming soon
                     state.selectedModel = img.alt;
                     saveState();
                 });
