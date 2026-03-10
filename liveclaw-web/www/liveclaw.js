@@ -335,7 +335,8 @@
         const deployDisabled = !state.telegramToken;
         const deployBtnClasses = deployDisabled
             ? 'bg-zinc-700/90 border border-zinc-600/40 text-zinc-400 cursor-not-allowed'
-            : 'bg-white text-zinc-900 hover:opacity-90 cursor-pointer';
+            : 'bg-white cursor-pointer hover:opacity-90';
+        const deployBtnStyle = deployDisabled ? '' : 'style="color:#09090b;"';
 
         const avatarHtml = state.userAvatar
             ? `<img src="${escapeHtml(state.userAvatar)}" alt="${displayName}" class="size-8 rounded-full object-cover">`
@@ -364,8 +365,8 @@
                     </div>
                 </div>
 
-                <button id="liveclaw-deploy-main-btn" type="button" ${deployDisabled ? 'disabled' : ''}
-                    class="${deployBtnClasses} font-medium text-sm sm:text-base px-4 sm:px-5 py-2.5 w-full sm:w-fit rounded-xl flex flex-row items-center justify-center gap-2 transition-all duration-300 disabled:cursor-not-allowed">
+                <button id="liveclaw-deploy-main-btn" type="button" ${deployDisabled ? 'disabled' : ''} ${deployBtnStyle}
+                    class="${deployBtnClasses} font-medium text-sm px-5 py-2.5 w-full rounded-xl flex flex-row items-center justify-center gap-2 transition-all duration-300 disabled:cursor-not-allowed">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"></path></svg>
                     <span class="text-base font-medium">Deploy LiveClaw</span>
                 </button>
