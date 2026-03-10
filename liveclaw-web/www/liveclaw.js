@@ -336,7 +336,9 @@
         const deployBtnClasses = deployDisabled
             ? 'bg-zinc-700/90 border border-zinc-600/40 text-zinc-400 cursor-not-allowed'
             : 'bg-white cursor-pointer hover:opacity-90';
-        const deployBtnStyle = deployDisabled ? '' : 'style="color:#09090b;"';
+        const deployBtnStyle = deployDisabled
+            ? 'style="width:fit-content;"'
+            : 'style="width:fit-content; color:#09090b;"';
 
         const avatarHtml = state.userAvatar
             ? `<img src="${escapeHtml(state.userAvatar)}" alt="${displayName}" class="size-8 rounded-full object-cover">`
@@ -366,14 +368,12 @@
                 </div>
 
                 <button id="liveclaw-deploy-main-btn" type="button" ${deployDisabled ? 'disabled' : ''} ${deployBtnStyle}
-                    class="${deployBtnClasses} font-medium text-sm px-5 py-2.5 w-full rounded-xl flex flex-row items-center justify-center gap-2 transition-all duration-300 disabled:cursor-not-allowed">
+                    class="${deployBtnClasses} font-medium text-sm px-5 py-2.5 rounded-xl flex flex-row items-center justify-center gap-2 transition-all duration-300 disabled:cursor-not-allowed">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"></path></svg>
                     <span class="text-base font-medium">Deploy LiveClaw</span>
                 </button>
 
-                <div id="liveclaw-pricing-line">
-                    <p class="text-[#6A6B6C] font-medium text-sm">${deployDisabled ? 'Connect Telegram to continue.' : ''}</p>
-                </div>
+                <div id="liveclaw-pricing-line"></div>
         `;
 
         const signOutBtn = document.getElementById('liveclaw-signout-btn');
@@ -386,9 +386,13 @@
             });
         }
 
-        if (!deployDisabled) {
-            fetchAndRenderPricingLine();
+        // If token is persisted, also mark the Telegram chip as selected visually
+        if (state.telegramToken) {
+            const tgBtn = findTelegramOptionButton();
+            if (tgBtn) tgBtn.classList.add('selected');
         }
+
+        fetchAndRenderPricingLine();
     }
 
     async function fetchAndRenderPricingLine() {
@@ -401,22 +405,23 @@
             const standard = data.plans.standard;
             const earlyClaw = data.plans.earlyClaw;
             const slotsLeft = earlyClaw ? Math.max(0, earlyClaw.spotsRemaining) : 0;
-            const slotColor = slotsLeft < 50 ? 'text-red-400' : slotsLeft < 150 ? 'text-amber-400' : 'text-sky-400';
+            const slotColor = slotsLeft < 50 ? '#f87171' : slotsLeft < 150 ? '#fb923c' : '#38bdf8';
+            const slotSpan = slotsLeft > 0
+                ? ` <span style="color:${slotColor}; font-weight:500;">🦞 Early Claw $${earlyClaw.price.toFixed(2)}/mo with code EARLYCLAW \u2014 only ${slotsLeft} slots left</span>`
+                : '';
 
-            el.innerHTML = `
-                <p class="text-xs text-zinc-500">
-                    <span class="font-medium text-zinc-400">$${standard.price.toFixed(2)}/month.</span>
-                    $0.99 one-day trial available. Cancel anytime.
-                    ${slotsLeft > 0
-                        ? `<button id="liveclaw-earlyclaw-cta" class="${slotColor} font-medium hover:underline cursor-pointer bg-transparent border-0 p-0 ml-0.5">🦞 Early Claw $${earlyClaw.price.toFixed(2)}/mo with code EARLYCLAW \u2014 only ${slotsLeft} slots left</button>`
-                        : ''}
-                </p>
-            `;
-
-            const cta = document.getElementById('liveclaw-earlyclaw-cta');
-            if (cta) cta.addEventListener('click', () => showPricingModal());
+            if (!state.telegramToken) {
+                el.innerHTML = `<p class="text-[#6A6B6C] font-medium text-sm">Connect Telegram to continue.${slotSpan}</p>`;
+            } else {
+                el.innerHTML = `
+                    <p class="text-xs text-zinc-500">
+                        <span class="font-medium text-zinc-400">$${standard.price.toFixed(2)}/month.</span>
+                        $0.99 one-day trial available. Cancel anytime.${slotSpan}
+                    </p>
+                `;
+            }
         } catch (_) {
-            if (el) el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Ready to deploy.</p>';
+            if (el) el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect Telegram to continue.</p>';
         }
     }
 
