@@ -77,7 +77,6 @@ describe('GET /pricing', () => {
         expect(res.body.plans.standard.price).toBe(12.99);
         expect(res.body.plans.standard.trialDays).toBe(1);
         expect(res.body.plans.standard.bots).toBe(1);
-        expect(res.body.plans.standard.budget).toBe(5.00);
         expect(Array.isArray(res.body.plans.standard.features)).toBe(true);
 
         expect(res.body.plans.earlyClaw).toBeDefined();

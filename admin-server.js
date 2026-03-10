@@ -80,6 +80,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
     console.log(`\n  🦀 LiveClaw Admin Dashboard`);
     console.log(`  → http://localhost:${PORT}/admin/\n`);
-    console.log(`  Admin secret: oKROk1wlJr4E-DvFOMw_zBF6dWI-b9T-`);
     console.log(`  API proxied to: ${API_BASE}\n`);
 });
