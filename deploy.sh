@@ -124,6 +124,13 @@ echo "  Node.js: $(node -v)"
 # Nginx, Certbot, Docker, UFW
 apt-get install -y -qq nginx certbot python3-certbot-nginx ufw wget docker.io
 
+# Nginx rate-limit zone for admin login (must live in http context)
+cat > /etc/nginx/conf.d/rate-limits.conf << 'RATEEOF'
+# Admin login brute-force protection: burst of 7 requests, then 1/min per IP
+# (Node.js enforces the 7-per-15-min hard window; Nginx adds a network layer)
+limit_req_zone $binary_remote_addr zone=admin_login:10m rate=1r/m;
+RATEEOF
+
 # PM2 (process manager)
 npm install -g pm2 --loglevel warn
 
@@ -297,6 +304,16 @@ server {
     # Admin panel SPA
     location /admin {
         try_files \$uri \$uri/ /admin/index.html;
+    }
+
+    # Admin login — strict rate limit (brute-force protection)
+    location = /admin/login {
+        limit_req zone=admin_login burst=7 nodelay;
+        proxy_pass http://127.0.0.1:3000/admin/login;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # Webhooks → Node.js (must come before location /)

@@ -469,9 +469,9 @@
     <div class="auth-box">
         <div style="font-size: 2.5rem;">🦀</div>
         <h1>LiveClaw Command Center</h1>
-        <p style="font-size: 0.8125rem; color: var(--text-muted);">Enter your admin secret for live telemetry access.</p>
-        <input type="password" id="secret-input" placeholder="Admin Secret" autocomplete="off" />
-        <p class="error-msg" id="auth-error">Invalid admin secret</p>
+        <p style="font-size: 0.8125rem; color: var(--text-muted);">Enter the 6-digit code from your authenticator app.</p>
+        <input type="text" id="secret-input" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code" pattern="\d{6}" style="letter-spacing:0.25em;font-size:1.5rem;text-align:center;" />
+        <p class="error-msg" id="auth-error">Invalid code — check your authenticator app</p>
         <button id="auth-btn">Enter Dashboard</button>
     </div>
 </div>
@@ -629,7 +629,7 @@
     'use strict';
 
     const API_BASE = window.LIVECLAW_API_BASE || '/api';
-    let ADMIN_SECRET = sessionStorage.getItem('liveclaw_admin_secret') || '';
+    let ADMIN_TOKEN = sessionStorage.getItem('liveclaw_admin_token') || '';
     let latest = null;
     let liveEnabled = true;
 
@@ -645,12 +645,12 @@
             ...(opts || {}),
             headers: {
                 'Content-Type': 'application/json',
-                'X-Admin-Secret': ADMIN_SECRET,
+                ...(ADMIN_TOKEN ? { 'Authorization': 'Bearer ' + ADMIN_TOKEN } : {}),
                 ...((opts && opts.headers) || {}),
             },
         });
         if (res.status === 401) {
-            sessionStorage.removeItem('liveclaw_admin_secret');
+            sessionStorage.removeItem('liveclaw_admin_token');
             location.reload();
             throw new Error('Unauthorized');
         }
@@ -904,7 +904,7 @@
         });
 
         $('logout-btn').addEventListener('click', () => {
-            sessionStorage.removeItem('liveclaw_admin_secret');
+            sessionStorage.removeItem('liveclaw_admin_token');
             location.reload();
         });
 
@@ -937,17 +937,37 @@
     }
 
     async function tryAuth() {
-        const secret = $('secret-input').value.trim();
-        if (!secret) return;
-        ADMIN_SECRET = secret;
+        const code = $('secret-input').value.trim();
+        if (!/^\d{6}$/.test(code)) {
+            $('auth-error').textContent = 'Enter exactly 6 digits from your authenticator app';
+            $('auth-error').style.display = 'block';
+            return;
+        }
+        $('auth-btn').disabled = true;
+        $('auth-btn').textContent = 'Verifying…';
         try {
-            await api('/admin/dashboard-live?paymentsLimit=1&eventsLimit=1');
-            sessionStorage.setItem('liveclaw_admin_secret', secret);
+            const res = await fetch(API_BASE + '/admin/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                $('auth-error').textContent = err.error || 'Invalid code';
+                $('auth-error').style.display = 'block';
+                $('secret-input').value = '';
+                return;
+            }
+            const { token } = await res.json();
+            ADMIN_TOKEN = token;
+            sessionStorage.setItem('liveclaw_admin_token', token);
             await showDashboard();
         } catch (_) {
+            $('auth-error').textContent = 'Network error — is the backend running?';
             $('auth-error').style.display = 'block';
-            $('secret-input').value = '';
-            ADMIN_SECRET = '';
+        } finally {
+            $('auth-btn').disabled = false;
+            $('auth-btn').textContent = 'Enter Dashboard';
         }
     }
 
@@ -956,10 +976,14 @@
         $('secret-input').addEventListener('keydown', e => {
             if (e.key === 'Enter') tryAuth();
         });
+        // Auto-submit when 6 digits typed
+        $('secret-input').addEventListener('input', () => {
+            if ($('secret-input').value.replace(/\D/g, '').length === 6) tryAuth();
+        });
 
-        if (ADMIN_SECRET) {
+        if (ADMIN_TOKEN) {
             showDashboard().catch(() => {
-                sessionStorage.removeItem('liveclaw_admin_secret');
+                sessionStorage.removeItem('liveclaw_admin_token');
                 location.reload();
             });
         }

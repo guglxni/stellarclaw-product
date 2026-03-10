@@ -15,7 +15,7 @@
 
 'use strict';
 
-require('dotenv').config();
+require('dotenv').config({ override: false });
 
 const express = require('express');
 const cors = require('cors');
@@ -30,6 +30,8 @@ const { execSync } = require('child_process');
 const { createDatabase } = require('./database');
 const bifrost = require('./bifrost');
 const dodo = require('./dodo');
+const { TOTP } = require('otpauth');
+const jwt = require('jsonwebtoken');
 
 // ─── Capacity Planning ──────────────────────────────────────────────────────
 // Unit Economics (s-2vcpu-2gb DigitalOcean droplet):
@@ -67,6 +69,9 @@ const config = Object.freeze({
     // MCP — global servers injected into every picobot instance
     // JSON string of { "serverName": { url/command config } }
     mcpServersConfig: process.env.MCP_SERVERS_CONFIG || '',
+    // Admin TOTP + JWT (see scripts/setup-totp.js)
+    adminTotpSecret: process.env.ADMIN_TOTP_SECRET || '',
+    adminJwtSecret: process.env.ADMIN_JWT_SECRET || '',
 });
 
 const isProd = config.nodeEnv === 'production';
@@ -77,6 +82,8 @@ const isProd = config.nodeEnv === 'production';
 const REQUIRED_IN_PROD = [
     ['TOKEN_ENCRYPTION_KEY',      config.encryptionKey,    64, 'hex'],
     ['ADMIN_SECRET',              process.env.ADMIN_SECRET, null, null],
+    ['ADMIN_TOTP_SECRET',         config.adminTotpSecret,  null, null],
+    ['ADMIN_JWT_SECRET',          config.adminJwtSecret,   null, null],
     ['TURNSTILE_SECRET_KEY',      config.turnstileSecret,  null, null],
     // Dodo Payments — required for subscription billing
     ['DODO_API_KEY',           config.dodoApiKey,         null, null],
@@ -580,6 +587,16 @@ const generalLimiter = rateLimit({
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => isTest,
+});
+
+// Admin login: 7 attempts per 15 min per IP — locks out on 8th attempt
+const adminLoginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 7,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many login attempts. Try again in 15 minutes.' },
     skip: () => isTest,
 });
 
@@ -1705,9 +1722,29 @@ app.get('/health', async (_req, res) => {
 });
 
 // ─── Admin Auth Middleware ───────────────────────────────────────────────────
-// All /admin/* routes are protected by ADMIN_SECRET header.
+// Accepts either:
+//   Authorization: Bearer <JWT>  — human dashboard (TOTP login)
+//   X-Admin-Secret: <secret>     — internal picobot→backend calls
 function adminAuth(req, res, next) {
+    // Option 1: JWT Bearer (dashboard users after TOTP login)
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.slice(7);
+        const jwtSecret = config.adminJwtSecret || (!isProd ? 'dev-secret' : null);
+        if (!jwtSecret) return res.status(403).json({ error: 'ADMIN_JWT_SECRET not configured' });
+        try {
+            jwt.verify(token, jwtSecret);
+            return next();
+        } catch (_) {
+            return res.status(401).json({ error: 'Session expired. Please log in again.' });
+        }
+    }
+
+    // Option 2: X-Admin-Secret (internal picobot→backend, unchanged)
     const adminSecret = process.env.ADMIN_SECRET;
+    if (adminSecret && req.headers['x-admin-secret'] === adminSecret) {
+        return next();
+    }
     if (adminSecret && req.headers['x-admin-secret'] !== adminSecret) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -1716,6 +1753,41 @@ function adminAuth(req, res, next) {
     }
     next();
 }
+
+// ─── POST /admin/login — Exchange TOTP code for a short-lived JWT ────────────
+app.post('/admin/login', adminLoginLimiter, asyncHandler(async (req, res) => {
+    const { code } = req.body || {};
+    if (!code || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
+        return res.status(400).json({ error: 'A 6-digit code is required' });
+    }
+
+    const jwtSecret = config.adminJwtSecret || (!isProd ? 'dev-secret' : null);
+    if (!jwtSecret) return res.status(403).json({ error: 'ADMIN_JWT_SECRET not configured' });
+
+    if (!config.adminTotpSecret) {
+        if (isProd) return res.status(403).json({ error: 'ADMIN_TOTP_SECRET not configured' });
+        // Dev fallback: accept ADMIN_SECRET value directly as code (local only)
+        const devSecret = process.env.ADMIN_SECRET || '';
+        if (!devSecret || code.trim() !== devSecret) {
+            return res.status(401).json({ error: 'Invalid code' });
+        }
+    } else {
+        const totp = new TOTP({
+            issuer: 'LiveClaw',
+            label: 'admin',
+            secret: config.adminTotpSecret,
+            digits: 6,
+            period: 30,
+        });
+        const delta = totp.validate({ token: code.trim(), window: 1 });
+        if (delta === null) {
+            return res.status(401).json({ error: 'Invalid code' });
+        }
+    }
+
+    const token = jwt.sign({ role: 'admin' }, jwtSecret, { expiresIn: '8h' });
+    return res.json({ token });
+}));
 
 function calcRequestWindowStats(windowMs) {
     const now = Date.now();
