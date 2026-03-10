@@ -602,6 +602,50 @@ const adminLoginLimiter = rateLimit({
 
 app.use(generalLimiter);
 
+// ─── Telegram Bot Token Verification ───────────────────────────────────────
+// Calls Telegram Bot API getMe to ensure token is valid and reachable.
+async function verifyTelegramBotToken(token) {
+    if (!token || typeof token !== 'string' || !/^\d+:[A-Za-z0-9_-]{30,50}$/.test(token)) {
+        return { ok: false, status: 400, error: 'Invalid Telegram bot token format' };
+    }
+
+    const endpoint = `https://api.telegram.org/bot${token}/getMe`;
+    let resp;
+    try {
+        resp = await fetch(endpoint, {
+            method: 'GET',
+            signal: AbortSignal.timeout(8000),
+            headers: { 'User-Agent': 'LiveClaw/2.0 token-verifier' },
+        });
+    } catch (err) {
+        return { ok: false, status: 502, error: `Telegram API unavailable: ${err.message}` };
+    }
+
+    let data;
+    try {
+        data = await resp.json();
+    } catch (_) {
+        return { ok: false, status: 502, error: 'Telegram API returned invalid JSON' };
+    }
+
+    if (!resp.ok || !data?.ok || !data?.result) {
+        const description = data?.description || 'Invalid Telegram bot token';
+        if (/unauthorized|invalid token/i.test(description)) {
+            return { ok: false, status: 400, error: description };
+        }
+        return { ok: false, status: 502, error: description };
+    }
+
+    return {
+        ok: true,
+        bot: {
+            id: data.result.id,
+            username: data.result.username || null,
+            name: data.result.first_name || null,
+        },
+    };
+}
+
 // ─── Cloudflare Turnstile Verification ──────────────────────────────────────
 app.post('/verify-turnstile', asyncHandler(async (req, res) => {
     const { token } = req.body;
@@ -634,6 +678,32 @@ app.post('/verify-turnstile', asyncHandler(async (req, res) => {
 
     console.warn(`[Turnstile] Verification failed ip=${ip}`, outcome['error-codes']);
     return res.status(403).json({ success: false, error: 'CAPTCHA verification failed' });
+}));
+
+// ─── POST /verify-telegram-token — Validate Telegram Bot Token ─────────────
+app.post('/verify-telegram-token', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
+    const { userId, telegramToken } = req.body;
+
+    if (!userId || typeof userId !== 'string') {
+        return res.status(400).json({ error: 'userId is required' });
+    }
+
+    if (isProd && req.verifiedUserId && req.verifiedUserId !== userId) {
+        return res.status(403).json({ error: 'userId does not match authenticated user' });
+    }
+
+    const result = await verifyTelegramBotToken(telegramToken);
+    if (!result.ok) {
+        return res.status(result.status).json({ success: false, error: result.error });
+    }
+
+    return res.json({
+        success: true,
+        bot: result.bot,
+        message: result.bot.username
+            ? `Connected to @${result.bot.username}`
+            : 'Telegram bot token verified',
+    });
 }));
 
 // ─── POST /create-checkout-session — Dodo Payments Checkout ─────────────────
@@ -839,11 +909,9 @@ app.get('/pricing', asyncHandler(async (_req, res) => {
                 interval: 'month',
                 trialDays: 1,
                 bots: 1,
-                budget: 5.00,
                 channels: ['telegram'],
                 features: [
                     '24/7 AI agent on Telegram',
-                    '$5.00/mo AI budget (auto-resets)',
                     'Custom personality (SOUL.md)',
                     'Unlimited messages within budget',
                     'Email support',
@@ -857,13 +925,11 @@ app.get('/pricing', asyncHandler(async (_req, res) => {
                 interval: 'month',
                 trialDays: 1,
                 bots: 1,
-                budget: 5.00,
                 channels: ['telegram'],
                 promoCode: 'EARLYCLAW',
                 spotsRemaining: Math.max(0, 500 - earlyBirdUsed),
                 features: [
                     '24/7 AI agent on Telegram',
-                    '$5.00/mo AI budget (auto-resets)',
                     'Custom personality (SOUL.md)',
                     'Unlimited messages within budget',
                     'Email support',
@@ -1514,11 +1580,21 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandle
         });
     }
 
+    // Validate token with Telegram before allocating/rotating resources.
+    const tokenCheck = await verifyTelegramBotToken(telegramToken);
+    if (!tokenCheck.ok) {
+        logEvent(userId, 'deploy_blocked_invalid_telegram_token', { error: tokenCheck.error }, ip);
+        return res.status(tokenCheck.status).json({
+            error: tokenCheck.error,
+            message: 'Please connect a valid Telegram bot token from @BotFather.',
+        });
+    }
+
     // ── Plan-based budget — unified $5.00/mo ──────────────────────────────
     const creditLimit = 5.00;
 
-    console.log(`[deploy] userId=${userId} model=${model} plan=${plan} budget=$${creditLimit} ip=${ip}`);
-    logEvent(userId, 'deploy_requested', { model, creditLimit, plan }, ip);
+    console.log(`[deploy] userId=${userId} model=${model} plan=${plan} bot=${tokenCheck.bot?.username || 'unknown'} budget=$${creditLimit} ip=${ip}`);
+    logEvent(userId, 'deploy_requested', { model, creditLimit, plan, botUsername: tokenCheck.bot?.username || null }, ip);
 
     // ── Stop existing bot if running ────────────────────────────────────────
     const existing = await stmt.getBot(userId);

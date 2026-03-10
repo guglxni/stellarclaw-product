@@ -194,6 +194,7 @@ rsync -az --delete \
     "$FRONTEND_WWW/" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/
 
 info "Uploading config.js..."
+chmod 644 "$TMPCONF"
 rsync -az -e "ssh ${SSH_OPTS}" "$TMPCONF" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/config.js
 rm -f "$TMPCONF"
 
@@ -238,7 +239,7 @@ server {
     }
 
     # Other static assets — 30 days
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot)$ {
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|webm|mp4|m4v|mov)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
         access_log off;
@@ -248,6 +249,17 @@ server {
     location = /config.js {
         expires 5m;
         add_header Cache-Control "public, must-revalidate";
+    }
+
+    # app shell and runtime JS should refresh quickly after deploy
+    location = /index.html {
+        expires -1;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
+    location = /liveclaw.js {
+        expires -1;
+        add_header Cache-Control "no-cache, must-revalidate";
     }
 
     # ── Security Headers ─────────────────────────────────────────────────
@@ -261,12 +273,12 @@ server {
     }
 
     location / {
-        try_files $uri $uri/ /index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 
     # ── Admin Dashboard ──────────────────────────────────────────────────
     location /admin/ {
-        try_files $uri $uri/ /admin/index.html;
+        try_files \$uri \$uri/ /admin/index.html;
     }
     # ── API proxy (fallback when config.js LIVECLAW_API_BASE not set) ────────
     # Strips /api prefix and forwards to the backend droplet (api.liveclaw.xyz).
@@ -275,21 +287,21 @@ server {
     location = /api/admin/login {
         proxy_pass https://api.liveclaw.xyz/admin/login;
         proxy_set_header Host api.liveclaw.xyz;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Authorization \$http_authorization;
         proxy_read_timeout 30s;
     }
 
     location /api/ {
-        rewrite ^/api/(.*)$ /$1 break;
+        rewrite ^/api/(.*)$ /\$1 break;
         proxy_pass https://api.liveclaw.xyz;
         proxy_set_header Host api.liveclaw.xyz;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Authorization \$http_authorization;
         proxy_read_timeout 30s;
         proxy_connect_timeout 10s;
     }}

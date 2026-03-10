@@ -24,6 +24,7 @@
         userEmail: null,
         userAvatar: null,
         idToken: null,
+        telegramToken: null,
         selectedModel: 'minimax-m2.5',
         selectedChannel: null,
         isDeployed: false,
@@ -58,9 +59,10 @@
 
         // If already signed in, update button immediately
         if (state.userId) {
-            updateAuthButton(googleBtn);
             if (state.isDeployed) {
                 showSuccessDashboard();
+            } else {
+                renderAuthenticatedFlow();
             }
             return;
         }
@@ -77,6 +79,9 @@
         }
 
         // Wire the existing button for click
+        if (googleBtn.dataset.liveclawAuthBound === '1') return;
+        googleBtn.dataset.liveclawAuthBound = '1';
+
         googleBtn.addEventListener('click', function (e) {
             e.preventDefault();
             if (state.userId) {
@@ -90,8 +95,7 @@
             if (GOOGLE_CLIENT_ID && window.google) {
                 window.google.accounts.id.prompt();
             } else {
-                // Fallback: mock sign-in for development without Google Client ID
-                handleMockSignIn();
+                showToast('Google sign-in is not configured yet. Please contact support.', 'error');
             }
         });
     }
@@ -107,22 +111,7 @@
         state.userAvatar = payload.picture;
         saveState();
 
-        const googleBtn = findGoogleButton();
-        if (googleBtn) updateAuthButton(googleBtn);
-    }
-
-    function handleMockSignIn() {
-        // Dev-only: prompt for a user ID
-        const id = prompt('Enter your user ID (dev mode — no Google Client ID configured):');
-        if (!id) return;
-        state.userId = id;
-        state.userName = id;
-        state.userEmail = id + '@liveclaw.xyz';
-        state.userAvatar = null;
-        saveState();
-
-        const googleBtn = findGoogleButton();
-        if (googleBtn) updateAuthButton(googleBtn);
+        renderAuthenticatedFlow();
     }
 
     function signOut() {
@@ -131,25 +120,12 @@
         state.userEmail = null;
         state.userAvatar = null;
         state.idToken = null;
+        state.telegramToken = null;
         state.isDeployed = false;
         state.botPid = null;
         state.botCreditLimit = null;
         saveState();
         location.reload();
-    }
-
-    function updateAuthButton(btn) {
-        if (!state.userId) return;
-        const span = btn.querySelector('span');
-        const img = btn.querySelector('img');
-
-        if (span) span.textContent = state.userName || state.userEmail || 'Signed In';
-        if (img && state.userAvatar) {
-            img.src = state.userAvatar;
-            img.alt = state.userName;
-            img.style.borderRadius = '50%';
-        }
-        btn.classList.add('liveclaw-authed');
     }
 
     function findGoogleButton() {
@@ -171,8 +147,10 @@
     function wireConnectButton() {
         const connectBtn = document.getElementById('connect-btn');
         if (!connectBtn) return;
+        if (connectBtn.dataset.liveclawConnectBound === '1') return;
+        connectBtn.dataset.liveclawConnectBound = '1';
 
-        // Override the existing button click
+        // Modal "Save & Connect" now stores Telegram token and unlocks deploy CTA.
         connectBtn.addEventListener('click', async function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -204,73 +182,235 @@
                 return;
             }
 
-            // Map the selected model to backend model ID
-            const modelMap = {
-                'MiniMax M2.5': 'minimax-m2.5',
-                'Kimi K2.5': 'kimi-k2.5',
-            };
-            const modelId = modelMap[state.selectedModel] || 'minimax-m2.5';
-
-            // Show loading state
+            const originalLabel = connectBtn.innerHTML;
             connectBtn.disabled = true;
-            const origHTML = connectBtn.innerHTML;
             connectBtn.innerHTML = `
                 <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path>
                 </svg>
-                Deploying your Claw agent...
+                Verifying bot token...
             `;
 
             try {
                 const headers = { 'Content-Type': 'application/json' };
                 if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
-                const res = await fetch(API_BASE + '/deploy-bot', {
+                const verifyRes = await fetch(API_BASE + '/verify-telegram-token', {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
                         userId: state.userId,
                         telegramToken: token,
-                        model: modelId,
                     }),
                 });
 
-                const data = await res.json();
-
-                if (res.ok && data.success) {
-                    state.isDeployed = true;
-                    state.botPid = data.pid;
-                    state.botCreditLimit = data.creditLimit;
-                    saveState();
-
-                    showToast('Your Claw agent is live on Telegram!', 'success');
-                    closeTelegramModal();
-                    showSuccessDashboard();
-                } else if (res.status === 402) {
-                    // Subscription required — show pricing
-                    showToast(data.message || 'Subscription required to deploy.', 'error');
-                    connectBtn.disabled = false;
-                    connectBtn.innerHTML = origHTML;
-                    closeTelegramModal();
-                    showPricingModal();
-                } else if (res.status === 403 && data.maxBots) {
-                    // Bot limit reached
-                    showToast(data.message || 'Bot limit reached. Upgrade your plan.', 'error');
-                    connectBtn.disabled = false;
-                    connectBtn.innerHTML = origHTML;
-                } else {
-                    showToast(data.error || 'Deployment failed. Please try again.', 'error');
-                    connectBtn.disabled = false;
-                    connectBtn.innerHTML = origHTML;
+                const verifyData = await verifyRes.json();
+                if (!verifyRes.ok || !verifyData.success) {
+                    showToast(verifyData.error || 'Could not verify Telegram token.', 'error');
+                    return;
                 }
+
+                state.telegramToken = token;
+                state.selectedChannel = 'telegram';
+                saveState();
+
+                closeTelegramModal();
+                renderAuthenticatedFlow();
+
+                const connectedHandle = verifyData.bot && verifyData.bot.username
+                    ? '@' + verifyData.bot.username
+                    : 'your bot';
+                showToast('Telegram connected to ' + connectedHandle + '. Ready to deploy.', 'success');
             } catch (err) {
-                console.error('[LiveClaw] Deploy error:', err);
-                showToast('Network error. Is the backend running?', 'error');
+                console.error('[LiveClaw] Telegram verify error:', err);
+                showToast('Network issue while verifying token. Please retry.', 'error');
+            } finally {
                 connectBtn.disabled = false;
-                connectBtn.innerHTML = origHTML;
+                connectBtn.innerHTML = originalLabel;
             }
         });
+    }
+
+    async function deployFromMainButton(buttonEl) {
+        if (!state.userId) {
+            showToast('Please sign in with Google first', 'error');
+            return;
+        }
+        if (!state.telegramToken) {
+            showToast('Connect Telegram first to continue.', 'error');
+            const telegramBtn = findTelegramOptionButton();
+            if (telegramBtn) telegramBtn.click();
+            return;
+        }
+
+        const modelMap = {
+            'MiniMax M2.5': 'minimax-m2.5',
+            'Kimi K2.5': 'kimi-k2.5',
+        };
+        const modelId = modelMap[state.selectedModel] || 'minimax-m2.5';
+
+        const origHTML = buttonEl.innerHTML;
+        buttonEl.disabled = true;
+        buttonEl.innerHTML = `
+            <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path>
+            </svg>
+            Deploying LiveClaw...
+        `;
+
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
+
+            const res = await fetch(API_BASE + '/deploy-bot', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    userId: state.userId,
+                    telegramToken: state.telegramToken,
+                    model: modelId,
+                }),
+            });
+
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                state.isDeployed = true;
+                state.botPid = data.pid;
+                state.botCreditLimit = data.creditLimit;
+                saveState();
+
+                showToast(data.message || 'Your Claw agent is live on Telegram!', 'success');
+                showSuccessDashboard();
+                return;
+            }
+
+            if (res.status === 402) {
+                showToast(data.message || 'Subscription required to deploy.', 'error');
+                showPricingModal();
+            } else if (res.status === 403 && data.maxBots) {
+                showToast(data.message || 'Bot limit reached. Upgrade your plan.', 'error');
+            } else if (res.status === 400 || res.status === 401) {
+                showToast(data.error || 'Invalid request. Please check your setup.', 'error');
+            } else if (res.status === 503) {
+                showToast(data.message || 'Server is currently at capacity. Please retry shortly.', 'error');
+            } else {
+                showToast(data.message || data.error || 'Deployment failed. Please try again.', 'error');
+            }
+        } catch (err) {
+            console.error('[LiveClaw] Deploy error:', err);
+            showToast('Network error while deploying. Please try again.', 'error');
+        } finally {
+            buttonEl.disabled = false;
+            buttonEl.innerHTML = origHTML;
+        }
+    }
+
+    function findTelegramOptionButton() {
+        const allBtns = document.querySelectorAll('button.options-card');
+        for (const btn of allBtns) {
+            const img = btn.querySelector('img');
+            if (img && img.alt === 'Telegram') return btn;
+        }
+        return null;
+    }
+
+    function renderAuthenticatedFlow() {
+        if (!state.userId || state.isDeployed) return;
+
+        const googleBtn = findGoogleButton();
+        if (!googleBtn) return;
+
+        const authSection = googleBtn.closest('div.w-full.flex.flex-col.gap-3.min-w-0') || googleBtn.parentElement;
+        if (!authSection) return;
+
+        const displayName = escapeHtml(state.userName || 'Signed In');
+        const displayEmail = escapeHtml(state.userEmail || '');
+        const deployDisabled = !state.telegramToken;
+        const deployBtnClasses = deployDisabled
+            ? 'bg-zinc-700/90 border border-zinc-600/40 text-zinc-400 cursor-not-allowed'
+            : 'bg-white text-zinc-900 hover:opacity-90 cursor-pointer';
+
+        const avatarHtml = state.userAvatar
+            ? `<img src="${escapeHtml(state.userAvatar)}" alt="${displayName}" class="size-8 rounded-full object-cover">`
+            : `<span class="size-8 rounded-full bg-white/15 text-white text-xs font-semibold flex items-center justify-center">${displayName.slice(0, 1).toUpperCase()}</span>`;
+
+        authSection.innerHTML = `
+            <div class="w-full flex flex-col gap-3 min-w-0" id="liveclaw-auth-flow">
+                <div class="flex items-center gap-2.5 px-0.5 py-0.5 min-w-0">
+                    ${avatarHtml}
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-1.5">
+                            <p class="text-sm text-white font-medium truncate">${displayName}</p>
+                            <button id="liveclaw-signout-btn" type="button" title="Sign out"
+                                class="shrink-0 flex items-center justify-center size-5 rounded-md text-zinc-500 hover:text-red-400 transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                    <polyline points="16 17 21 12 16 7"></polyline>
+                                    <line x1="21" y1="12" x2="9" y2="12"></line>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="text-xs text-zinc-500 truncate">${displayEmail}</p>
+                    </div>
+                </div>
+
+                <button id="liveclaw-deploy-main-btn" type="button" ${deployDisabled ? 'disabled' : ''}
+                    class="${deployBtnClasses} font-medium text-sm sm:text-base px-4 sm:px-5 py-2.5 w-full sm:w-fit rounded-xl flex flex-row items-center justify-center gap-2 transition-all duration-300 disabled:cursor-not-allowed">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"></path></svg>
+                    <span class="text-base font-medium">Deploy LiveClaw</span>
+                </button>
+
+                <div id="liveclaw-pricing-line">
+                    <p class="text-[#6A6B6C] font-medium text-sm">${deployDisabled ? 'Connect Telegram to continue.' : ''}</p>
+                </div>
+            </div>
+        `;
+
+        const signOutBtn = document.getElementById('liveclaw-signout-btn');
+        if (signOutBtn) signOutBtn.addEventListener('click', signOut);
+
+        const deployBtn = document.getElementById('liveclaw-deploy-main-btn');
+        if (deployBtn) {
+            deployBtn.addEventListener('click', function () {
+                deployFromMainButton(deployBtn);
+            });
+        }
+
+        if (!deployDisabled) {
+            fetchAndRenderPricingLine();
+        }
+    }
+
+    async function fetchAndRenderPricingLine() {
+        const el = document.getElementById('liveclaw-pricing-line');
+        if (!el) return;
+        try {
+            const res = await fetch(API_BASE + '/pricing');
+            if (!res.ok) throw new Error('failed');
+            const data = await res.json();
+            const standard = data.plans.standard;
+            const earlyClaw = data.plans.earlyClaw;
+            const slotsLeft = earlyClaw ? Math.max(0, earlyClaw.spotsRemaining) : 0;
+            const slotColor = slotsLeft < 50 ? 'text-red-400' : slotsLeft < 150 ? 'text-amber-400' : 'text-sky-400';
+
+            el.innerHTML = `
+                <p class="text-xs text-zinc-500">
+                    <span class="font-medium text-zinc-400">$${standard.price.toFixed(2)}/month.</span>
+                    $0.99 one-day trial available. Cancel anytime.
+                    ${slotsLeft > 0
+                        ? `<button id="liveclaw-earlyclaw-cta" class="${slotColor} font-medium hover:underline cursor-pointer bg-transparent border-0 p-0 ml-0.5">🦞 Early Claw $${earlyClaw.price.toFixed(2)}/mo with code EARLYCLAW \u2014 only ${slotsLeft} slots left</button>`
+                        : ''}
+                </p>
+            `;
+
+            const cta = document.getElementById('liveclaw-earlyclaw-cta');
+            if (cta) cta.addEventListener('click', () => showPricingModal());
+        } catch (_) {
+            if (el) el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Ready to deploy.</p>';
+        }
     }
 
     // ─── Success Dashboard ──────────────────────────────────────────────────
@@ -513,7 +653,7 @@
                     <h2 class="text-white font-semibold text-xl">Get LiveClaw</h2>
                     <button id="pricing-close-btn" class="text-zinc-500 hover:text-white transition-colors text-2xl leading-none cursor-pointer">&times;</button>
                 </div>
-                <p class="text-zinc-400 text-sm mb-5">Deploy your 24/7 AI agent on Telegram. 1-day free trial — cancel anytime.</p>
+                <p class="text-zinc-400 text-sm mb-5">Deploy your 24/7 AI agent on Telegram. Try for $0.99 · 24-hour trial — cancel anytime.</p>
 
                 <!-- Loading skeleton -->
                 <div id="pricing-loading" class="flex flex-col gap-4 animate-pulse">
@@ -574,7 +714,7 @@
             container.innerHTML = `
                 <div class="relative rounded-xl border ${isEB ? 'border-amber-500/40' : 'border-indigo-500/40'} bg-white/[0.03] p-6 flex flex-col gap-3 transition-all duration-300">
                     <span class="absolute -top-2.5 left-1/2 -translate-x-1/2 ${isEB ? 'bg-amber-500' : 'bg-indigo-500'} text-white text-xs font-medium px-2.5 py-0.5 rounded-full transition-colors">
-                        ${isEB ? '🔥 Early Claw' : '1-Day Free Trial'}
+                        ${isEB ? '🔥 Early Claw' : '$0.99 Trial'}
                     </span>
 
                     <h3 class="text-white font-semibold text-lg mt-1">${escapeHtml(activePlan.name)}</h3>
@@ -601,9 +741,9 @@
                     <button id="pricing-cta-btn" data-plan="standard"
                         class="mt-3 w-full rounded-lg ${isEB ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-500 hover:bg-indigo-600'} text-white py-2.5 text-sm font-semibold cursor-pointer transition-colors flex items-center justify-center gap-2">
                         <svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd"/></svg>
-                        Start Free Trial
+                        Start $0.99 Trial
                     </button>
-                    <p class="text-center text-zinc-600 text-xs">No charge for 24h. Cancel anytime.</p>
+                    <p class="text-center text-zinc-600 text-xs">$0.99 one-time · Cancel anytime.</p>
                 </div>
 
                 <div class="flex items-center gap-3 px-1">
@@ -707,17 +847,47 @@
         const existing = document.getElementById('liveclaw-toast');
         if (existing) existing.remove();
 
-        const colors = {
-            success: 'bg-emerald-500/20 border-emerald-500/30 text-emerald-300',
-            error: 'bg-red-500/20 border-red-500/30 text-red-300',
-            info: 'bg-blue-500/20 border-blue-500/30 text-blue-300',
+        const variants = {
+            success: {
+                container: 'bg-emerald-500/20 border-emerald-500/35',
+                title: 'text-emerald-200',
+                body: 'text-emerald-300',
+                icon: '<path d="M20 6L9 17l-5-5"/>',
+                label: 'Success',
+            },
+            error: {
+                container: 'bg-red-500/20 border-red-500/35',
+                title: 'text-red-200',
+                body: 'text-red-300',
+                icon: '<path d="M6 6l12 12M18 6L6 18"/>',
+                label: 'Action needed',
+            },
+            info: {
+                container: 'bg-blue-500/20 border-blue-500/35',
+                title: 'text-blue-200',
+                body: 'text-blue-300',
+                icon: '<path d="M12 8h.01M11 12h1v4h1"/><circle cx="12" cy="12" r="10"/>',
+                label: 'Notice',
+            },
         };
+
+        const variant = variants[type] || variants.info;
 
         const toast = document.createElement('div');
         toast.id = 'liveclaw-toast';
-        toast.className = `fixed top-6 right-6 z-[200] px-5 py-3 rounded-xl border text-sm font-medium ${colors[type]} backdrop-blur-md shadow-lg transition-all duration-300`;
+        toast.className = `fixed top-6 right-6 z-[200] w-[min(92vw,420px)] rounded-xl border ${variant.container} p-4 backdrop-blur-md shadow-lg transition-all duration-300`;
         toast.style.transform = 'translateX(120%)';
-        toast.textContent = message;
+        toast.innerHTML = `
+            <div class="flex items-start gap-3">
+                <div class="mt-0.5 rounded-full border border-white/20 p-1.5 ${variant.body}">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${variant.icon}</svg>
+                </div>
+                <div class="min-w-0">
+                    <p class="text-sm font-semibold ${variant.title}">${variant.label}</p>
+                    <p class="text-sm ${variant.body}">${escapeHtml(message)}</p>
+                </div>
+            </div>
+        `;
         document.body.appendChild(toast);
 
         requestAnimationFrame(() => {
@@ -776,7 +946,10 @@
         if (modal) {
             modal.style.cssText = 'display: none !important;';
             const video = modal.querySelector('video');
-            if (video) video.pause();
+            if (video) {
+                video.pause();
+                video.currentTime = 0;
+            }
         }
     }
 
