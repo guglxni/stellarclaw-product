@@ -306,7 +306,31 @@ server {
         try_files \$uri \$uri/ /admin/index.html;
     }
 
-    # Admin login — strict rate limit (brute-force protection)
+    # /api/* — strip prefix and proxy to Node.js (used by admin dashboard)
+    # e.g. /api/admin/login -> localhost:3000/admin/login
+    location = /api/admin/login {
+        limit_req zone=admin_login burst=7 nodelay;
+        proxy_pass http://127.0.0.1:3000/admin/login;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 30s;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Request-Id \$request_id;
+        proxy_read_timeout 30s;
+        proxy_connect_timeout 10s;
+    }
+
+    # Admin login direct (kept for internal tooling)
     location = /admin/login {
         limit_req zone=admin_login burst=7 nodelay;
         proxy_pass http://127.0.0.1:3000/admin/login;
@@ -314,6 +338,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 30s;
     }
 
     # Webhooks → Node.js (must come before location /)
