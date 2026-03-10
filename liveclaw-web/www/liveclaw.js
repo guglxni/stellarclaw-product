@@ -100,6 +100,9 @@
         });
     }
 
+    // ─── Token Refresh ────────────────────────────────────────────────────
+    let _tokenRefreshResolve = null;
+
     function handleGoogleCredential(response) {
         // Store the raw JWT for Authorization header
         state.idToken = response.credential;
@@ -111,7 +114,60 @@
         state.userAvatar = payload.picture;
         saveState();
 
+        // Resolve any pending silent token refresh
+        if (_tokenRefreshResolve) {
+            _tokenRefreshResolve(true);
+            _tokenRefreshResolve = null;
+        }
+
         renderAuthenticatedFlow();
+    }
+
+    /**
+     * Ensures state.idToken is fresh (not expired).
+     * Tries Google One Tap silent refresh first, falls back to asking user to re-sign-in.
+     * Returns true if token is valid, false if user needs to sign in again.
+     */
+    async function ensureFreshToken() {
+        if (state.idToken) {
+            try {
+                const payload = decodeJwt(state.idToken);
+                // Valid for at least 60 more seconds
+                if (payload.exp && payload.exp * 1000 > Date.now() + 60000) {
+                    return true;
+                }
+            } catch (_) { /* fall through to refresh */ }
+        }
+
+        // Token expired — try silent refresh via Google One Tap
+        if (window.google && GOOGLE_CLIENT_ID) {
+            const refreshed = await new Promise((resolve) => {
+                _tokenRefreshResolve = resolve;
+                const timeout = setTimeout(() => {
+                    _tokenRefreshResolve = null;
+                    resolve(false);
+                }, 4000);
+                try {
+                    google.accounts.id.prompt((notification) => {
+                        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+                            clearTimeout(timeout);
+                            _tokenRefreshResolve = null;
+                            resolve(false);
+                        }
+                        // If displayed + auto-selected, handleGoogleCredential will resolve(true)
+                    });
+                } catch (_) {
+                    clearTimeout(timeout);
+                    _tokenRefreshResolve = null;
+                    resolve(false);
+                }
+            });
+            if (refreshed) return true;
+        }
+
+        // Silent refresh failed — ask user to sign in again
+        showToast('Your session has expired. Please sign in again.', 'error', 'Session expired');
+        return false;
     }
 
     function signOut() {
@@ -193,6 +249,7 @@
             `;
 
             try {
+                if (!await ensureFreshToken()) return;
                 const headers = { 'Content-Type': 'application/json' };
                 if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
@@ -252,6 +309,13 @@
         `;
 
         try {
+            // Step 0: Ensure Google token is still valid
+            if (!await ensureFreshToken()) {
+                buttonEl.disabled = false;
+                buttonEl.innerHTML = origHTML;
+                return;
+            }
+
             // Step 1: Check subscription status first
             const headers = { 'Content-Type': 'application/json' };
             if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
@@ -600,6 +664,7 @@
                 stopBtn.addEventListener('click', async () => {
                     if (!confirm('Stop your Claw agent? You can redeploy anytime.')) return;
                     try {
+                        if (!await ensureFreshToken()) return;
                         const headers = { 'Content-Type': 'application/json' };
                         if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
@@ -635,6 +700,7 @@
     async function fetchSubscription() {
         if (!state.userId) return;
         try {
+            if (!await ensureFreshToken()) return;
             const headers = {};
             if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
@@ -661,6 +727,7 @@
     async function openPortal() {
         if (!state.userId) return;
         try {
+            if (!await ensureFreshToken()) return;
             const headers = { 'Content-Type': 'application/json' };
             if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
@@ -823,6 +890,12 @@
             btn.style.opacity = '0.7';
             btn.innerHTML = '<svg style="width:1rem;height:1rem;animation:spin 1s linear infinite;" viewBox="0 0 24 24" fill="none"><circle style="opacity:0.25;" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path style="opacity:0.75;" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Redirecting\u2026';
             try {
+                if (!await ensureFreshToken()) {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.innerHTML = origHTML;
+                    return;
+                }
                 const headers = { 'Content-Type': 'application/json' };
                 if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
@@ -1062,6 +1135,7 @@
                         </svg>
                         Deploying LiveClaw...
                     `;
+                    if (!await ensureFreshToken()) return;
                     const headers = { 'Content-Type': 'application/json' };
                     if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
                     await executeDeploy(deployBtn, origHTML, headers);

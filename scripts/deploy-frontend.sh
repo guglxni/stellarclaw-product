@@ -324,8 +324,15 @@ if certbot --nginx \
     --agree-tos \
     --non-interactive \
     --redirect \
+    --force-renewal \
     --staple-ocsp 2>/dev/null; then
     echo "  ✅ SSL issued for ${DOMAIN} + www.${DOMAIN}"
+elif certbot install --nginx \
+    -d ${DOMAIN} \
+    -d www.${DOMAIN} \
+    --redirect \
+    --non-interactive 2>/dev/null; then
+    echo "  ✅ SSL deployed from existing cert for ${DOMAIN}"
 else
     echo "  ⚠️  Certbot failed — DNS not pointed yet?"
     echo "  Run later: certbot --nginx -d ${DOMAIN} -d www.${DOMAIN} -m ${ADMIN_EMAIL} --agree-tos"
