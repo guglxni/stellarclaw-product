@@ -256,13 +256,17 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     # ── SPA Routing ──────────────────────────────────────────────────────
+    location = / {
+        try_files /index.html =404;
+    }
+
     location / {
-        try_files \\\$uri \\\$uri/ /index.html;
+        try_files $uri $uri/ /index.html;
     }
 
     # ── Admin Dashboard ──────────────────────────────────────────────────
     location /admin/ {
-        try_files \\\$uri \\\$uri/ /admin/index.html;
+        try_files $uri $uri/ /admin/index.html;
     }
     # ── API proxy (fallback when config.js LIVECLAW_API_BASE not set) ────────
     # Strips /api prefix and forwards to the backend droplet (api.liveclaw.xyz).
@@ -271,21 +275,21 @@ server {
     location = /api/admin/login {
         proxy_pass https://api.liveclaw.xyz/admin/login;
         proxy_set_header Host api.liveclaw.xyz;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
-        proxy_set_header Authorization \\\$http_authorization;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
         proxy_read_timeout 30s;
     }
 
     location /api/ {
-        rewrite ^/api/(.*)\$ /\\\$1 break;
+        rewrite ^/api/(.*)$ /$1 break;
         proxy_pass https://api.liveclaw.xyz;
         proxy_set_header Host api.liveclaw.xyz;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
-        proxy_set_header Authorization \\\$http_authorization;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
         proxy_read_timeout 30s;
         proxy_connect_timeout 10s;
     }}
