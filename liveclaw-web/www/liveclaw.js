@@ -320,10 +320,14 @@
     function renderAuthenticatedFlow() {
         if (!state.userId || state.isDeployed) return;
 
-        const googleBtn = findGoogleButton();
-        if (!googleBtn) return;
-
-        const authSection = googleBtn.closest('div.w-full.flex.flex-col.gap-3.min-w-0') || googleBtn.parentElement;
+        // Try to find existing auth flow container first (re-render after Telegram connect)
+        let authSection = document.getElementById('liveclaw-auth-flow');
+        if (!authSection) {
+            // First render — find the Google button and replace its parent
+            const googleBtn = findGoogleButton();
+            if (!googleBtn) return;
+            authSection = googleBtn.closest('div.w-full.flex.flex-col.gap-3.min-w-0') || googleBtn.parentElement;
+        }
         if (!authSection) return;
 
         const displayName = escapeHtml(state.userName || 'Signed In');
