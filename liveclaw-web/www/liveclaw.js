@@ -337,8 +337,8 @@
             ? 'bg-zinc-700/90 border border-zinc-600/40 text-zinc-400 cursor-not-allowed'
             : 'bg-white cursor-pointer hover:opacity-90';
         const deployBtnStyle = deployDisabled
-            ? 'style="width:fit-content;"'
-            : 'style="width:fit-content; color:#09090b;"';
+            ? 'style="width:fit-content; padding: 0.75rem 1.5rem;"'
+            : 'style="width:fit-content; padding: 0.75rem 1.5rem; color:#09090b;"';
 
         const avatarHtml = state.userAvatar
             ? `<img src="${escapeHtml(state.userAvatar)}" alt="${displayName}" class="size-8 rounded-full object-cover">`
