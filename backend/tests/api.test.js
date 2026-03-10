@@ -9,6 +9,8 @@
  *  - GET  /health
  *  - GET  /admin/stats
  *  - GET  /admin/revenue
+ *  - GET  /admin/dashboard-live
+ *  - GET  /admin/metrics/prometheus
  *  - GET  /admin/users
  *  - GET  /admin/users/:userId
  *  - GET  /admin/events
@@ -161,6 +163,62 @@ describe('GET /admin/revenue', () => {
         expect(res.body.period).toBe('invalid');
         // Should still return data (uses -30 days fallback)
         expect(res.body).toHaveProperty('revenue');
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /admin/dashboard-live
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /admin/dashboard-live', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/dashboard-live')
+            .expect(401);
+    });
+
+    it('returns unified live telemetry payload', async () => {
+        const res = await request(app)
+            .get('/admin/dashboard-live')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body).toHaveProperty('health');
+        expect(res.body).toHaveProperty('traffic');
+        expect(res.body).toHaveProperty('system');
+        expect(res.body).toHaveProperty('agents');
+        expect(res.body).toHaveProperty('billing');
+        expect(res.body).toHaveProperty('recentEvents');
+
+        expect(res.body.traffic).toHaveProperty('last1m');
+        expect(res.body.traffic.last1m).toHaveProperty('reqPerSec');
+        expect(res.body.agents).toHaveProperty('instances');
+        expect(Array.isArray(res.body.agents.instances)).toBe(true);
+        expect(res.body.billing).toHaveProperty('payments');
+        expect(Array.isArray(res.body.billing.payments.recent)).toBe(true);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /admin/metrics/prometheus
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /admin/metrics/prometheus', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/metrics/prometheus')
+            .expect(401);
+    });
+
+    it('returns Prometheus text payload with key metrics', async () => {
+        const res = await request(app)
+            .get('/admin/metrics/prometheus')
+            .set('x-admin-secret', 'test-admin-secret')
+            .expect(200)
+            .expect('Content-Type', /text\/plain/);
+
+        expect(res.text).toContain('liveclaw_http_requests_total');
+        expect(res.text).toContain('liveclaw_agents_running');
+        expect(res.text).toContain('liveclaw_subscriptions_active');
+        expect(res.text).toContain('liveclaw_revenue_paid_usd');
     });
 });
 

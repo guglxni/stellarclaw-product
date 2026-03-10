@@ -170,6 +170,27 @@ async function deactivateVirtualKey(vkId) {
 }
 
 /**
+ * Returns LLM budget usage statistics for a Virtual Key.
+ * Handles multiple Bifrost field name variants across versions.
+ *
+ * @param  {string} vkId - Virtual Key ID
+ * @returns {Promise<{spentUsd: number, limitUsd: number, remainingUsd: number, isActive: boolean}>}
+ */
+async function getVirtualKeyUsage(vkId) {
+    const data = await getVirtualKey(vkId);
+    const budget = data.budget || {};
+    // Bifrost uses current_usage; older builds may use used/spend/usage
+    const spent = budget.current_usage ?? budget.used ?? budget.spend ?? budget.usage ?? 0;
+    const limit = budget.max_limit ?? budget.limit ?? 0;
+    return {
+        spentUsd: parseFloat(Number(spent).toFixed(6)),
+        limitUsd: parseFloat(Number(limit).toFixed(6)),
+        remainingUsd: parseFloat(Math.max(0, Number(limit) - Number(spent)).toFixed(6)),
+        isActive: data.is_active !== false,
+    };
+}
+
+/**
  * Returns the Bifrost gateway URL for LLM traffic routing.
  * picobot sends LLM requests to this URL (OpenAI-compatible).
  *
@@ -210,6 +231,7 @@ module.exports = {
     createVirtualKey,
     topUpCredits,
     getVirtualKey,
+    getVirtualKeyUsage,
     deactivateVirtualKey,
     getGatewayUrl,
     getProviderConfig,

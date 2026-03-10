@@ -465,234 +465,188 @@
     <script src="/config.js"></script>
 </head>
 <body>
-
-<!-- ═══════ Auth Gate ═══════ -->
 <div id="auth-gate">
     <div class="auth-box">
         <div style="font-size: 2.5rem;">🦀</div>
-        <h1>LiveClaw Admin</h1>
-        <p style="font-size: 0.8125rem; color: var(--text-muted);">Enter your admin secret to access the dashboard.</p>
+        <h1>LiveClaw Command Center</h1>
+        <p style="font-size: 0.8125rem; color: var(--text-muted);">Enter your admin secret for live telemetry access.</p>
         <input type="password" id="secret-input" placeholder="Admin Secret" autocomplete="off" />
         <p class="error-msg" id="auth-error">Invalid admin secret</p>
-        <button id="auth-btn">Sign In</button>
+        <button id="auth-btn">Enter Dashboard</button>
     </div>
 </div>
 
-<!-- ═══════ Dashboard ═══════ -->
 <div id="dashboard">
-    <!-- Top bar -->
     <div class="topbar">
         <div class="topbar-left">
             <span class="topbar-logo">🦀 LiveClaw</span>
-            <span class="topbar-badge">Admin</span>
+            <span class="topbar-badge">Realtime Ops</span>
         </div>
         <div class="topbar-right">
             <span class="topbar-time" id="clock"></span>
+            <span class="topbar-time" id="last-update">Last update: —</span>
+            <button class="topbar-btn" id="toggle-live-btn">Pause Live</button>
             <button class="topbar-btn" id="refresh-btn">↻ Refresh</button>
             <button class="topbar-btn" id="logout-btn">Sign Out</button>
         </div>
     </div>
 
-    <!-- Tabs -->
     <div class="tabs">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="revenue">Revenue</button>
-        <button class="tab" data-tab="users">Users</button>
-        <button class="tab" data-tab="events">Event Logs</button>
+        <button class="tab active" data-tab="overview">Command Center</button>
+        <button class="tab" data-tab="agents">Agents</button>
+        <button class="tab" data-tab="payments">Payments</button>
+        <button class="tab" data-tab="events">Events</button>
+        <button class="tab" data-tab="llm">LLM Costs</button>
     </div>
 
     <div class="main-content">
-
-        <!-- ═══════ Overview Tab ═══════ -->
         <div class="tab-panel active" id="panel-overview">
-            <div class="stats-grid" id="overview-stats">
-                <div class="stat-card"><span class="stat-label">Total Users</span><span class="stat-value" id="s-total">—</span></div>
-                <div class="stat-card"><span class="stat-label">Running</span><span class="stat-value emerald" id="s-running">—</span></div>
-                <div class="stat-card"><span class="stat-label">Stopped</span><span class="stat-value amber" id="s-stopped">—</span></div>
-                <div class="stat-card"><span class="stat-label">Crashed</span><span class="stat-value red" id="s-crashed">—</span></div>
-                <div class="stat-card"><span class="stat-label">Credit Depleted</span><span class="stat-value red" id="s-depleted">—</span></div>
-                <div class="stat-card"><span class="stat-label">Total Credit Allocated</span><span class="stat-value blue" id="s-credit">—</span></div>
+            <div class="stats-grid" id="kpi-grid"></div>
+
+            <div class="section">
+                <div class="section-header"><span class="section-title">Infra Saturation</span></div>
+                <div class="stats-grid">
+                    <div class="stat-card"><span class="stat-label">CPU Load (1m / 5m / 15m)</span><span class="stat-value" id="load-triple">—</span></div>
+                    <div class="stat-card"><span class="stat-label">RAM Used</span><span class="stat-value" id="ram-used">—</span><span class="stat-sub" id="ram-detail">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Disk Used</span><span class="stat-value" id="disk-used">—</span><span class="stat-sub" id="disk-detail">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Node Runtime</span><span class="stat-value" id="node-runtime">—</span><span class="stat-sub" id="node-version">—</span></div>
+                </div>
             </div>
 
             <div class="section">
-                <div class="section-header">
-                    <span class="section-title">Recent Events (Last Hour)</span>
-                </div>
+                <div class="section-header"><span class="section-title">Recent Platform Events</span></div>
                 <div class="table-wrap">
                     <table>
-                        <thead><tr><th>Event</th><th>Count</th></tr></thead>
-                        <tbody id="recent-events-body"><tr><td colspan="2" class="empty-msg">Loading…</td></tr></tbody>
+                        <thead><tr><th>Time</th><th>User</th><th>Event</th><th>Detail</th></tr></thead>
+                        <tbody id="overview-events-body"><tr><td colspan="4" class="empty-msg">Waiting for live data...</td></tr></tbody>
                     </table>
                 </div>
             </div>
-
-            <div class="section">
-                <div class="section-header">
-                    <span class="section-title">System</span>
-                </div>
-                <div class="stats-grid" id="system-stats">
-                    <div class="stat-card"><span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span><span class="stat-sub">seconds</span></div>
-                    <div class="stat-card"><span class="stat-label">RSS Memory</span><span class="stat-value" id="s-rss">—</span><span class="stat-sub">MB</span></div>
-                    <div class="stat-card"><span class="stat-label">Heap Used</span><span class="stat-value" id="s-heap">—</span><span class="stat-sub">MB</span></div>
-                    <div class="stat-card"><span class="stat-label">Node Version</span><span class="stat-value" id="s-node" style="font-size:1rem;">—</span></div>
-                </div>
-            </div>
         </div>
 
-        <!-- ═══════ Revenue Tab ═══════ -->
-        <div class="tab-panel" id="panel-revenue">
+        <div class="tab-panel" id="panel-agents">
             <div class="section">
-                <div class="section-header">
-                    <span class="section-title">Revenue Summary</span>
-                    <div class="section-controls">
-                        <button class="period-btn active" data-period="30d">30d</button>
-                        <button class="period-btn" data-period="7d">7d</button>
-                        <button class="period-btn" data-period="24h">24h</button>
-                        <button class="period-btn" data-period="90d">90d</button>
-                        <button class="period-btn" data-period="all">All</button>
-                    </div>
-                </div>
-
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <span class="stat-label">Total Revenue</span>
-                        <span class="stat-value emerald" id="r-total">$0.00</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Ad Revenue</span>
-                        <span class="stat-value blue" id="r-ads">$0.00</span>
-                        <span class="stat-sub" id="r-ads-count">0 impressions</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Stars Revenue</span>
-                        <span class="stat-value" style="color: var(--amber);" id="r-stars">$0.00</span>
-                        <span class="stat-sub" id="r-stars-count">0 payments (0★)</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Invoices Created</span>
-                        <span class="stat-value" id="r-invoices">0</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-header">
-                    <span class="section-title">Daily Revenue (Last 30 Days)</span>
-                </div>
-                <div class="stat-card">
-                    <div class="chart-bars" id="revenue-chart"></div>
-                    <div class="chart-legend">
-                        <div class="chart-legend-item"><span class="chart-legend-dot" style="background: var(--accent);"></span> Ads</div>
-                        <div class="chart-legend-item"><span class="chart-legend-dot" style="background: var(--emerald);"></span> Stars</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ═══════ Users Tab ═══════ -->
-        <div class="tab-panel" id="panel-users">
-            <div class="section">
-                <div class="section-header">
-                    <span class="section-title">Bot Users</span>
-                </div>
+                <div class="section-header"><span class="section-title">All Agent Instances</span></div>
                 <div class="filter-bar">
-                    <select class="filter-select" id="user-status-filter">
-                        <option value="">All Statuses</option>
+                    <select class="filter-select" id="agent-status-filter">
+                        <option value="">All statuses</option>
                         <option value="running">Running</option>
                         <option value="stopped">Stopped</option>
                         <option value="crashed">Crashed</option>
                     </select>
+                    <input class="filter-input" id="agent-user-filter" type="text" placeholder="Filter by user ID" />
                 </div>
                 <div class="table-wrap">
                     <table>
                         <thead>
                             <tr>
-                                <th>User ID</th>
-                                <th>Model</th>
-                                <th>Status</th>
-                                <th>PID</th>
-                                <th>Credits</th>
-                                <th>Created</th>
-                                <th>Actions</th>
+                                <th>User</th><th>Status</th><th>Model</th><th>PID</th><th>Alive</th><th>RAM</th><th>ROM</th><th>LLM Spent</th><th>LLM Budget</th><th>LLM %</th><th>Credits</th><th>Chat</th><th>Bifrost VK</th><th>Updated</th><th>Action</th>
                             </tr>
                         </thead>
-                        <tbody id="users-body"><tr><td colspan="7" class="empty-msg">Loading…</td></tr></tbody>
+                        <tbody id="agents-body"><tr><td colspan="15" class="empty-msg">Waiting for live data...</td></tr></tbody>
                     </table>
-                </div>
-                <div class="pagination">
-                    <span id="users-info">—</span>
-                    <div class="pagination-btns">
-                        <button class="btn-sm" id="users-prev" disabled>← Prev</button>
-                        <button class="btn-sm" id="users-next" disabled>Next →</button>
-                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- ═══════ Events Tab ═══════ -->
+        <div class="tab-panel" id="panel-payments">
+            <div class="section">
+                <div class="section-header"><span class="section-title">Revenue KPIs</span></div>
+                <div class="stats-grid">
+                    <div class="stat-card"><span class="stat-label">Paid Revenue (All time)</span><span class="stat-value emerald" id="pay-revenue">—</span></div>
+                    <div class="stat-card"><span class="stat-label">MRR</span><span class="stat-value blue" id="pay-mrr">—</span></div>
+                    <div class="stat-card"><span class="stat-label">ARR</span><span class="stat-value" id="pay-arr">—</span></div>
+                    <div class="stat-card"><span class="stat-label">ARPU</span><span class="stat-value" id="pay-arpu">—</span><span class="stat-sub">per active subscriber</span></div>
+                    <div class="stat-card"><span class="stat-label">Total Payments</span><span class="stat-value" id="pay-count">—</span></div>
+                    <div class="stat-card"><span class="stat-label">LLM Spend Total</span><span class="stat-value amber" id="pay-llm-spend">—</span><span class="stat-sub" id="pay-llm-vk">— VKs tracked</span></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header"><span class="section-title">Subscription Health</span></div>
+                <div class="stats-grid">
+                    <div class="stat-card"><span class="stat-label">Active</span><span class="stat-value emerald" id="sub-active">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Trialing</span><span class="stat-value blue" id="sub-trialing">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Past Due</span><span class="stat-value red" id="sub-past">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Cancelled</span><span class="stat-value amber" id="sub-cancelled">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Early Bird (🐦)</span><span class="stat-value" id="sub-early-bird">—</span><span class="stat-sub">of 500 spots</span></div>
+                    <div class="stat-card"><span class="stat-label">Trial Ending ≤7d</span><span class="stat-value red" id="sub-trial-soon">—</span><span class="stat-sub">needs attention</span></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header"><span class="section-title">Recent Payments (Dodo)</span></div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Time</th><th>User</th><th>Payment ID</th><th>Plan</th><th>Status</th><th>Amount</th><th>Currency</th></tr></thead>
+                        <tbody id="payments-body"><tr><td colspan="7" class="empty-msg">Waiting for live data...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div class="tab-panel" id="panel-events">
             <div class="section">
-                <div class="section-header">
-                    <span class="section-title">Event Logs</span>
-                </div>
+                <div class="section-header"><span class="section-title">Event Stream</span></div>
                 <div class="filter-bar">
-                    <select class="filter-select" id="event-type-filter">
-                        <option value="">All Events</option>
-                    </select>
-                    <input class="filter-input" id="event-user-filter" type="text" placeholder="Filter by User ID…" />
+                    <input class="filter-input" id="event-user-filter" type="text" placeholder="Filter by user ID" />
+                    <input class="filter-input" id="event-name-filter" type="text" placeholder="Filter by event name" />
                 </div>
                 <div class="table-wrap">
                     <table>
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Timestamp</th>
-                                <th>User</th>
-                                <th>Event</th>
-                                <th>Detail</th>
-                                <th>IP</th>
-                            </tr>
-                        </thead>
-                        <tbody id="events-body"><tr><td colspan="6" class="empty-msg">Loading…</td></tr></tbody>
+                        <thead><tr><th>ID</th><th>Time</th><th>User</th><th>Event</th><th>Detail</th><th>IP</th></tr></thead>
+                        <tbody id="events-body"><tr><td colspan="6" class="empty-msg">Waiting for live data...</td></tr></tbody>
                     </table>
-                </div>
-                <div class="pagination">
-                    <span id="events-info">—</span>
-                    <div class="pagination-btns">
-                        <button class="btn-sm" id="events-prev" disabled>← Prev</button>
-                        <button class="btn-sm" id="events-next" disabled>Next →</button>
-                    </div>
                 </div>
             </div>
         </div>
 
-    </div><!-- main-content -->
-</div><!-- dashboard -->
+        <div class="tab-panel" id="panel-llm">
+            <div class="section">
+                <div class="section-header"><span class="section-title">LLM Cost Summary — Bifrost Virtual Keys</span></div>
+                <div class="stats-grid" id="llm-kpi-grid"></div>
+            </div>
+            <div class="section">
+                <div class="section-header">
+                    <span class="section-title">Per-User LLM Spend</span>
+                    <span class="stat-sub" style="font-size:0.75rem;color:var(--text-muted)">Refreshed every 30s via Bifrost cache</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>User</th><th>Model</th><th>Status</th><th>LLM Spent</th><th>LLM Budget</th><th>Used %</th><th>Usage Bar</th><th>Credits (DB)</th><th>Bifrost VK</th></tr>
+                        </thead>
+                        <tbody id="llm-body"><tr><td colspan="9" class="empty-msg">Waiting for live data...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script>
 (function () {
     'use strict';
 
-    // ─── Config ─────────────────────────────────────────────────────────────
     const API_BASE = window.LIVECLAW_API_BASE || '/api';
     let ADMIN_SECRET = sessionStorage.getItem('liveclaw_admin_secret') || '';
+    let latest = null;
+    let liveEnabled = true;
 
-    // ─── Helpers ────────────────────────────────────────────────────────────
-    function esc(str) {
+    function $(id) { return document.getElementById(id); }
+    function esc(value) {
         const d = document.createElement('div');
-        d.appendChild(document.createTextNode(String(str ?? '')));
+        d.appendChild(document.createTextNode(String(value ?? '')));
         return d.innerHTML;
     }
 
-    function $(id) { return document.getElementById(id); }
-
-    async function api(path, opts = {}) {
+    async function api(path, opts) {
         const res = await fetch(API_BASE + path, {
-            ...opts,
+            ...(opts || {}),
             headers: {
                 'Content-Type': 'application/json',
                 'X-Admin-Secret': ADMIN_SECRET,
-                ...(opts.headers || {}),
+                ...((opts && opts.headers) || {}),
             },
         });
         if (res.status === 401) {
@@ -703,55 +657,217 @@
         return res.json();
     }
 
-    function fmtDate(iso) {
-        if (!iso) return '—';
-        const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
-        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+    function usd(v) { return '$' + Number(v || 0).toFixed(2); }
+    function pct(v) { return Number(v || 0).toFixed(1) + '%'; }
+    function when(ts) {
+        if (!ts) return '—';
+        const d = new Date(String(ts).endsWith('Z') ? ts : (ts + 'Z'));
+        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    }
+    function short(s, n) {
+        const v = String(s || '');
+        return v.length > n ? (v.slice(0, n) + '...') : v;
     }
 
-    function fmtUsd(n) { return '$' + (n || 0).toFixed(4); }
+    function setKpiGrid(d) {
+        const llmSpent = d.billing.llm ? d.billing.llm.totalSpentUsd : null;
+        const kpis = [
+            ['Health', d.health.overall.toUpperCase(), d.health.overall === 'ok' ? 'emerald' : (d.health.overall === 'degraded' ? 'amber' : 'red'), d.health.checks.bifrost ? 'Bifrost ✓' : 'Bifrost ✗'],
+            ['RPS (1m)', d.traffic.last1m.reqPerSec + '/s', 'blue', 'req/sec'],
+            ['Error Rate (1m)', pct(d.traffic.last1m.errorRatePct), d.traffic.last1m.errorRatePct > 1 ? 'red' : 'emerald', d.traffic.last1m.count + ' requests sampled'],
+            ['P95 Latency (1m)', d.traffic.last1m.p95LatencyMs + 'ms', d.traffic.last1m.p95LatencyMs > 1500 ? 'red' : 'blue', 'avg ' + d.traffic.last1m.avgLatencyMs + 'ms'],
+            ['Agents Running', d.agents.running + ' / ' + d.agents.total, 'emerald', d.agents.crashed + ' crashed'],
+            ['MRR', usd(d.billing.payments.mrrUsd), 'blue', 'ARR ' + usd(d.billing.payments.arrUsd)],
+            ['LLM Spend', llmSpent != null ? '$' + llmSpent.toFixed(4) : '—', 'amber', (d.billing.llm ? d.billing.llm.activeVkCount : '—') + ' VKs tracked'],
+            ['Requests', d.traffic.sinceStartTotal, '', 'since process start'],
+        ];
 
-    function truncate(str, len = 24) {
-        str = String(str || '');
-        return str.length > len ? str.slice(0, len) + '…' : str;
+        $('kpi-grid').innerHTML = kpis.map(k =>
+            '<div class="stat-card">' +
+            '<span class="stat-label">' + esc(k[0]) + '</span>' +
+            '<span class="stat-value ' + esc(k[2]) + '">' + esc(k[1]) + '</span>' +
+            (k[3] ? '<span class="stat-sub">' + esc(k[3]) + '</span>' : '') +
+            '</div>'
+        ).join('');
     }
 
-    // ─── Auth ───────────────────────────────────────────────────────────────
-    function initAuth() {
-        if (ADMIN_SECRET) {
-            showDashboard();
-            return;
-        }
+    function renderOverview(d) {
+        setKpiGrid(d);
+        $('load-triple').textContent = d.system.os.loadAvg['1m'] + ' / ' + d.system.os.loadAvg['5m'] + ' / ' + d.system.os.loadAvg['15m'];
+        $('ram-used').textContent = pct(d.system.os.memory.usedPct);
+        $('ram-detail').textContent = d.system.os.memory.freeMB + ' MB free of ' + d.system.os.memory.totalMB + ' MB';
+        $('disk-used').textContent = d.system.os.disk.usedPct != null ? pct(d.system.os.disk.usedPct) : '—';
+        $('disk-detail').textContent = d.system.os.disk.usedGB != null ? (d.system.os.disk.usedGB + ' GB used / ' + d.system.os.disk.totalGB + ' GB') : 'Disk info unavailable';
+        $('node-runtime').textContent = Math.round(d.system.uptimeSeconds / 3600) + 'h';
+        $('node-version').textContent = d.system.node.version + ' | pid ' + d.system.node.pid;
 
-        $('auth-btn').addEventListener('click', tryAuth);
-        $('secret-input').addEventListener('keydown', e => { if (e.key === 'Enter') tryAuth(); });
+        const events = d.recentEvents.slice(0, 15);
+        $('overview-events-body').innerHTML = events.length === 0
+            ? '<tr><td colspan="4" class="empty-msg">No recent events</td></tr>'
+            : events.map(e =>
+                '<tr><td>' + esc(when(e.ts)) + '</td><td class="mono">' + esc(short(e.user_id || 'system', 20)) + '</td><td>' + esc(e.event) + '</td><td class="mono">' + esc(short(e.detail || '—', 80)) + '</td></tr>'
+            ).join('');
     }
 
-    async function tryAuth() {
-        const secret = $('secret-input').value.trim();
-        if (!secret) return;
+    function renderAgents(d) {
+        const statusFilter = $('agent-status-filter').value;
+        const userFilter = $('agent-user-filter').value.trim().toLowerCase();
+        const rows = d.agents.instances.filter(a => {
+            if (statusFilter && a.status !== statusFilter) return false;
+            if (userFilter && String(a.userId || '').toLowerCase().indexOf(userFilter) === -1) return false;
+            return true;
+        });
 
-        ADMIN_SECRET = secret;
-        try {
-            await api('/admin/stats');
-            sessionStorage.setItem('liveclaw_admin_secret', secret);
-            showDashboard();
-        } catch (_) {
-            $('auth-error').style.display = 'block';
-            $('secret-input').value = '';
-            ADMIN_SECRET = '';
-        }
+        $('agents-body').innerHTML = rows.length === 0
+            ? '<tr><td colspan="15" class="empty-msg">No instances match your filters</td></tr>'
+            : rows.map(a => {
+                const llmBar = (a.llmUsedPct != null)
+                    ? '<span style="display:inline-block;width:40px;height:6px;border-radius:3px;background:rgba(255,255,255,0.1);vertical-align:middle;margin-left:4px"><span style="display:block;height:100%;border-radius:3px;width:' + Math.min(100, a.llmUsedPct) + '%;background:' + (a.llmUsedPct > 80 ? 'var(--red)' : a.llmUsedPct > 50 ? 'var(--amber)' : 'var(--emerald)') + '"></span></span>'
+                    : '';
+                return '<tr>' +
+                '<td class="mono">' + esc(short(a.userId, 22)) + '</td>' +
+                '<td><span class="status-badge ' + esc(a.status) + '"><span class="status-dot"></span>' + esc(a.status) + '</span></td>' +
+                '<td>' + esc(a.model) + '</td>' +
+                '<td class="mono">' + esc(a.pid) + '</td>' +
+                '<td>' + (a.alive ? '<span style="color:var(--emerald)">●</span> yes' : '<span style="color:var(--text-muted)">○</span> no') + '</td>' +
+                '<td>' + esc(a.rssMB == null ? '—' : (a.rssMB + ' MB')) + '</td>' +
+                '<td>' + esc((a.romMB || 0) + ' MB') + '</td>' +
+                '<td class="mono">' + (a.llmSpentUsd != null ? '$' + Number(a.llmSpentUsd).toFixed(4) : '—') + '</td>' +
+                '<td class="mono">' + (a.llmBudgetUsd != null ? '$' + Number(a.llmBudgetUsd).toFixed(4) : '—') + '</td>' +
+                '<td>' + (a.llmUsedPct != null ? (a.llmUsedPct + '%' + llmBar) : '—') + '</td>' +
+                '<td class="mono">' + esc(Number(a.creditRemaining || 0).toFixed(4)) + '</td>' +
+                '<td>' + (a.hasTelegramChat ? '<span style="color:var(--emerald)">✓</span>' : '<span style="color:var(--text-muted)">—</span>') + '</td>' +
+                '<td>' + (a.hasBifrostKey ? '<span style="color:var(--emerald)">✓</span>' : '<span style="color:var(--red)">✗</span>') + '</td>' +
+                '<td>' + esc(when(a.updatedAt)) + '</td>' +
+                '<td>' + (a.status === 'running' ? '<button class="btn-sm danger" data-stop-user="' + esc(a.userId) + '">Stop</button>' : '—') + '</td>' +
+                '</tr>';
+            }).join('');
     }
 
-    function showDashboard() {
-        $('auth-gate').style.display = 'none';
-        $('dashboard').classList.add('visible');
-        loadOverview();
-        loadRevenue('30d');
-        startClock();
+    function renderPayments(d) {
+        const subs = d.billing.subscriptions;
+        const pay = d.billing.payments;
+        const llm = d.billing.llm || {};
+
+        $('pay-revenue').textContent = usd(pay.paidRevenueUsd);
+        $('pay-mrr').textContent = usd(pay.mrrUsd);
+        $('pay-arr').textContent = usd(pay.arrUsd);
+        $('pay-arpu').textContent = usd(pay.arpuUsd || 0);
+        $('pay-count').textContent = pay.totalCount;
+        $('pay-llm-spend').textContent = llm.totalSpentUsd != null ? '$' + Number(llm.totalSpentUsd).toFixed(4) : '—';
+        $('pay-llm-vk').textContent = (llm.activeVkCount || 0) + ' VKs tracked';
+
+        $('sub-active').textContent = subs.active;
+        $('sub-trialing').textContent = subs.trialing;
+        $('sub-past').textContent = subs.pastDue;
+        $('sub-cancelled').textContent = subs.cancelled;
+        $('sub-early-bird').textContent = subs.earlyBird != null ? (subs.earlyBird + ' / 500') : '—';
+        $('sub-trial-soon').textContent = subs.trialEndingSoon != null ? subs.trialEndingSoon : '—';
+
+        const rows = pay.recent || [];
+        $('payments-body').innerHTML = rows.length === 0
+            ? '<tr><td colspan="7" class="empty-msg">No payment records yet</td></tr>'
+            : rows.map(p => {
+                const statusColor = p.status === 'paid' ? 'var(--emerald)' : p.status === 'failed' ? 'var(--red)' : 'var(--amber)';
+                return '<tr>' +
+                '<td>' + esc(when(p.createdAt)) + '</td>' +
+                '<td class="mono">' + esc(short(p.userId, 20)) + '</td>' +
+                '<td class="mono">' + esc(short(p.paymentId || '—', 24)) + '</td>' +
+                '<td>' + esc(p.plan) + '</td>' +
+                '<td><span style="color:' + statusColor + ';font-weight:600">' + esc(p.status) + '</span></td>' +
+                '<td style="font-weight:600">' + esc(usd(p.amountUsd)) + '</td>' +
+                '<td>' + esc((p.currency || 'usd').toUpperCase()) + '</td>' +
+                '</tr>';
+            }).join('');
     }
 
-    // ─── Clock ──────────────────────────────────────────────────────────────
+    function renderEvents(d) {
+        const userFilter = $('event-user-filter').value.trim().toLowerCase();
+        const nameFilter = $('event-name-filter').value.trim().toLowerCase();
+        const rows = d.recentEvents.filter(e => {
+            if (userFilter && String(e.user_id || '').toLowerCase().indexOf(userFilter) === -1) return false;
+            if (nameFilter && String(e.event || '').toLowerCase().indexOf(nameFilter) === -1) return false;
+            return true;
+        });
+
+        $('events-body').innerHTML = rows.length === 0
+            ? '<tr><td colspan="6" class="empty-msg">No events match your filters</td></tr>'
+            : rows.map(e =>
+                '<tr>' +
+                '<td class="mono">' + esc(e.id) + '</td>' +
+                '<td>' + esc(when(e.ts)) + '</td>' +
+                '<td class="mono">' + esc(short(e.user_id || 'system', 20)) + '</td>' +
+                '<td>' + esc(e.event) + '</td>' +
+                '<td class="mono" title="' + esc(e.detail || '') + '">' + esc(short(e.detail || '—', 90)) + '</td>' +
+                '<td class="mono">' + esc(e.ip || '—') + '</td>' +
+                '</tr>'
+            ).join('');
+    }
+
+    function renderLlm(d) {
+        const llm = d.billing.llm || {};
+        const instances = d.agents.instances;
+        const tracked = instances.filter(i => i.llmSpentUsd != null);
+        const totalSpent = llm.totalSpentUsd || 0;
+        const totalBudget = llm.totalBudgetUsd || 0;
+        const fleetPct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : null;
+
+        // LLM KPI cards
+        $('llm-kpi-grid').innerHTML = [
+            ['Total LLM Spend', '$' + totalSpent.toFixed(4), 'amber', 'across all tracked VKs'],
+            ['Total Budget Allocated', '$' + totalBudget.toFixed(4), 'blue', 'sum of all VK limits'],
+            ['Fleet Budget Used', fleetPct != null ? pct(fleetPct) : '—', fleetPct > 80 ? 'red' : (fleetPct > 50 ? 'amber' : 'emerald'), 'fleet-wide'],
+            ['VKs Tracked', llm.activeVkCount || 0, '', 'have Bifrost VK'],
+            ['Avg Spend/User', tracked.length > 0 ? '$' + (totalSpent / tracked.length).toFixed(4) : '—', '', 'tracked users only'],
+            ['Bifrost Health', d.health.checks.bifrost ? 'Online' : 'Offline', d.health.checks.bifrost ? 'emerald' : 'red', d.health.checks.bifrost ? 'VK data live' : 'using cached data'],
+        ].map(([label, value, color, sub]) =>
+            '<div class="stat-card">' +
+            '<span class="stat-label">' + esc(label) + '</span>' +
+            '<span class="stat-value ' + esc(color) + '">' + esc(value) + '</span>' +
+            '<span class="stat-sub">' + esc(sub) + '</span>' +
+            '</div>'
+        ).join('');
+
+        // Per-user LLM table (sorted by spend desc)
+        const sorted = instances.slice().sort((a, b) => (b.llmSpentUsd || 0) - (a.llmSpentUsd || 0));
+
+        $('llm-body').innerHTML = sorted.length === 0
+            ? '<tr><td colspan="9" class="empty-msg">No agent instances found</td></tr>'
+            : sorted.map(a => {
+                const pctVal = a.llmUsedPct != null ? a.llmUsedPct : null;
+                const barColor = pctVal > 80 ? 'var(--red)' : pctVal > 50 ? 'var(--amber)' : 'var(--emerald)';
+                const bar = pctVal != null
+                    ? '<div style="width:80px;height:8px;border-radius:4px;background:rgba(255,255,255,0.08)"><div style="width:' + Math.min(100, pctVal) + '%;height:100%;border-radius:4px;background:' + barColor + '"></div></div>'
+                    : '—';
+                return '<tr>' +
+                '<td class="mono">' + esc(short(a.userId, 22)) + '</td>' +
+                '<td>' + esc(a.model) + '</td>' +
+                '<td><span class="status-badge ' + esc(a.status) + '"><span class="status-dot"></span>' + esc(a.status) + '</span></td>' +
+                '<td class="mono" style="font-weight:600;color:' + (a.llmSpentUsd > 0 ? 'var(--amber)' : 'var(--text-muted)') + '">' + (a.llmSpentUsd != null ? '$' + Number(a.llmSpentUsd).toFixed(4) : '—') + '</td>' +
+                '<td class="mono">' + (a.llmBudgetUsd != null ? '$' + Number(a.llmBudgetUsd).toFixed(4) : '—') + '</td>' +
+                '<td>' + (pctVal != null ? pctVal + '%' : '—') + '</td>' +
+                '<td>' + bar + '</td>' +
+                '<td class="mono">' + esc(Number(a.creditRemaining || 0).toFixed(4)) + '</td>' +
+                '<td>' + (a.hasBifrostKey ? '<span style="color:var(--emerald)">✓</span>' : '<span style="color:var(--red)">✗ none</span>') + '</td>' +
+                '</tr>';
+            }).join('');
+    }
+
+    function renderAll(d) {
+        renderOverview(d);
+        renderAgents(d);
+        renderPayments(d);
+        renderEvents(d);
+        renderLlm(d);
+    }
+
+    async function refresh() {
+        const d = await api('/admin/dashboard-live?paymentsLimit=150&eventsLimit=150');
+        latest = d;
+        $('last-update').textContent = 'Last update: ' + new Date().toLocaleTimeString('en-US', { hour12: false });
+        renderAll(d);
+    }
+
     function startClock() {
         function tick() {
             $('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -760,257 +876,95 @@
         setInterval(tick, 1000);
     }
 
-    // ─── Tabs ───────────────────────────────────────────────────────────────
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-            tab.classList.add('active');
-            $('panel-' + tab.dataset.tab).classList.add('active');
-
-            // Lazy load tabs
-            if (tab.dataset.tab === 'users' && !usersLoaded) loadUsers();
-            if (tab.dataset.tab === 'events' && !eventsLoaded) loadEvents();
-        });
-    });
-
-    // ─── Overview ───────────────────────────────────────────────────────────
-    async function loadOverview() {
-        try {
-            const d = await api('/admin/stats');
-            $('s-total').textContent = d.bots.total;
-            $('s-running').textContent = d.bots.running;
-            $('s-stopped').textContent = d.bots.stopped;
-            $('s-crashed').textContent = d.bots.crashed;
-            $('s-depleted').textContent = d.bots.creditDepleted;
-            $('s-credit').textContent = fmtUsd(d.credits.totalAllocated);
-
-            $('s-uptime').textContent = d.system.uptime.toLocaleString();
-            $('s-rss').textContent = d.system.memoryMB.rss;
-            $('s-heap').textContent = d.system.memoryMB.heapUsed;
-            $('s-node').textContent = d.system.nodeVersion;
-
-            const body = $('recent-events-body');
-            if (d.recentEventsLastHour.length === 0) {
-                body.innerHTML = '<tr><td colspan="2" class="empty-msg">No events in the last hour</td></tr>';
-            } else {
-                body.innerHTML = d.recentEventsLastHour.map(e =>
-                    `<tr><td>${esc(e.event)}</td><td>${e.c}</td></tr>`
-                ).join('');
-            }
-        } catch (err) {
-            console.error('[Admin] Overview load error:', err);
-        }
-    }
-
-    // ─── Revenue ────────────────────────────────────────────────────────────
-    let currentPeriod = '30d';
-
-    document.querySelectorAll('.period-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentPeriod = btn.dataset.period;
-            loadRevenue(currentPeriod);
-        });
-    });
-
-    async function loadRevenue(period) {
-        try {
-            const d = await api('/admin/revenue?period=' + period);
-            $('r-total').textContent = fmtUsd(d.totalRevenueUsd);
-            $('r-ads').textContent = fmtUsd(d.ads.revenueUsd);
-            $('r-ads-count').textContent = d.ads.impressions + ' impressions';
-            $('r-stars').textContent = fmtUsd(d.stars.revenueUsd);
-            $('r-stars-count').textContent = d.stars.payments + ' payments (' + d.stars.totalStars + '★)';
-            $('r-invoices').textContent = d.invoices.created;
-
-            renderChart(d.dailyBreakdown);
-        } catch (err) {
-            console.error('[Admin] Revenue load error:', err);
-        }
-    }
-
-    function renderChart(daily) {
-        const chart = $('revenue-chart');
-        if (!daily || daily.length === 0) {
-            chart.innerHTML = '<div class="empty-msg" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">No data yet</div>';
-            return;
-        }
-
-        // Reverse so oldest is on the left
-        const data = [...daily].reverse();
-        const maxVal = Math.max(...data.map(d => (d.adRevenue || 0) + (d.starsRevenue || 0)), 0.001);
-
-        chart.innerHTML = data.map(d => {
-            const adH = Math.max(((d.adRevenue || 0) / maxVal) * 100, 2);
-            const starsH = Math.max(((d.starsRevenue || 0) / maxVal) * 100, 0);
-            const total = (d.adRevenue || 0) + (d.starsRevenue || 0);
-            return `<div style="flex:1; display:flex; flex-direction:column; align-items:stretch; gap:1px; justify-content:flex-end; height:100%;" title="${d.day}: ${fmtUsd(total)}">
-                <div class="chart-bar ad" style="height:${adH}%;"></div>
-                ${starsH > 0 ? `<div class="chart-bar stars" style="height:${starsH}%;"></div>` : ''}
-            </div>`;
-        }).join('');
-    }
-
-    // ─── Users ──────────────────────────────────────────────────────────────
-    let usersLoaded = false;
-    let usersOffset = 0;
-    const usersLimit = 25;
-
-    $('user-status-filter').addEventListener('change', () => { usersOffset = 0; loadUsers(); });
-    $('users-prev').addEventListener('click', () => { usersOffset = Math.max(0, usersOffset - usersLimit); loadUsers(); });
-    $('users-next').addEventListener('click', () => { usersOffset += usersLimit; loadUsers(); });
-
-    async function loadUsers() {
-        usersLoaded = true;
-        const status = $('user-status-filter').value;
-        const qs = `?limit=${usersLimit}&offset=${usersOffset}` + (status ? `&status=${status}` : '');
-
-        try {
-            const d = await api('/admin/users' + qs);
-            const body = $('users-body');
-
-            if (d.users.length === 0) {
-                body.innerHTML = '<tr><td colspan="7" class="empty-msg">No users found</td></tr>';
-            } else {
-                body.innerHTML = d.users.map(u =>
-                    `<tr>
-                        <td class="mono">${esc(truncate(u.user_id, 20))}</td>
-                        <td>${esc(u.model)}</td>
-                        <td><span class="status-badge ${u.status}"><span class="status-dot"></span>${u.status}</span></td>
-                        <td class="mono">${u.pid}</td>
-                        <td>${fmtUsd(u.credit_limit)}</td>
-                        <td>${fmtDate(u.created_at)}</td>
-                        <td>
-                            ${u.status === 'running' ? `<button class="btn-sm danger" onclick="window.__adminStopBot('${esc(u.user_id)}')">Stop</button>` : ''}
-                            <button class="btn-sm" onclick="window.__adminViewUser('${esc(u.user_id)}')">View</button>
-                        </td>
-                    </tr>`
-                ).join('');
-            }
-
-            $('users-info').textContent = `Showing ${d.offset + 1}–${d.offset + d.users.length} of ${d.total}`;
-            $('users-prev').disabled = d.offset === 0;
-            $('users-next').disabled = d.offset + d.users.length >= d.total;
-        } catch (err) {
-            console.error('[Admin] Users load error:', err);
-        }
-    }
-
-    window.__adminStopBot = async function (userId) {
-        if (!confirm('Stop bot for ' + userId + '?')) return;
-        try {
-            await api('/admin/users/' + encodeURIComponent(userId) + '/stop', { method: 'POST' });
-            loadUsers();
-            loadOverview();
-        } catch (err) {
-            alert('Failed to stop bot: ' + err.message);
-        }
-    };
-
-    window.__adminViewUser = async function (userId) {
-        try {
-            const d = await api('/admin/users/' + encodeURIComponent(userId));
-            const u = d.user;
-            const rev = d.revenue;
-
-            let detail = `User: ${u.userId}\nModel: ${u.model}\nStatus: ${u.status} (alive: ${u.alive})\nPID: ${u.pid}\nCredits: ${fmtUsd(u.creditLimit)}\nCreated: ${u.createdAt}\n\n`;
-            detail += `Revenue:\n  Ads: ${rev.ads.count} impressions, ${fmtUsd(rev.ads.usd)}\n  Stars: ${rev.stars.count} payments, ${fmtUsd(rev.stars.usd)}\n\n`;
-            detail += `Recent Events:\n`;
-            d.recentEvents.slice(0, 15).forEach(e => {
-                detail += `  [${e.ts}] ${e.event}${e.detail ? ' — ' + truncate(e.detail, 60) : ''}\n`;
+    function setupTabs() {
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                $('panel-' + tab.dataset.tab).classList.add('active');
             });
-
-            alert(detail);
-        } catch (err) {
-            alert('Failed to load user: ' + err.message);
-        }
-    };
-
-    // ─── Events ─────────────────────────────────────────────────────────────
-    let eventsLoaded = false;
-    let eventsOffset = 0;
-    const eventsLimit = 50;
-
-    $('event-type-filter').addEventListener('change', () => { eventsOffset = 0; loadEvents(); });
-    $('event-user-filter').addEventListener('input', debounce(() => { eventsOffset = 0; loadEvents(); }, 400));
-    $('events-prev').addEventListener('click', () => { eventsOffset = Math.max(0, eventsOffset - eventsLimit); loadEvents(); });
-    $('events-next').addEventListener('click', () => { eventsOffset += eventsLimit; loadEvents(); });
-
-    function debounce(fn, ms) {
-        let t;
-        return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+        });
     }
 
-    async function loadEvents() {
-        eventsLoaded = true;
-        const event = $('event-type-filter').value;
-        const userId = $('event-user-filter').value.trim();
+    async function stopAgent(userId) {
+        if (!window.confirm('Stop bot for ' + userId + '?')) return;
+        await api('/admin/users/' + encodeURIComponent(userId) + '/stop', { method: 'POST' });
+        await refresh();
+    }
 
-        let qs = `?limit=${eventsLimit}&offset=${eventsOffset}`;
-        if (event) qs += `&event=${encodeURIComponent(event)}`;
-        if (userId) qs += `&userId=${encodeURIComponent(userId)}`;
+    function setupActions() {
+        $('refresh-btn').addEventListener('click', () => {
+            refresh().catch(err => console.error('[admin] refresh failed', err));
+        });
 
+        $('toggle-live-btn').addEventListener('click', () => {
+            liveEnabled = !liveEnabled;
+            $('toggle-live-btn').textContent = liveEnabled ? 'Pause Live' : 'Resume Live';
+        });
+
+        $('logout-btn').addEventListener('click', () => {
+            sessionStorage.removeItem('liveclaw_admin_secret');
+            location.reload();
+        });
+
+        $('agent-status-filter').addEventListener('change', () => { if (latest) renderAgents(latest); });
+        $('agent-user-filter').addEventListener('input', () => { if (latest) renderAgents(latest); });
+        $('event-user-filter').addEventListener('input', () => { if (latest) renderEvents(latest); });
+        $('event-name-filter').addEventListener('input', () => { if (latest) renderEvents(latest); });
+
+        document.body.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-stop-user]');
+            if (!btn) return;
+            stopAgent(btn.getAttribute('data-stop-user')).catch(err => {
+                window.alert('Failed to stop agent: ' + err.message);
+            });
+        });
+    }
+
+    async function showDashboard() {
+        $('auth-gate').style.display = 'none';
+        $('dashboard').classList.add('visible');
+        setupTabs();
+        setupActions();
+        startClock();
+        await refresh();
+
+        setInterval(() => {
+            if (!liveEnabled) return;
+            refresh().catch(err => console.error('[admin] live poll failed', err));
+        }, 5000);
+    }
+
+    async function tryAuth() {
+        const secret = $('secret-input').value.trim();
+        if (!secret) return;
+        ADMIN_SECRET = secret;
         try {
-            const d = await api('/admin/events' + qs);
-            const body = $('events-body');
-
-            // Populate event type filter (once)
-            const sel = $('event-type-filter');
-            if (sel.options.length <= 1 && d.eventTypes) {
-                d.eventTypes.forEach(t => {
-                    const opt = document.createElement('option');
-                    opt.value = t;
-                    opt.textContent = t;
-                    sel.appendChild(opt);
-                });
-            }
-
-            if (d.events.length === 0) {
-                body.innerHTML = '<tr><td colspan="6" class="empty-msg">No events found</td></tr>';
-            } else {
-                body.innerHTML = d.events.map(e =>
-                    `<tr>
-                        <td class="mono">${e.id}</td>
-                        <td>${fmtDate(e.ts)}</td>
-                        <td class="mono">${esc(truncate(e.user_id, 16))}</td>
-                        <td>${esc(e.event)}</td>
-                        <td class="mono" title="${esc(e.detail || '')}">${esc(truncate(e.detail, 40))}</td>
-                        <td class="mono">${esc(e.ip || '—')}</td>
-                    </tr>`
-                ).join('');
-            }
-
-            $('events-info').textContent = `Showing ${d.offset + 1}–${d.offset + d.events.length} of ${d.total}`;
-            $('events-prev').disabled = d.offset === 0;
-            $('events-next').disabled = d.offset + d.events.length >= d.total;
-        } catch (err) {
-            console.error('[Admin] Events load error:', err);
+            await api('/admin/dashboard-live?paymentsLimit=1&eventsLimit=1');
+            sessionStorage.setItem('liveclaw_admin_secret', secret);
+            await showDashboard();
+        } catch (_) {
+            $('auth-error').style.display = 'block';
+            $('secret-input').value = '';
+            ADMIN_SECRET = '';
         }
     }
 
-    // ─── Global Actions ─────────────────────────────────────────────────────
-    $('refresh-btn').addEventListener('click', () => {
-        loadOverview();
-        loadRevenue(currentPeriod);
-        if (usersLoaded) loadUsers();
-        if (eventsLoaded) loadEvents();
-    });
+    function initAuth() {
+        $('auth-btn').addEventListener('click', () => { tryAuth(); });
+        $('secret-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') tryAuth();
+        });
 
-    $('logout-btn').addEventListener('click', () => {
-        sessionStorage.removeItem('liveclaw_admin_secret');
-        location.reload();
-    });
-
-    // Auto-refresh every 30s
-    setInterval(() => {
-        if ($('dashboard').classList.contains('visible')) {
-            loadOverview();
+        if (ADMIN_SECRET) {
+            showDashboard().catch(() => {
+                sessionStorage.removeItem('liveclaw_admin_secret');
+                location.reload();
+            });
         }
-    }, 30000);
+    }
 
-    // ─── Init ───────────────────────────────────────────────────────────────
     initAuth();
 })();
 </script>
