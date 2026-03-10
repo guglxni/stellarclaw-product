@@ -218,10 +218,7 @@
                 closeTelegramModal();
                 renderAuthenticatedFlow();
 
-                const connectedHandle = verifyData.bot && verifyData.bot.username
-                    ? '@' + verifyData.bot.username
-                    : 'your bot';
-                showToast('Telegram connected to ' + connectedHandle + '. Ready to deploy.', 'success');
+                showToast('Your bot is now linked. You are ready to deploy.', 'success', 'Telegram connected');
             } catch (err) {
                 console.error('[LiveClaw] Telegram verify error:', err);
                 showToast('Network issue while verifying token. Please retry.', 'error');
@@ -244,12 +241,6 @@
             return;
         }
 
-        const modelMap = {
-            'MiniMax M2.5': 'minimax-m2.5',
-            'Kimi K2.5': 'kimi-k2.5',
-        };
-        const modelId = modelMap[state.selectedModel] || 'minimax-m2.5';
-
         const origHTML = buttonEl.innerHTML;
         buttonEl.disabled = true;
         buttonEl.innerHTML = `
@@ -257,13 +248,53 @@
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path>
             </svg>
-            Deploying LiveClaw...
+            Checking subscription...
         `;
 
         try {
+            // Step 1: Check subscription status first
             const headers = { 'Content-Type': 'application/json' };
             if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
+            const subRes = await fetch(API_BASE + '/subscription/' + encodeURIComponent(state.userId), { headers });
+            const subData = await subRes.json();
+
+            const hasActiveSub = subData.hasSubscription && ['active', 'trialing', 'past_due'].includes(subData.status);
+
+            if (!hasActiveSub) {
+                // No subscription — show pricing modal to choose a plan
+                buttonEl.disabled = false;
+                buttonEl.innerHTML = origHTML;
+                showPricingModal();
+                return;
+            }
+
+            // Step 2: Has subscription — proceed with deploy
+            buttonEl.innerHTML = `
+                <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path>
+                </svg>
+                Deploying LiveClaw...
+            `;
+
+            await executeDeploy(buttonEl, origHTML, headers);
+        } catch (err) {
+            console.error('[LiveClaw] Deploy error:', err);
+            showToast('Network error. Please try again.', 'error');
+            buttonEl.disabled = false;
+            buttonEl.innerHTML = origHTML;
+        }
+    }
+
+    async function executeDeploy(buttonEl, origHTML, headers) {
+        const modelMap = {
+            'MiniMax M2.5': 'minimax-m2.5',
+            'Kimi K2.5': 'kimi-k2.5',
+        };
+        const modelId = modelMap[state.selectedModel] || 'minimax-m2.5';
+
+        try {
             const res = await fetch(API_BASE + '/deploy-bot', {
                 method: 'POST',
                 headers,
@@ -282,18 +313,15 @@
                 state.botCreditLimit = data.creditLimit;
                 saveState();
 
-                showToast(data.message || 'Your Claw agent is live on Telegram!', 'success');
+                showToast('Your Claw agent is live on Telegram!', 'success', 'Deployed');
                 showSuccessDashboard();
                 return;
             }
 
             if (res.status === 402) {
-                showToast(data.message || 'Subscription required to deploy.', 'error');
                 showPricingModal();
             } else if (res.status === 403 && data.maxBots) {
                 showToast(data.message || 'Bot limit reached. Upgrade your plan.', 'error');
-            } else if (res.status === 400 || res.status === 401) {
-                showToast(data.error || 'Invalid request. Please check your setup.', 'error');
             } else if (res.status === 503) {
                 showToast(data.message || 'Server is currently at capacity. Please retry shortly.', 'error');
             } else {
@@ -303,8 +331,10 @@
             console.error('[LiveClaw] Deploy error:', err);
             showToast('Network error while deploying. Please try again.', 'error');
         } finally {
-            buttonEl.disabled = false;
-            buttonEl.innerHTML = origHTML;
+            if (buttonEl) {
+                buttonEl.disabled = false;
+                buttonEl.innerHTML = origHTML;
+            }
         }
     }
 
@@ -991,12 +1021,52 @@
         document.head.appendChild(style);
     }
 
+    // ─── Checkout Return Handler ─────────────────────────────────────────
+    function handleCheckoutReturn() {
+        const params = new URLSearchParams(window.location.search);
+        const checkoutStatus = params.get('checkout');
+        if (!checkoutStatus) return;
+
+        // Clean URL without reload
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, '', cleanUrl);
+
+        if (checkoutStatus === 'success' || checkoutStatus === 'trial-success') {
+            showToast('Payment confirmed! Deploying your agent now...', 'success', 'Payment successful');
+
+            // Wait briefly for webhook to process, then auto-deploy
+            setTimeout(async () => {
+                if (!state.userId || !state.telegramToken) {
+                    showToast('Sign in and connect Telegram to finish deployment.', 'info');
+                    return;
+                }
+
+                const deployBtn = document.getElementById('liveclaw-deploy-main-btn');
+                if (deployBtn) {
+                    const origHTML = deployBtn.innerHTML;
+                    deployBtn.disabled = true;
+                    deployBtn.innerHTML = `
+                        <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path>
+                        </svg>
+                        Deploying LiveClaw...
+                    `;
+                    const headers = { 'Content-Type': 'application/json' };
+                    if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
+                    await executeDeploy(deployBtn, origHTML, headers);
+                }
+            }, 2000);
+        }
+    }
+
     // ─── Init ───────────────────────────────────────────────────────────────
     function init() {
         injectStyles();
         initGoogleAuth();
         wireConnectButton();
         wireModelTracking();
+        handleCheckoutReturn();
     }
 
     if (document.readyState === 'loading') {
