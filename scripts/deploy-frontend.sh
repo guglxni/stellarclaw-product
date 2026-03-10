@@ -27,7 +27,8 @@ SIZE="s-1vcpu-512mb-10gb"
 IMAGE="ubuntu-24-04-x64"
 SSH_KEY_NAME="liveclaw-deploy-key"
 REMOTE_BASE="/opt/liveclaw"
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/liveclaw_deploy}"
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -i ${SSH_KEY_FILE}"
 
 CODE_ONLY=false
 CONFIG_ONLY=false
@@ -99,7 +100,7 @@ if [ "$CONFIG_ONLY" = true ]; then
     # Generate locally, then upload
     TMPCONF=$(mktemp /tmp/liveclaw-config.XXXXXX.js)
     generate_config_js "${FRONTEND_DIR}/.env" "${FRONTEND_DIR}/config.js.template" "$TMPCONF"
-    rsync -az "$TMPCONF" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/config.js
+    rsync -az -e "ssh ${SSH_OPTS}" "$TMPCONF" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/config.js
     rm -f "$TMPCONF"
 
     info "config.js deployed to ${DROPLET_IP}:${REMOTE_BASE}/frontend/config.js"
@@ -188,11 +189,12 @@ generate_config_js "${FRONTEND_DIR}/.env" "${FRONTEND_DIR}/config.js.template" "
 # ─── Upload Frontend ─────────────────────────────────────────────────────────
 info "Uploading static files..."
 rsync -az --delete \
+    -e "ssh ${SSH_OPTS}" \
     --exclude '.DS_Store' \
     "$FRONTEND_WWW/" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/
 
 info "Uploading config.js..."
-rsync -az "$TMPCONF" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/config.js
+rsync -az -e "ssh ${SSH_OPTS}" "$TMPCONF" root@"$DROPLET_IP":${REMOTE_BASE}/frontend/config.js
 rm -f "$TMPCONF"
 
 # ─── Nginx (skip with --code-only) ───────────────────────────────────────────
