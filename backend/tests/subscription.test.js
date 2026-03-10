@@ -144,6 +144,18 @@ describe('POST /create-checkout-session', () => {
         expect(mockFns.createCheckoutSession).toHaveBeenCalled();
     });
 
+    it('creates checkout session with EARLYCLAW promo code', async () => {
+        const newUser = 'earlyclaw-test-user-' + Date.now();
+        const res = await request(app)
+            .post('/create-checkout-session')
+            .send({ userId: newUser, email: 'early@example.com', promoCode: 'EARLYCLAW' })
+            .expect(200);
+
+        expect(res.body.checkoutUrl).toBe('https://checkout.dodopayments.com/test');
+        expect(res.body.earlyBird).toBe(true);
+        expect(mockFns.createCheckoutSession).toHaveBeenCalled();
+    });
+
     it('returns 409 if user already has active subscription', async () => {
         // TEST_USER was seeded with active subscription
         const res = await request(app)

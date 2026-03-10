@@ -687,46 +687,40 @@
 
         const modal = document.createElement('div');
         modal.id = 'liveclaw-pricing-modal';
-        modal.className = 'fixed inset-0 z-[200] flex items-center justify-center p-4';
+        modal.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem;';
         modal.innerHTML = `
-            <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="pricing-backdrop"></div>
-            <div class="relative z-10 w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-2xl border border-white/8 bg-zinc-950 shadow-[0_8px_40px_rgba(0,0,0,0.5)] p-6 sm:p-8">
-                <div class="flex items-center justify-between mb-2">
-                    <h2 class="text-white font-semibold text-xl">Get LiveClaw</h2>
-                    <button id="pricing-close-btn" class="text-zinc-500 hover:text-white transition-colors text-2xl leading-none cursor-pointer">&times;</button>
+            <div id="pricing-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);"></div>
+            <div style="position:relative;z-index:10;width:100%;max-width:28rem;max-height:90dvh;overflow-y:auto;border-radius:1rem;border:1px solid rgba(255,255,255,0.08);background:#09090b;box-shadow:0 8px 40px rgba(0,0,0,0.5);padding:1.5rem 2rem;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+                    <h2 style="color:#fff;font-weight:600;font-size:1.25rem;">Get LiveClaw</h2>
+                    <button id="pricing-close-btn" style="color:#71717a;font-size:1.5rem;line-height:1;cursor:pointer;background:none;border:none;">&times;</button>
                 </div>
-                <p class="text-zinc-400 text-sm mb-5">Deploy your 24/7 AI agent on Telegram. Try for $0.99 · 24-hour trial — cancel anytime.</p>
+                <p style="color:#a1a1aa;font-size:0.875rem;margin-bottom:1.25rem;">Deploy your 24/7 AI agent on Telegram. Try for $0.99 &middot; 24-hour trial &mdash; cancel anytime.</p>
 
-                <!-- Loading skeleton -->
-                <div id="pricing-loading" class="flex flex-col gap-4 animate-pulse">
-                    <div class="rounded-xl border border-white/5 bg-white/[0.02] p-6 h-64"></div>
+                <div id="pricing-loading" style="display:flex;flex-direction:column;gap:1rem;">
+                    <div style="border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.5rem;height:16rem;"></div>
                 </div>
 
-                <!-- Plans render here -->
-                <div id="pricing-plans" class="hidden flex flex-col gap-4"></div>
+                <div id="pricing-plans" style="display:none;flex-direction:column;gap:1rem;"></div>
 
-                <!-- Promo code -->
-                <div class="mt-5 flex gap-2">
+                <div style="margin-top:1.25rem;display:flex;gap:0.5rem;">
                     <input id="pricing-promo-input" type="text" maxlength="20" placeholder="Promo code"
-                        class="flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-indigo-500/50 transition-colors" />
+                        style="flex:1;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);padding:0.5rem 0.875rem;font-size:0.875rem;color:#fff;outline:none;" />
                     <button id="pricing-promo-btn"
-                        class="rounded-lg bg-white/[0.06] hover:bg-white/10 border border-white/10 px-4 py-2 text-sm text-zinc-300 font-medium cursor-pointer transition-colors">
+                        style="border-radius:0.5rem;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);padding:0.5rem 1rem;font-size:0.875rem;color:#d4d4d8;font-weight:500;cursor:pointer;">
                         Apply
                     </button>
                 </div>
-                <p id="pricing-promo-msg" class="text-xs mt-1.5 h-4"></p>
+                <p id="pricing-promo-msg" style="font-size:0.75rem;margin-top:0.375rem;min-height:1rem;"></p>
             </div>
         `;
         document.body.appendChild(modal);
 
-        // State
         let appliedPromo = null;
 
-        // Close handlers
         document.getElementById('pricing-backdrop').addEventListener('click', () => modal.remove());
         document.getElementById('pricing-close-btn').addEventListener('click', () => modal.remove());
 
-        // Fetch plans from API
         fetchAndRenderPlans();
 
         async function fetchAndRenderPlans() {
@@ -736,7 +730,7 @@
                 const data = await res.json();
                 renderPlans(data.plans);
             } catch (_) {
-                document.getElementById('pricing-loading').innerHTML = '<p class="text-red-400 text-sm text-center py-8">Failed to load pricing. Please try again.</p>';
+                document.getElementById('pricing-loading').innerHTML = '<p style="color:#f87171;font-size:0.875rem;text-align:center;padding:2rem 0;">Failed to load pricing. Please try again.</p>';
             }
         }
 
@@ -753,70 +747,81 @@
             const isEB = activePlan === earlyClaw;
             const spotsLeft = earlyClaw ? earlyClaw.spotsRemaining : 0;
 
+            const borderColor = isEB ? 'rgba(245,158,11,0.4)' : 'rgba(99,102,241,0.4)';
+            const badgeColor = isEB ? '#f59e0b' : '#6366f1';
+            const ctaBg = isEB ? '#f59e0b' : '#6366f1';
+            const spotBarColor = spotsLeft < 50 ? '#ef4444' : spotsLeft < 150 ? '#f59e0b' : '#10b981';
+
+            const featuresHtml = activePlan.features.map(f =>
+                '<li style="display:flex;align-items:center;gap:0.5rem;">' +
+                '<svg style="width:0.875rem;height:0.875rem;color:#34d399;flex-shrink:0;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>' +
+                escapeHtml(f) + '</li>'
+            ).join('');
+
+            const earlyClawBar = isEB ? `
+                <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.25rem;">
+                    <div style="flex:1;height:0.375rem;border-radius:9999px;background:rgba(255,255,255,0.05);overflow:hidden;">
+                        <div style="height:100%;border-radius:9999px;background:${spotBarColor};width:${Math.min(100, ((500 - spotsLeft) / 500) * 100)}%;"></div>
+                    </div>
+                    <span style="font-size:0.75rem;color:${spotsLeft < 50 ? '#f87171' : '#a1a1aa'};font-weight:500;white-space:nowrap;">${spotsLeft} spots left</span>
+                </div>` : '';
+
             container.innerHTML = `
-                <div class="relative rounded-xl border ${isEB ? 'border-amber-500/40' : 'border-indigo-500/40'} bg-white/[0.03] p-6 flex flex-col gap-3 transition-all duration-300">
-                    <span class="absolute -top-2.5 left-1/2 -translate-x-1/2 ${isEB ? 'bg-amber-500' : 'bg-indigo-500'} text-white text-xs font-medium px-2.5 py-0.5 rounded-full transition-colors">
-                        ${isEB ? '🔥 Early Claw' : '$0.99 Trial'}
+                <div style="position:relative;border-radius:0.75rem;border:1px solid ${borderColor};background:rgba(255,255,255,0.03);padding:1.5rem;display:flex;flex-direction:column;gap:0.75rem;">
+                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:${badgeColor};color:#fff;font-size:0.75rem;font-weight:500;padding:0.125rem 0.625rem;border-radius:9999px;">
+                        ${isEB ? '\ud83d\udd25 Early Claw' : '$0.99 Trial'}
                     </span>
 
-                    <h3 class="text-white font-semibold text-lg mt-1">${escapeHtml(activePlan.name)}</h3>
+                    <h3 style="color:#fff;font-weight:600;font-size:1.125rem;margin-top:0.25rem;">${escapeHtml(activePlan.name)}</h3>
 
-                    <div class="flex items-baseline gap-1.5">
-                        ${isEB ? '<span class="text-zinc-500 text-lg line-through">$' + standard.price.toFixed(2) + '</span>' : ''}
-                        <span class="text-white text-3xl font-bold">$${price.toFixed(2)}</span>
-                        <span class="text-zinc-500 text-sm">/${activePlan.interval}</span>
+                    <div style="display:flex;align-items:baseline;gap:0.375rem;">
+                        ${isEB ? '<span style="color:#71717a;font-size:1.125rem;text-decoration:line-through;">$' + standard.price.toFixed(2) + '</span>' : ''}
+                        <span style="color:#fff;font-size:1.875rem;font-weight:700;">$${price.toFixed(2)}</span>
+                        <span style="color:#71717a;font-size:0.875rem;">/${activePlan.interval}</span>
                     </div>
 
-                    ${isEB ? `
-                    <div class="flex items-center gap-2 mt-1">
-                        <div class="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
-                            <div class="h-full rounded-full ${spotsLeft < 50 ? 'bg-red-500' : spotsLeft < 150 ? 'bg-amber-500' : 'bg-emerald-500'} transition-all duration-500"
-                                style="width: ${Math.min(100, ((500 - spotsLeft) / 500) * 100)}%"></div>
-                        </div>
-                        <span class="text-xs ${spotsLeft < 50 ? 'text-red-400' : 'text-zinc-400'} font-medium whitespace-nowrap">${spotsLeft} spots left</span>
-                    </div>` : ''}
+                    ${earlyClawBar}
 
-                    <ul class="text-zinc-400 text-xs space-y-2 mt-2">
-                        ${activePlan.features.map(f => `<li class="flex items-center gap-2"><svg class="w-3.5 h-3.5 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>${escapeHtml(f)}</li>`).join('')}
+                    <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0.5rem 0 0 0;display:flex;flex-direction:column;gap:0.5rem;">
+                        ${featuresHtml}
                     </ul>
 
                     <button id="pricing-cta-btn" data-plan="standard"
-                        class="mt-3 w-full rounded-lg ${isEB ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-500 hover:bg-indigo-600'} text-white py-2.5 text-sm font-semibold cursor-pointer transition-colors flex items-center justify-center gap-2">
-                        <svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd"/></svg>
+                        style="margin-top:0.75rem;width:100%;border-radius:0.5rem;background:${ctaBg};color:#fff;padding:0.625rem;font-size:0.875rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.5rem;">
+                        <svg style="width:1rem;height:1rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd"/></svg>
                         Start $0.99 Trial
                     </button>
-                    <p class="text-center text-zinc-600 text-xs">$0.99 one-time · Cancel anytime.</p>
+                    <p style="text-align:center;color:#52525b;font-size:0.75rem;">$0.99 one-time &middot; Cancel anytime.</p>
                 </div>
 
-                <div class="flex items-center gap-3 px-1">
-                    <div class="flex items-center gap-1.5 text-zinc-500 text-xs">
-                        <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+                <div style="display:flex;align-items:center;gap:0.75rem;padding:0 0.25rem;">
+                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;">
+                        <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
                         Secure checkout by Dodo Payments
                     </div>
-                    <div class="flex items-center gap-1.5 text-zinc-500 text-xs ml-auto">
-                        <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 1a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
+                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;margin-left:auto;">
+                        <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 1a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
                         Global taxes included
                     </div>
                 </div>
             `;
 
-            loading.classList.add('hidden');
-            container.classList.remove('hidden');
+            loading.style.display = 'none';
+            container.style.display = 'flex';
 
-            // Wire CTA button
             const ctaBtn = document.getElementById('pricing-cta-btn');
             if (ctaBtn) {
                 ctaBtn.addEventListener('click', () => startCheckout(ctaBtn, activePlan === earlyClaw));
             }
 
-            // Store plans for promo toggle
             container._plans = plans;
         }
 
         async function startCheckout(btn, earlyClaw) {
             const origHTML = btn.innerHTML;
             btn.disabled = true;
-            btn.innerHTML = '<svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Redirecting\u2026';
+            btn.style.opacity = '0.7';
+            btn.innerHTML = '<svg style="width:1rem;height:1rem;animation:spin 1s linear infinite;" viewBox="0 0 24 24" fill="none"><circle style="opacity:0.25;" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path style="opacity:0.75;" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Redirecting\u2026';
             try {
                 const headers = { 'Content-Type': 'application/json' };
                 if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
@@ -839,11 +844,13 @@
                 } else {
                     showToast(data.error || 'Failed to create checkout session.', 'error');
                     btn.disabled = false;
+                    btn.style.opacity = '1';
                     btn.innerHTML = origHTML;
                 }
             } catch (_) {
                 showToast('Network error. Please try again.', 'error');
                 btn.disabled = false;
+                btn.style.opacity = '1';
                 btn.innerHTML = origHTML;
             }
         }
@@ -862,18 +869,18 @@
                 const ec = container._plans.earlyClaw;
                 if (ec && ec.spotsRemaining > 0) {
                     appliedPromo = 'EARLYCLAW';
-                    promoMsg.className = 'text-xs mt-1.5 h-4 text-emerald-400';
+                    promoMsg.style.color = '#34d399';
                     promoMsg.textContent = '\u2713 Early Claw pricing applied! Save $' + (container._plans.standard.price - ec.price).toFixed(2) + '/mo';
                     promoInput.disabled = true;
                     promoBtn.textContent = 'Applied';
                     promoBtn.disabled = true;
                     renderPlans(container._plans);
                 } else {
-                    promoMsg.className = 'text-xs mt-1.5 h-4 text-red-400';
+                    promoMsg.style.color = '#f87171';
                     promoMsg.textContent = 'All Early Claw spots have been claimed.';
                 }
             } else {
-                promoMsg.className = 'text-xs mt-1.5 h-4 text-red-400';
+                promoMsg.style.color = '#f87171';
                 promoMsg.textContent = 'Invalid promo code.';
             }
         });
@@ -884,49 +891,52 @@
     }
 
     // ─── Toast Notification ─────────────────────────────────────────────────
-    function showToast(message, type = 'info') {
+    function showToast(message, type = 'info', customTitle) {
         // Remove existing toast
         const existing = document.getElementById('liveclaw-toast');
         if (existing) existing.remove();
 
         const variants = {
             success: {
-                container: 'bg-emerald-500/20 border-emerald-500/35',
-                title: 'text-emerald-200',
-                body: 'text-emerald-300',
+                bg: 'rgba(16,185,129,0.2)',
+                border: 'rgba(16,185,129,0.35)',
+                titleColor: '#a7f3d0',
+                bodyColor: '#6ee7b7',
                 icon: '<path d="M20 6L9 17l-5-5"/>',
                 label: 'Success',
             },
             error: {
-                container: 'bg-red-500/20 border-red-500/35',
-                title: 'text-red-200',
-                body: 'text-red-300',
+                bg: 'rgba(239,68,68,0.2)',
+                border: 'rgba(239,68,68,0.35)',
+                titleColor: '#fecaca',
+                bodyColor: '#fca5a5',
                 icon: '<path d="M6 6l12 12M18 6L6 18"/>',
                 label: 'Action needed',
             },
             info: {
-                container: 'bg-blue-500/20 border-blue-500/35',
-                title: 'text-blue-200',
-                body: 'text-blue-300',
+                bg: 'rgba(59,130,246,0.2)',
+                border: 'rgba(59,130,246,0.35)',
+                titleColor: '#bfdbfe',
+                bodyColor: '#93c5fd',
                 icon: '<path d="M12 8h.01M11 12h1v4h1"/><circle cx="12" cy="12" r="10"/>',
                 label: 'Notice',
             },
         };
 
-        const variant = variants[type] || variants.info;
+        const v = variants[type] || variants.info;
+        const titleText = customTitle || v.label;
 
         const toast = document.createElement('div');
         toast.id = 'liveclaw-toast';
-        toast.className = `fixed top-6 right-6 z-[200] w-[min(92vw,420px)] rounded-xl border ${variant.container} p-4 backdrop-blur-md shadow-lg transition-all duration-300`;
-        toast.style.transform = 'translateX(120%)';
+        toast.style.cssText = `position:fixed;top:1.5rem;right:1.5rem;z-index:200;width:min(92vw,420px);border-radius:0.75rem;border:1px solid ${v.border};background:${v.bg};padding:1rem;backdrop-filter:blur(12px);box-shadow:0 4px 24px rgba(0,0,0,0.3);transition:transform 0.3s ease;transform:translateX(120%);`;
         toast.innerHTML = `
-            <div class="flex items-start gap-3">
-                <div class="mt-0.5 rounded-full border border-white/20 p-1.5 ${variant.body}">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${variant.icon}</svg>
+            <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+                <div style="margin-top:0.125rem;border-radius:9999px;border:1px solid rgba(255,255,255,0.2);padding:0.375rem;color:${v.bodyColor};">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="width:0.875rem;height:0.875rem;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${v.icon}</svg>
                 </div>
-                <div class="min-w-0">
-                    <p class="text-sm font-semibold ${variant.title}">${variant.label}</p>
-                    <p class="text-sm ${variant.body}">${escapeHtml(message)}</p>
+                <div style="min-width:0;">
+                    <p style="font-size:0.875rem;font-weight:600;color:${v.titleColor};">${escapeHtml(titleText)}</p>
+                    <p style="font-size:0.875rem;color:${v.bodyColor};">${escapeHtml(message)}</p>
                 </div>
             </div>
         `;
