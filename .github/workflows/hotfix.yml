@@ -37,7 +37,7 @@ jobs:
 
       - name: Deploy backend
         if: contains(fromJSON('["backend","both"]'), github.event.inputs.target)
-        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
@@ -62,7 +62,7 @@ jobs:
 
       - name: Upload frontend
         if: contains(fromJSON('["frontend","both"]'), github.event.inputs.target)
-        uses: appleboy/scp-action@23cc5ecc8f5a88be0e2c0f4dd0219f5d57bd3050 # v0.1.7
+        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.DO_FRONTEND_IP }}
           username: root
@@ -73,7 +73,7 @@ jobs:
 
       - name: Deploy frontend
         if: contains(fromJSON('["frontend","both"]'), github.event.inputs.target)
-        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.DO_FRONTEND_IP }}
           username: root
