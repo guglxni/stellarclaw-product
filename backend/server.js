@@ -794,7 +794,10 @@ app.post('/create-checkout-session', deployLimiter, asyncHandler(authMiddleware)
     } catch (err) {
         console.error('[checkout] Dodo error:', err.message);
         logEvent(userId, 'checkout_error', err.message);
-        return res.status(502).json({ error: 'Failed to create checkout session' });
+        const msg = err.message?.includes('not enabled')
+            ? 'Payments are temporarily unavailable — merchant verification pending. Please try again later.'
+            : 'Failed to create checkout session';
+        return res.status(502).json({ error: msg });
     }
 }));
 
@@ -889,7 +892,10 @@ app.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), 
         return res.json({ checkoutUrl: session.checkoutUrl, sessionId: session.sessionId });
     } catch (err) {
         console.error('[trial-checkout] Dodo error:', err.message);
-        return res.status(502).json({ error: 'Failed to create trial checkout session' });
+        const msg = err.message?.includes('not enabled')
+            ? 'Payments are temporarily unavailable — merchant verification pending. Please try again later.'
+            : 'Failed to create trial checkout session';
+        return res.status(502).json({ error: msg });
     }
 }));
 

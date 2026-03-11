@@ -31,11 +31,13 @@ function getClient() {
     if (!apiKey) {
         throw new Error('DODO_API_KEY is not set — cannot initialise Dodo Payments client');
     }
-    const isProd = process.env.NODE_ENV === 'production';
+    // DODO_MODE overrides the auto-detected environment.
+    // Set DODO_MODE=test_mode in .env to test while Account Verification is pending.
+    const mode = process.env.DODO_MODE || (process.env.NODE_ENV === 'production' ? 'live_mode' : 'test_mode');
     client = new DodoPayments({
         bearerToken: apiKey,
         webhookKey: process.env.DODO_WEBHOOK_SECRET || null,
-        environment: isProd ? 'live_mode' : 'test_mode',
+        environment: mode,
     });
     return client;
 }
