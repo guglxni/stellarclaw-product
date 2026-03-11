@@ -273,9 +273,10 @@
                 saveState();
 
                 closeTelegramModal();
+                markTelegramConnected();
                 renderAuthenticatedFlow();
 
-                showToast('Your bot is now linked. You are ready to deploy.', 'success', 'Telegram connected');
+                showToast('Your bot is now linked. You are ready to send & receive messages.', 'success', 'Telegram connected');
             } catch (err) {
                 console.error('[LiveClaw] Telegram verify error:', err);
                 showToast('Network issue while verifying token. Please retry.', 'error');
@@ -411,6 +412,26 @@
         return null;
     }
 
+    function markTelegramConnected() {
+        const tgBtn = findTelegramOptionButton();
+        if (!tgBtn || tgBtn.classList.contains('selected')) return;
+        tgBtn.classList.add('selected');
+        // Add checkmark SVG like model buttons have
+        const existing = tgBtn.querySelector('.liveclaw-check');
+        if (!existing) {
+            const check = document.createElement('span');
+            check.className = 'shrink-0 ml-auto flex items-center liveclaw-check';
+            check.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 text-zinc-400"><path d="M5 12l5 5l10 -10"></path></svg>';
+            tgBtn.appendChild(check);
+        }
+        // Update the label text to white (matches model selected state)
+        const label = tgBtn.querySelector('h2');
+        if (label) {
+            label.classList.remove('text-zinc-400');
+            label.classList.add('text-white');
+        }
+    }
+
     function renderAuthenticatedFlow() {
         if (!state.userId || state.isDeployed) return;
 
@@ -482,8 +503,7 @@
 
         // If token is persisted, also mark the Telegram chip as selected visually
         if (state.telegramToken) {
-            const tgBtn = findTelegramOptionButton();
-            if (tgBtn) tgBtn.classList.add('selected');
+            markTelegramConnected();
         }
 
         fetchAndRenderPricingLine();
@@ -505,7 +525,7 @@
                 : '';
 
             if (!state.telegramToken) {
-                el.innerHTML = `<p class="text-[#6A6B6C] font-medium text-sm">Connect Telegram to continue.${slotSpan}</p>`;
+                el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect Telegram to continue.</p>';
             } else {
                 el.innerHTML = `
                     <p class="text-xs text-zinc-500">
