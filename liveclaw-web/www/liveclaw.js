@@ -777,20 +777,32 @@
         modal.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem;';
         modal.innerHTML = `
             <div id="pricing-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);"></div>
-            <div style="position:relative;z-index:10;width:100%;max-width:28rem;max-height:90dvh;overflow-y:auto;border-radius:1rem;border:1px solid rgba(255,255,255,0.08);background:#09090b;box-shadow:0 8px 40px rgba(0,0,0,0.5);padding:1.5rem 2rem;">
+            <div style="position:relative;z-index:10;width:100%;max-width:42rem;max-height:90dvh;overflow-y:auto;border-radius:1rem;border:1px solid rgba(255,255,255,0.08);background:#09090b;box-shadow:0 8px 40px rgba(0,0,0,0.5);padding:1.5rem 2rem;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
                     <h2 style="color:#fff;font-weight:600;font-size:1.25rem;">Get LiveClaw</h2>
                     <button id="pricing-close-btn" style="color:#71717a;font-size:1.5rem;line-height:1;cursor:pointer;background:none;border:none;">&times;</button>
                 </div>
-                <p style="color:#a1a1aa;font-size:0.875rem;margin-bottom:1.25rem;">Deploy your 24/7 AI agent on Telegram. Try for $0.99 &middot; 24-hour trial &mdash; cancel anytime.</p>
+                <p style="color:#a1a1aa;font-size:0.875rem;margin-bottom:1.25rem;">Deploy your 24/7 AI agent on Telegram. Choose the plan that works for you.</p>
 
-                <div id="pricing-loading" style="display:flex;flex-direction:column;gap:1rem;">
-                    <div style="border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.5rem;height:16rem;"></div>
+                <div id="pricing-loading" style="display:flex;gap:1rem;">
+                    <div style="flex:1;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.5rem;height:14rem;"></div>
+                    <div style="flex:1;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.5rem;height:14rem;"></div>
                 </div>
 
-                <div id="pricing-plans" style="display:none;flex-direction:column;gap:1rem;"></div>
+                <div id="pricing-plans" style="display:none;gap:1rem;"></div>
 
-                <div style="margin-top:1.25rem;display:flex;gap:0.5rem;">
+                <div style="margin-top:1rem;display:flex;align-items:center;gap:0.75rem;padding:0 0.25rem;">
+                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;">
+                        <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+                        Secure checkout by Dodo Payments
+                    </div>
+                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;margin-left:auto;">
+                        <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 1a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
+                        Global taxes included
+                    </div>
+                </div>
+
+                <div style="margin-top:0.75rem;display:flex;gap:0.5rem;">
                     <input id="pricing-promo-input" type="text" maxlength="20" placeholder="Promo code"
                         style="flex:1;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);padding:0.5rem 0.875rem;font-size:0.875rem;color:#fff;outline:none;" />
                     <button id="pricing-promo-btn"
@@ -812,99 +824,123 @@
 
         async function fetchAndRenderPlans() {
             try {
-                const res = await fetch(API_BASE + '/pricing');
+                const url = state.userId
+                    ? API_BASE + '/pricing?userId=' + encodeURIComponent(state.userId)
+                    : API_BASE + '/pricing';
+                const res = await fetch(url);
                 if (!res.ok) throw new Error('Failed to load pricing');
                 const data = await res.json();
-                renderPlans(data.plans);
+                renderPlans(data.plans, data.trialEligible !== false);
             } catch (_) {
                 document.getElementById('pricing-loading').innerHTML = '<p style="color:#f87171;font-size:0.875rem;text-align:center;padding:2rem 0;">Failed to load pricing. Please try again.</p>';
             }
         }
 
-        function renderPlans(plans) {
+        function makeFeaturesHtml(features) {
+            return features.map(f =>
+                '<li style="display:flex;align-items:center;gap:0.5rem;">' +
+                '<svg style="width:0.875rem;height:0.875rem;color:#34d399;flex-shrink:0;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>' +
+                escapeHtml(f) + '</li>'
+            ).join('');
+        }
+
+        function renderPlans(plans, trialEligible) {
             const container = document.getElementById('pricing-plans');
             const loading = document.getElementById('pricing-loading');
             if (!container || !loading) return;
 
             const standard = plans.standard;
+            const trial = plans.trial;
             const earlyClaw = plans.earlyClaw;
             const showEarlyClaw = earlyClaw && earlyClaw.spotsRemaining > 0;
-            const activePlan = (appliedPromo === 'EARLYCLAW' && showEarlyClaw) ? earlyClaw : standard;
-            const price = activePlan.price;
-            const isEB = activePlan === earlyClaw;
+
+            // Determine which subscription plan to show (standard or earlyClaw)
+            const subPlan = (appliedPromo === 'EARLYCLAW' && showEarlyClaw) ? earlyClaw : standard;
+            const isEB = subPlan === earlyClaw;
+            const subBorder = isEB ? 'rgba(245,158,11,0.4)' : 'rgba(99,102,241,0.4)';
+            const subCtaBg = isEB ? '#f59e0b' : '#6366f1';
             const spotsLeft = earlyClaw ? earlyClaw.spotsRemaining : 0;
-
-            const borderColor = isEB ? 'rgba(245,158,11,0.4)' : 'rgba(99,102,241,0.4)';
-            const badgeColor = isEB ? '#f59e0b' : '#6366f1';
-            const ctaBg = isEB ? '#f59e0b' : '#6366f1';
-            const spotBarColor = spotsLeft < 50 ? '#ef4444' : spotsLeft < 150 ? '#f59e0b' : '#10b981';
-
-            const featuresHtml = activePlan.features.map(f =>
-                '<li style="display:flex;align-items:center;gap:0.5rem;">' +
-                '<svg style="width:0.875rem;height:0.875rem;color:#34d399;flex-shrink:0;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>' +
-                escapeHtml(f) + '</li>'
-            ).join('');
 
             const earlyClawBar = isEB ? `
                 <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.25rem;">
                     <div style="flex:1;height:0.375rem;border-radius:9999px;background:rgba(255,255,255,0.05);overflow:hidden;">
-                        <div style="height:100%;border-radius:9999px;background:${spotBarColor};width:${Math.min(100, ((500 - spotsLeft) / 500) * 100)}%;"></div>
+                        <div style="height:100%;border-radius:9999px;background:${spotsLeft < 50 ? '#ef4444' : spotsLeft < 150 ? '#f59e0b' : '#10b981'};width:${Math.min(100, ((500 - spotsLeft) / 500) * 100)}%;"></div>
                     </div>
                     <span style="font-size:0.75rem;color:${spotsLeft < 50 ? '#f87171' : '#a1a1aa'};font-weight:500;white-space:nowrap;">${spotsLeft} spots left</span>
                 </div>` : '';
 
-            container.innerHTML = `
-                <div style="position:relative;border-radius:0.75rem;border:1px solid ${borderColor};background:rgba(255,255,255,0.03);padding:1.5rem;display:flex;flex-direction:column;gap:0.75rem;">
-                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:${badgeColor};color:#fff;font-size:0.75rem;font-weight:500;padding:0.125rem 0.625rem;border-radius:9999px;">
-                        ${isEB ? '\ud83d\udd25 Early Claw' : '$0.99 Trial'}
-                    </span>
-
-                    <h3 style="color:#fff;font-weight:600;font-size:1.125rem;margin-top:0.25rem;">${escapeHtml(activePlan.name)}</h3>
-
-                    <div style="display:flex;align-items:baseline;gap:0.375rem;">
-                        ${isEB ? '<span style="color:#71717a;font-size:1.125rem;text-decoration:line-through;">$' + standard.price.toFixed(2) + '</span>' : ''}
-                        <span style="color:#fff;font-size:1.875rem;font-weight:700;">$${price.toFixed(2)}</span>
-                        <span style="color:#71717a;font-size:0.875rem;">/${activePlan.interval}</span>
+            // Trial card (left)
+            const trialCardHtml = trialEligible ? `
+                <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
+                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">Try it first</span>
+                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">24-Hour Trial</h3>
+                    <div style="display:flex;align-items:baseline;gap:0.25rem;">
+                        <span style="color:#fff;font-size:1.5rem;font-weight:700;">$${trial.price.toFixed(2)}</span>
+                        <span style="color:#71717a;font-size:0.8rem;">one-time</span>
                     </div>
-
-                    ${earlyClawBar}
-
-                    <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0.5rem 0 0 0;display:flex;flex-direction:column;gap:0.5rem;">
-                        ${featuresHtml}
+                    <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.375rem;flex:1;">
+                        ${makeFeaturesHtml(trial.features)}
                     </ul>
-
-                    <button id="pricing-cta-btn" data-plan="standard"
-                        style="margin-top:0.75rem;width:100%;border-radius:0.5rem;background:${ctaBg};color:#fff;padding:0.625rem;font-size:0.875rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.5rem;">
-                        <svg style="width:1rem;height:1rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd"/></svg>
-                        Start $0.99 Trial
+                    <button id="pricing-trial-btn"
+                        style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:transparent;border:1px solid rgba(99,102,241,0.4);color:#a5b4fc;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
+                        Start Trial — $0.99
                     </button>
-                    <p style="text-align:center;color:#52525b;font-size:0.75rem;">$0.99 one-time &middot; Cancel anytime.</p>
-                </div>
+                    <p style="text-align:center;color:#52525b;font-size:0.7rem;">One-time payment. No auto-renew.</p>
+                </div>` : `
+                <div style="flex:1;min-width:0;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.25rem;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0.5rem;opacity:0.5;">
+                    <span style="color:#71717a;font-size:0.875rem;font-weight:500;">Trial Used</span>
+                    <p style="color:#52525b;font-size:0.75rem;text-align:center;">You\u2019ve already used your trial. Subscribe to continue.</p>
+                </div>`;
 
-                <div style="display:flex;align-items:center;gap:0.75rem;padding:0 0.25rem;">
-                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;">
-                        <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
-                        Secure checkout by Dodo Payments
+            // Subscription card (right)
+            const subCardHtml = `
+                <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid ${subBorder};background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
+                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:${subCtaBg};color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">
+                        ${isEB ? '\ud83d\udd25 Early Claw' : 'Recommended'}
+                    </span>
+                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">${escapeHtml(subPlan.name)}</h3>
+                    <div style="display:flex;align-items:baseline;gap:0.25rem;">
+                        ${isEB ? '<span style="color:#71717a;font-size:1rem;text-decoration:line-through;">$' + standard.price.toFixed(2) + '</span>' : ''}
+                        <span style="color:#fff;font-size:1.5rem;font-weight:700;">$${subPlan.price.toFixed(2)}</span>
+                        <span style="color:#71717a;font-size:0.8rem;">/month</span>
                     </div>
-                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;margin-left:auto;">
-                        <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 1a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
-                        Global taxes included
-                    </div>
+                    ${earlyClawBar}
+                    <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.375rem;flex:1;">
+                        ${makeFeaturesHtml(subPlan.features)}
+                    </ul>
+                    <button id="pricing-sub-btn"
+                        style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:${subCtaBg};color:#fff;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
+                        Subscribe — $${subPlan.price.toFixed(2)}/mo
+                    </button>
+                    <p style="text-align:center;color:#52525b;font-size:0.7rem;">Cancel anytime. Billed monthly.</p>
+                </div>`;
+
+            container.innerHTML = `
+                <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+                    ${trialCardHtml}
+                    ${subCardHtml}
                 </div>
             `;
 
             loading.style.display = 'none';
             container.style.display = 'flex';
 
-            const ctaBtn = document.getElementById('pricing-cta-btn');
-            if (ctaBtn) {
-                ctaBtn.addEventListener('click', () => startCheckout(ctaBtn, activePlan === earlyClaw));
+            // Wire trial button
+            const trialBtn = document.getElementById('pricing-trial-btn');
+            if (trialBtn) {
+                trialBtn.addEventListener('click', () => startCheckout(trialBtn, 'trial', false));
+            }
+
+            // Wire subscription button
+            const subBtn = document.getElementById('pricing-sub-btn');
+            if (subBtn) {
+                subBtn.addEventListener('click', () => startCheckout(subBtn, 'subscription', isEB));
             }
 
             container._plans = plans;
         }
 
-        async function startCheckout(btn, earlyClaw) {
+        async function startCheckout(btn, type, earlyClaw) {
             const origHTML = btn.innerHTML;
             btn.disabled = true;
             btn.style.opacity = '0.7';
@@ -919,14 +955,17 @@
                 const headers = { 'Content-Type': 'application/json' };
                 if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
-                const body = {
-                    userId: state.userId,
-                    email: state.userEmail,
-                    plan: 'standard',
-                };
-                if (earlyClaw) body.promoCode = 'EARLYCLAW';
+                let endpoint, body;
+                if (type === 'trial') {
+                    endpoint = '/create-trial-checkout';
+                    body = { userId: state.userId, email: state.userEmail };
+                } else {
+                    endpoint = '/create-checkout-session';
+                    body = { userId: state.userId, email: state.userEmail, plan: 'standard' };
+                    if (earlyClaw) body.promoCode = 'EARLYCLAW';
+                }
 
-                const res = await fetch(API_BASE + '/create-checkout-session', {
+                const res = await fetch(API_BASE + endpoint, {
                     method: 'POST',
                     headers,
                     body: JSON.stringify(body),
@@ -967,7 +1006,7 @@
                     promoInput.disabled = true;
                     promoBtn.textContent = 'Applied';
                     promoBtn.disabled = true;
-                    renderPlans(container._plans);
+                    renderPlans(container._plans, !!document.getElementById('pricing-trial-btn'));
                 } else {
                     promoMsg.style.color = '#f87171';
                     promoMsg.textContent = 'All Early Claw spots have been claimed.';

@@ -299,7 +299,7 @@ await db.exec(`
         dodo_customer_id      TEXT    UNIQUE,
         dodo_subscription_id  TEXT    UNIQUE,
         plan                  TEXT    NOT NULL DEFAULT 'standard'
-                              CHECK(plan IN ('standard')),
+                              CHECK(plan IN ('standard','trial')),
         status                TEXT    NOT NULL DEFAULT 'inactive'
                               CHECK(status IN ('active','past_due','cancelled','inactive','trialing')),
         trial_ends_at         DATETIME,
@@ -894,20 +894,44 @@ app.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), 
 }));
 
 // ─── GET /pricing — Public Pricing ──────────────────────────────────────────
-app.get('/pricing', asyncHandler(async (_req, res) => {
+app.get('/pricing', asyncHandler(async (req, res) => {
     const earlyBirdUsed = (await db.get(
         "SELECT COUNT(*) as count FROM subscriptions WHERE early_bird = 1 AND status IN ('active','trialing','past_due')"
     )).count;
 
+    // Check trial eligibility if userId is provided
+    let trialEligible = true;
+    const userId = req.query.userId;
+    if (userId && typeof userId === 'string') {
+        const usedTrial = await db.get(
+            'SELECT trial_ends_at FROM subscriptions WHERE user_id = ? AND trial_ends_at IS NOT NULL',
+            [userId]
+        );
+        if (usedTrial) trialEligible = false;
+    }
+
     return res.json({
+        trialEligible,
         plans: {
+            trial: {
+                id: 'trial',
+                name: 'LiveClaw Trial',
+                price: 0.99,
+                currency: 'usd',
+                interval: 'one-time',
+                duration: '24 hours',
+                features: [
+                    '24/7 AI agent on Telegram',
+                    'Custom personality (SOUL.md)',
+                    'Full access for 24 hours',
+                ],
+            },
             standard: {
                 id: 'standard',
                 name: 'LiveClaw',
                 price: 12.99,
                 currency: 'usd',
                 interval: 'month',
-                trialDays: 1,
                 bots: 1,
                 channels: ['telegram'],
                 features: [
@@ -923,7 +947,6 @@ app.get('/pricing', asyncHandler(async (_req, res) => {
                 price: 9.99,
                 currency: 'usd',
                 interval: 'month',
-                trialDays: 1,
                 bots: 1,
                 channels: ['telegram'],
                 promoCode: 'EARLYCLAW',
