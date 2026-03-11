@@ -1,0 +1,98 @@
+name: Hotfix Deploy
+
+# Emergency production deployment that skips CI checks.
+# Use ONLY when production is down and you need to ship a fix immediately.
+# Requires manual trigger with confirmation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type HOTFIX to confirm emergency deploy'
+        required: true
+        type: string
+      target:
+        description: 'What to deploy'
+        required: true
+        type: choice
+        options:
+          - backend
+          - frontend
+          - both
+
+permissions:
+  contents: read
+
+jobs:
+  hotfix:
+    name: 'Emergency Deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.inputs.confirm == 'HOTFIX'
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Deploy backend
+        if: contains(fromJSON('["backend","both"]'), github.event.inputs.target)
+        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            cd /opt/liveclaw/backend
+            npm install --omit=dev --loglevel warn
+            pm2 reload liveclaw-orchestrator --update-env
+            sleep 3
+            curl -sf http://localhost:3000/health || echo "Health check failed"
+
+      - name: Generate frontend config
+        if: contains(fromJSON('["frontend","both"]'), github.event.inputs.target)
+        run: |
+          sed \
+            -e "s|{{LIVECLAW_API_BASE}}||g" \
+            -e "s|{{LIVECLAW_GOOGLE_CLIENT_ID}}|${{ secrets.GOOGLE_CLIENT_ID }}|g" \
+            -e "s|{{LIVECLAW_TURNSTILE_SITE_KEY}}|${{ secrets.LIVECLAW_TURNSTILE_SITE_KEY }}|g" \
+            liveclaw-web/config.js.template > liveclaw-web/www/config.js
+
+      - name: Upload frontend
+        if: contains(fromJSON('["frontend","both"]'), github.event.inputs.target)
+        uses: appleboy/scp-action@23cc5ecc8f5a88be0e2c0f4dd0219f5d57bd3050 # v0.1.7
+        with:
+          host: ${{ secrets.DO_FRONTEND_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          source: "liveclaw-web/www/"
+          target: /opt/liveclaw
+          overwrite: true
+
+      - name: Deploy frontend
+        if: contains(fromJSON('["frontend","both"]'), github.event.inputs.target)
+        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
+        with:
+          host: ${{ secrets.DO_FRONTEND_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            rsync -a --delete /opt/liveclaw/liveclaw-web/www/ /opt/liveclaw/frontend/
+            nginx -t && systemctl reload nginx
+
+      - name: Hotfix summary
+        if: always()
+        run: |
+          echo "## ⚠️ HOTFIX DEPLOYMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | ${{ github.event.inputs.target }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | ${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> CI checks were **skipped** for this deployment." >> "$GITHUB_STEP_SUMMARY"

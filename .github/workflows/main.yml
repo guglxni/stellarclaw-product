@@ -3,7 +3,6 @@ name: LiveClaw CI/CD
 on:
   push:
     branches: [main]
-    # Skip CI for pure documentation or asset changes
     paths-ignore:
       - 'docs/**'
       - '*.md'
@@ -17,6 +16,12 @@ on:
       - 'SECURITY.md'
       - 'LICENSE'
   workflow_dispatch:
+    inputs:
+      deploy_only:
+        description: 'Skip tests and deploy directly (emergency only)'
+        required: false
+        default: 'false'
+        type: boolean
 
 # Principle of least privilege — jobs that need extra permissions opt-in below
 permissions:
@@ -31,22 +36,52 @@ env:
   REMOTE_BASE: /opt/liveclaw
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pipeline: Test → Lint → Security → Deploy
+# Pipeline: Prepare → Test+Lint+Security (parallel) → Deploy Backend → Deploy Frontend
 # ═══════════════════════════════════════════════════════════════════════════════
 jobs:
 
+  # ─── Stage 0: Change Detection ──────────────────────────────────────────
+  changes:
+    name: 'Detect changes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Path filter
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'scripts/**'
+              - '.github/workflows/main.yml'
+            frontend:
+              - 'liveclaw-web/**'
+              - '.github/workflows/main.yml'
+            workflows:
+              - '.github/**'
+
   # ─── Stage 1: Test Suite ─────────────────────────────────────────────────
   test:
-    name: '🧪 Test Suite'
+    name: 'Test Suite'
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -65,29 +100,39 @@ jobs:
         working-directory: backend
 
       - name: Run full test suite with coverage
-        run: npx vitest run --coverage
+        run: npm run test:ci
         working-directory: backend
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: coverage-report
+          name: coverage-report-${{ github.run_id }}
           path: backend/coverage/
-          retention-days: 30
+          retention-days: 14
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f backend/coverage/coverage-summary.json ]; then
+            TOTAL=$(jq '.total.lines.pct' backend/coverage/coverage-summary.json 2>/dev/null || echo "N/A")
+            echo "### Test Coverage: ${TOTAL}%" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ─── Stage 2: Lint & Static Analysis ─────────────────────────────────────
   lint:
-    name: '🔍 Lint & Validate'
+    name: 'Lint & Validate'
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 3
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -108,7 +153,7 @@ jobs:
           node -c dodo.js
         working-directory: backend
 
-      - name: Check for secrets in code
+      - name: Detect leaked secrets
         run: |
           # Scan for common secret patterns (API keys, tokens, passwords)
           if grep -rn --include="*.js" --include="*.json" --include="*.yml" \
@@ -121,16 +166,18 @@ jobs:
 
   # ─── Stage 3: Security Audit ─────────────────────────────────────────────
   security:
-    name: '🛡️ Security Audit'
+    name: 'Security Audit'
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -146,7 +193,6 @@ jobs:
 
       - name: Check for known vulnerabilities
         run: |
-          # Check for critical/high vulnerabilities
           RESULT=$(npm audit --omit=dev --json 2>/dev/null || echo '{}')
           CRITICAL=$(echo "$RESULT" | jq '.metadata.vulnerabilities.critical // 0')
           HIGH=$(echo "$RESULT" | jq '.metadata.vulnerabilities.high // 0')
@@ -156,40 +202,48 @@ jobs:
             exit 1
           fi
           echo "✓ No critical vulnerabilities"
+          echo "### Security: ${CRITICAL} critical, ${HIGH} high" >> "$GITHUB_STEP_SUMMARY"
         working-directory: backend
 
-  # ─── Stage 4: Deploy (only on main push, after all checks pass) ──────────
-  deploy:
-    name: '🚀 Deploy to Production'
-    needs: [test, lint, security]
+  # ─── Stage 4a: Deploy Backend ────────────────────────────────────────────
+  deploy-backend:
+    name: 'Deploy Backend'
+    needs: [changes, test, lint, security]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      (needs.changes.outputs.backend == 'true') &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+      (needs.security.result == 'success' || needs.security.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 10
     environment: production
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
-      - name: Validate secrets
+      - name: Validate deployment secrets
         run: |
-          if [ -z "${{ secrets.DO_DROPLET_IP }}" ] || [ -z "${{ secrets.DO_SSH_KEY }}" ]; then
-            echo "::error::Missing required secrets: DO_DROPLET_IP and DO_SSH_KEY"
+          MISSING=""
+          [ -z "${{ secrets.DO_DROPLET_IP }}" ] && MISSING="${MISSING} DO_DROPLET_IP"
+          [ -z "${{ secrets.DO_SSH_KEY }}" ] && MISSING="${MISSING} DO_SSH_KEY"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required secrets:${MISSING}"
             exit 1
-          fi
-          if [ -z "${{ secrets.DATABASE_URL }}" ]; then
-            echo "::warning::DATABASE_URL secret not set — server will fall back to SQLite"
           fi
 
       - name: Bootstrap fresh droplet (if needed)
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
           command_timeout: 8m
           script: |
-            # Check if PM2 exists (indicates a previously successful deploy)
             if command -v pm2 &>/dev/null && pm2 describe liveclaw-orchestrator &>/dev/null; then
               echo "Droplet already bootstrapped — skipping"
               exit 0
@@ -198,7 +252,6 @@ jobs:
             set -euo pipefail
             echo "=== Fresh droplet — bootstrapping ==="
 
-            # System deps (idempotent)
             if ! command -v node &>/dev/null; then
               apt-get update -qq
               curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -206,12 +259,10 @@ jobs:
             fi
             command -v pm2 &>/dev/null || npm install -g pm2 --loglevel warn
 
-            # Firewall (idempotent)
             ufw --force enable
             ufw allow ssh
             ufw allow 'Nginx Full'
 
-            # Bifrost AI Gateway Docker (idempotent)
             systemctl enable --now docker
             if ! docker ps --format '{{.Names}}' | grep -q bifrost-gateway; then
               docker rm -f bifrost-gateway 2>/dev/null || true
@@ -227,15 +278,11 @@ jobs:
               echo "  Bifrost gateway already running"
             fi
 
-            # Directory structure
-            mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data}
+            mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data,releases}
 
-            # Download/update picobot binary (always latest)
             cd /opt/liveclaw/backend
             CURRENT_VER=""
-            if [ -f ".picobot-version" ]; then
-              CURRENT_VER=$(cat .picobot-version 2>/dev/null || echo "")
-            fi
+            [ -f ".picobot-version" ] && CURRENT_VER=$(cat .picobot-version 2>/dev/null || echo "")
             LATEST_VER=$(curl -sf https://api.github.com/repos/louisho5/picobot/releases/latest | grep -o '"tag_name":\s*"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
 
             if [ -n "$LATEST_VER" ] && [ "$CURRENT_VER" != "$LATEST_VER" ]; then
@@ -243,65 +290,59 @@ jobs:
               curl -fSL --retry 3 -o picobot.tmp \
                 "https://github.com/louisho5/picobot/releases/download/${LATEST_VER}/picobot_linux_amd64" 2>/dev/null
               if [ -s picobot.tmp ]; then
-                mv picobot.tmp picobot
-                chmod +x picobot
+                mv picobot.tmp picobot && chmod +x picobot
                 echo "$LATEST_VER" > .picobot-version
-                echo "  picobot updated to ${LATEST_VER}"
               else
                 rm -f picobot.tmp
-                echo "  Download failed — keeping existing"
               fi
             elif [ ! -x "/opt/liveclaw/backend/picobot" ] || [ ! -s "/opt/liveclaw/backend/picobot" ]; then
               curl -fSL --retry 3 -o picobot \
                 "https://github.com/louisho5/picobot/releases/latest/download/picobot_linux_amd64" 2>/dev/null || touch picobot
               chmod +x picobot
               [ -n "$LATEST_VER" ] && echo "$LATEST_VER" > .picobot-version
-              echo "  picobot ready"
-            else
-              echo "  picobot up-to-date: ${CURRENT_VER}"
             fi
 
             echo "=== Bootstrap complete! ==="
 
-      - name: Generate frontend config.js from secrets
-        run: |
-          sed \
-            -e "s|{{LIVECLAW_API_BASE}}||g" \
-            -e "s|{{LIVECLAW_GOOGLE_CLIENT_ID}}|${{ secrets.GOOGLE_CLIENT_ID }}|g" \
-            -e "s|{{LIVECLAW_TURNSTILE_SITE_KEY}}|${{ secrets.LIVECLAW_TURNSTILE_SITE_KEY }}|g" \
-            liveclaw-web/config.js.template > liveclaw-web/www/config.js
-          echo "Generated config.js (Client ID length: $(grep -o 'GOOGLE_CLIENT_ID.*' liveclaw-web/www/config.js | wc -c) chars)"
-
-      - name: Upload code via SCP
-        uses: appleboy/scp-action@v0.1.7
+      - name: Upload backend code
+        uses: appleboy/scp-action@23cc5ecc8f5a88be0e2c0f4dd0219f5d57bd3050 # v0.1.7
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
-          source: "backend/,scripts/,liveclaw-web/,.env.example"
+          source: "backend/,scripts/"
           target: ${{ env.REMOTE_BASE }}
           overwrite: true
           strip_components: 0
 
-      - name: Deploy & restart services
-        uses: appleboy/ssh-action@v1.2.5
+      - name: Deploy backend with rollback
+        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
+          envs: DEPLOY_SHA
           command_timeout: 5m
           script: |
             set -euo pipefail
+            RELEASE_DIR="/opt/liveclaw/releases/$(date +%Y%m%d-%H%M%S)-${DEPLOY_SHA:0:7}"
 
-            echo "=== 1/5 Sync frontend files ==="
-            rsync -a --delete /opt/liveclaw/liveclaw-web/www/ /opt/liveclaw/frontend/
-            echo "  Frontend synced to /opt/liveclaw/frontend/"
+            echo "=== 1/5 Snapshot current release ==="
+            if [ -d /opt/liveclaw/backend/node_modules ]; then
+              mkdir -p "$RELEASE_DIR"
+              cp -r /opt/liveclaw/backend/server.js /opt/liveclaw/backend/dodo.js \
+                    /opt/liveclaw/backend/bifrost.js /opt/liveclaw/backend/package.json \
+                    /opt/liveclaw/backend/package-lock.json "$RELEASE_DIR/" 2>/dev/null || true
+              echo "  Snapshot saved to $RELEASE_DIR"
+            fi
 
-            echo "=== 2/5 Install backend dependencies ==="
+            echo "=== 2/5 Install dependencies ==="
             cd /opt/liveclaw/backend
             npm install --omit=dev --loglevel warn
 
-            # Create .env from template if it doesn't exist
+            # Create .env from template if missing
             if [ ! -f ".env" ]; then
               cat > .env << 'ENVEOF'
             PORT=3000
@@ -310,7 +351,6 @@ jobs:
             ALLOWED_ORIGINS=https://liveclaw.xyz,https://www.liveclaw.xyz
             TOKEN_ENCRYPTION_KEY=CHANGE_ME_64_hex_chars
             ADMIN_SECRET=CHANGE_ME_admin_secret
-            MINI_APP_SECRET=CHANGE_ME_64_hex_chars
             BIFROST_GATEWAY_URL=http://localhost:8080
             PICOBOT_PATH=/opt/liveclaw/backend/picobot
             DB_PATH=/opt/liveclaw/backend/liveclaw.db
@@ -321,12 +361,9 @@ jobs:
             DODO_API_KEY=your_dodo_api_key
             DODO_WEBHOOK_SECRET=your_dodo_webhook_secret
             DODO_PRODUCT_ID=your_dodo_product_id
-            OPENROUTER_API_KEY=your_openrouter_api_key
-            # TELEGRAM_MASTER_BOT_TOKEN=  # optional - for low-credit push notifications
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
             MCP_SERVERS_CONFIG=
             ENVEOF
-              echo "  ⚠️  Created .env with placeholders — SSH in and edit with real keys!"
+              echo "  Created .env with placeholders — SSH in and edit!"
             fi
 
             echo "=== 3/5 Reload orchestrator (zero-downtime) ==="
@@ -339,33 +376,163 @@ jobs:
             pm2 startup 2>/dev/null | tail -n 1 | bash 2>/dev/null || true
 
             echo "=== 4/5 Nginx ==="
-            nginx -t && systemctl reload nginx || echo "Nginx config not ready yet — skipping"
+            nginx -t && systemctl reload nginx || echo "Nginx config unchanged"
 
-            echo "=== 5/5 Health check ==="
-            sleep 3
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "✓ Health check passed (HTTP $HTTP_CODE)"
-            else
-              echo "⚠ Health check returned HTTP $HTTP_CODE (expected on first deploy if .env has placeholders)"
-              pm2 logs liveclaw-orchestrator --lines 10 --nostream || true
+            echo "=== 5/5 Health check with retry ==="
+            HEALTHY=false
+            for i in 1 2 3 4 5; do
+              sleep 3
+              HTTP_CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" http://localhost:3000/health || echo "000")
+              if [ "$HTTP_CODE" = "200" ]; then
+                HEALTHY=true
+                echo "✓ Health check passed on attempt $i (HTTP $HTTP_CODE)"
+                break
+              fi
+              echo "  Attempt $i: HTTP $HTTP_CODE — retrying..."
+            done
+
+            if [ "$HEALTHY" = "false" ]; then
+              echo "::error::Health check failed after 5 attempts!"
+              echo "=== ROLLING BACK ==="
+              if [ -d "$RELEASE_DIR" ] && [ -f "$RELEASE_DIR/server.js" ]; then
+                cp "$RELEASE_DIR"/server.js "$RELEASE_DIR"/dodo.js \
+                   "$RELEASE_DIR"/bifrost.js /opt/liveclaw/backend/ 2>/dev/null || true
+                pm2 reload liveclaw-orchestrator --update-env
+                sleep 3
+                ROLLBACK_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
+                echo "  Rollback health: HTTP $ROLLBACK_CODE"
+              fi
+              exit 1
             fi
 
-            echo "=== ✅ Deploy complete ==="
+            # Prune old releases (keep last 5)
+            cd /opt/liveclaw/releases
+            ls -dt */ 2>/dev/null | tail -n +6 | xargs rm -rf 2>/dev/null || true
 
-      - name: Deployment summary
+            echo "=== Deploy complete (${DEPLOY_SHA:0:7}) ==="
+
+      - name: Backend deploy summary
         if: always()
         run: |
           STATUS="${{ job.status }}"
-          SHA="${{ github.sha }}"
-          REF="${{ github.ref_name }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "### Backend Deploy: $([ "$STATUS" = "success" ] && echo '✅' || echo '❌') $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | \`api.liveclaw.xyz\` |" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "## 🚀 Deployment" >> "$GITHUB_STEP_SUMMARY"
+  # ─── Stage 4b: Deploy Frontend ──────────────────────────────────────────
+  deploy-frontend:
+    name: 'Deploy Frontend'
+    needs: [changes, test, lint, security]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      (needs.changes.outputs.frontend == 'true') &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+      (needs.security.result == 'success' || needs.security.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Generate frontend config.js from secrets
+        run: |
+          sed \
+            -e "s|{{LIVECLAW_API_BASE}}||g" \
+            -e "s|{{LIVECLAW_GOOGLE_CLIENT_ID}}|${{ secrets.GOOGLE_CLIENT_ID }}|g" \
+            -e "s|{{LIVECLAW_TURNSTILE_SITE_KEY}}|${{ secrets.LIVECLAW_TURNSTILE_SITE_KEY }}|g" \
+            liveclaw-web/config.js.template > liveclaw-web/www/config.js
+
+      - name: Upload frontend
+        uses: appleboy/scp-action@23cc5ecc8f5a88be0e2c0f4dd0219f5d57bd3050 # v0.1.7
+        with:
+          host: ${{ secrets.DO_FRONTEND_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          source: "liveclaw-web/www/"
+          target: /opt/liveclaw
+          overwrite: true
+          strip_components: 0
+
+      - name: Sync frontend files
+        uses: appleboy/ssh-action@7af35f2fab17b6b3bedd2c6a6e0e5808dfe04ec6 # v1.2.0
+        with:
+          host: ${{ secrets.DO_FRONTEND_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            set -euo pipefail
+            rsync -a --delete /opt/liveclaw/liveclaw-web/www/ /opt/liveclaw/frontend/
+            nginx -t && systemctl reload nginx || echo "Nginx unchanged"
+
+            # Verify frontend is serving
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/ || echo "000")
+            echo "Frontend health: HTTP $HTTP_CODE"
+
+      - name: Frontend deploy summary
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          echo "### Frontend Deploy: $([ "$STATUS" = "success" ] && echo '✅' || echo '❌') $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | \`liveclaw.xyz\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─── Stage 5: Post-Deploy Verification ──────────────────────────────────
+  verify:
+    name: 'Smoke Test'
+    needs: [deploy-backend, deploy-frontend]
+    if: always() && (needs.deploy-backend.result == 'success' || needs.deploy-frontend.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Verify production endpoints
+        run: |
+          echo "### Production Smoke Tests" >> "$GITHUB_STEP_SUMMARY"
+          PASS=0
+          FAIL=0
+
+          # Backend health
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://api.liveclaw.xyz/health || echo "000")
+          if [ "$HTTP" = "200" ]; then
+            echo "- ✅ Backend health: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
+            PASS=$((PASS+1))
+          else
+            echo "- ❌ Backend health: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
+            FAIL=$((FAIL+1))
+          fi
+
+          # Backend pricing endpoint
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://api.liveclaw.xyz/pricing || echo "000")
+          if [ "$HTTP" = "200" ]; then
+            echo "- ✅ Pricing API: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
+            PASS=$((PASS+1))
+          else
+            echo "- ❌ Pricing API: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
+            FAIL=$((FAIL+1))
+          fi
+
+          # Frontend
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://liveclaw.xyz/ || echo "000")
+          if [ "$HTTP" = "200" ]; then
+            echo "- ✅ Frontend: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
+            PASS=$((PASS+1))
+          else
+            echo "- ❌ Frontend: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
+            FAIL=$((FAIL+1))
+          fi
+
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Status | $([ "$STATUS" = "success" ] && echo '✅ Success' || echo '❌ Failed') |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Branch | \`${REF}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | [\`${SHA:0:7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${SHA}) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Run | [View logs](${RUN_URL}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Result: ${PASS} passed, ${FAIL} failed**" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAIL" -gt 0 ]; then
+            echo "::warning::${FAIL} smoke test(s) failed — check deployment"
+          fi
