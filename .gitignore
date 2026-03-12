@@ -55,6 +55,10 @@ out/
 npm-debug.log*
 pm2-*.log
 
+# ── Sensitive operational exports ─────────────────────────────────
+beta-codes.txt
+beta-codes-*.txt
+
 # ── Temporary build scripts (used during initial setup — now deleted) ─────
 # fix_all.py
 # fix_marquee_footer.py
