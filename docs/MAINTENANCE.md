@@ -127,6 +127,44 @@ curl -X POST https://api.liveclaw.xyz/admin/users/<userId>/credit \
   -d '{"amount": 5.00, "reason": "manual adjustment"}'
 ```
 
+### Beta Codes (Critical)
+
+Source of truth for production beta codes is Dodo Discounts, not a local text file.
+
+Required policy:
+
+1. Generate production beta codes only through backend admin endpoints:
+
+```bash
+curl -X POST https://api.liveclaw.xyz/admin/beta-codes/generate \
+  -H "Authorization: Bearer <admin_jwt>"
+```
+
+or import explicit codes:
+
+```bash
+curl -X POST https://api.liveclaw.xyz/admin/beta-codes/import \
+  -H "Authorization: Bearer <admin_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"codes":["ABCD-EFGH-IJKL"]}'
+```
+
+2. Verify in Dodo before distributing codes (MCP or SDK):
+
+```ts
+await client.discounts.retrieveByCode('ABCD-EFGH-IJKL')
+```
+
+Expected configuration per beta code:
+
+- `type = percentage`
+- `amount = 10000` (100%)
+- `usage_limit = 1`
+- `restricted_to = [pdt_0Na2dJtFAS8lvKgRaT7Qs]` (trial product)
+
+3. If `beta-codes.txt` is exported, it must be an export from Dodo-backed discounts.
+Do not treat offline-generated code lists as production-ready.
+
 ### SSL Certificate Renewal
 
 Certbot auto-renews via systemd timer. To check status:
