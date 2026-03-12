@@ -214,12 +214,12 @@ function getProviderConfig(model) {
         'minimax-m2.5': {
             provider: 'openrouter',
             weight: 1.0,
-            allowed_models: ['minimax/minimax-m1'],
+            allowed_models: ['minimax/minimax-m2.5'],
         },
         'kimi-k2.5': {
             provider: 'openrouter',
             weight: 1.0,
-            allowed_models: ['moonshotai/kimi-k2'],
+            allowed_models: ['moonshotai/kimi-k2.5'],
         },
     };
 

@@ -32,6 +32,20 @@ const bifrost = require('./bifrost');
 const dodo = require('./dodo');
 const { TOTP } = require('otpauth');
 const jwt = require('jsonwebtoken');
+const createLogger = require('./logger');
+
+// ── Structured loggers (one per subsystem) ──────────────────────────────────
+const log = {
+    startup:  createLogger('startup'),
+    http:     createLogger('http'),
+    auth:     createLogger('auth'),
+    checkout: createLogger('checkout'),
+    webhook:  createLogger('webhook'),
+    deploy:   createLogger('deploy'),
+    admin:    createLogger('admin'),
+    watchdog: createLogger('watchdog'),
+    system:   createLogger('system'),
+};
 
 // ─── Capacity Planning ──────────────────────────────────────────────────────
 // Unit Economics (s-2vcpu-2gb DigitalOcean droplet):
@@ -102,12 +116,10 @@ if (isProd) {
         }
     }
     if (missing.length > 0) {
-        console.error('\n[startup] FATAL — missing or invalid environment variables in production:');
-        missing.forEach(m => console.error(m));
-        console.error('\nFill in /opt/liveclaw/backend/.env and run: pm2 reload liveclaw-orchestrator --update-env\n');
+        log.startup.error('FATAL — missing or invalid environment variables in production', { missing });
         process.exit(1);
     }
-    console.log('[startup] All required environment variables validated.');
+    log.startup.info('All required environment variables validated.');
 }
 
 // ─── Google JWT Verification (Server-Side Auth) ─────────────────────────────
@@ -175,7 +187,7 @@ async function verifyGoogleToken(idToken) {
 
         return payload;
     } catch (err) {
-        console.warn('[auth] Google JWT verification failed:', err.message);
+        log.auth.warn('Google JWT verification failed', { error: err.message });
         return null;
     }
 }
@@ -451,7 +463,7 @@ stmtBeta = {
 
 function logEvent(userId, event, detail = null, ip = null) {
     stmt.insertLog(userId, event, typeof detail === 'object' ? JSON.stringify(detail) : detail, ip).catch(err => {
-        console.error(`[logEvent] Failed: ${err.message}`);
+        log.system.error('logEvent failed', { error: err.message });
     });
 }
 
@@ -557,7 +569,7 @@ app.use((req, res, next) => {
             requestTelemetry.recent.splice(0, requestTelemetry.recent.length - 600);
         }
 
-        console.log(`[${req.requestId}] ${req.method} ${req.path} ${res.statusCode} ${ms}ms`);
+        log.http.info(`${req.method} ${req.path} ${res.statusCode} ${ms}ms`, { requestId: req.requestId, method: req.method, path: req.path, status: res.statusCode, ms });
     });
     next();
 });
@@ -654,7 +666,7 @@ app.post('/verify-turnstile', asyncHandler(async (req, res) => {
     }
 
     if (!config.turnstileSecret) {
-        console.error('[Turnstile] TURNSTILE_SECRET_KEY not configured');
+        log.auth.error('TURNSTILE_SECRET_KEY not configured');
         return res.status(500).json({ success: false, error: 'Turnstile not configured' });
     }
 
@@ -676,7 +688,7 @@ app.post('/verify-turnstile', asyncHandler(async (req, res) => {
         return res.json({ success: true });
     }
 
-    console.warn(`[Turnstile] Verification failed ip=${ip}`, outcome['error-codes']);
+    log.auth.warn('Turnstile verification failed', { ip, errors: outcome['error-codes'] });
     return res.status(403).json({ success: false, error: 'CAPTCHA verification failed' });
 }));
 
@@ -792,12 +804,9 @@ app.post('/create-checkout-session', deployLimiter, asyncHandler(authMiddleware)
             earlyBird,
         });
     } catch (err) {
-        console.error('[checkout] Dodo error:', err.message);
+        log.checkout.error('Dodo checkout error', { error: err.message });
         logEvent(userId, 'checkout_error', err.message);
-        const msg = err.message?.includes('not enabled')
-            ? 'Payments are temporarily unavailable — merchant verification pending. Please try again later.'
-            : 'Failed to create checkout session';
-        return res.status(502).json({ error: msg });
+        return res.status(502).json({ error: 'Failed to create checkout session' });
     }
 }));
 
@@ -819,7 +828,7 @@ app.post('/create-portal-session', asyncHandler(authMiddleware), asyncHandler(as
         logEvent(userId, 'portal_session_created');
         return res.json({ portalUrl: portal.link });
     } catch (err) {
-        console.error('[portal] Dodo error:', err.message);
+        log.checkout.error('Dodo portal error', { error: err.message });
         return res.status(502).json({ error: 'Failed to create portal session' });
     }
 }));
@@ -891,11 +900,8 @@ app.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), 
         logEvent(userId, 'trial_checkout_created', { sessionId: session.sessionId });
         return res.json({ checkoutUrl: session.checkoutUrl, sessionId: session.sessionId });
     } catch (err) {
-        console.error('[trial-checkout] Dodo error:', err.message);
-        const msg = err.message?.includes('not enabled')
-            ? 'Payments are temporarily unavailable — merchant verification pending. Please try again later.'
-            : 'Failed to create trial checkout session';
-        return res.status(502).json({ error: msg });
+        log.checkout.error('Dodo trial checkout error', { error: err.message });
+        return res.status(502).json({ error: 'Failed to create trial checkout session' });
     }
 }));
 
@@ -1042,7 +1048,7 @@ app.post('/redeem-beta', deployLimiter, asyncHandler(authMiddleware), asyncHandl
             message: 'Complete checkout to activate your 24-hour free trial.',
         });
     } catch (err) {
-        console.error('[redeem-beta] Dodo checkout error:', err.message);
+        log.checkout.error('Beta redeem checkout error', { error: err.message });
         // Roll back the DB claim so user can retry
         await db.run(
             'UPDATE beta_codes SET redeemed_by = NULL, redeemed_at = NULL, redeemed_ip = NULL, user_agent = NULL WHERE code = ? AND redeemed_by = ?',
@@ -1156,25 +1162,25 @@ app.post('/webhook/dodo', webhookLimiter, asyncHandler(async (req, res) => {
         // rawBody saved by express.json verify callback
         const rawBody = req.rawBody;
         if (!rawBody) {
-            console.error('[webhook/dodo] Missing raw body — cannot verify signature');
+            log.webhook.error('Missing raw body — cannot verify signature');
             return res.status(400).json({ error: 'Missing raw body' });
         }
         event = dodo.verifyWebhookEvent(rawBody, req.headers);
     } catch (err) {
-        console.error('[webhook/dodo] Signature verification failed:', err.message);
+        log.webhook.error('Signature verification failed', { error: err.message });
         return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
     const eventType = event.type;
     const data = event.data;
-    console.log(`[webhook/dodo] Event: ${eventType}`);
+    log.webhook.info('Event received', { eventType });
 
     // ── Idempotency: deduplicate by webhook-id header ───────────────────
     const webhookId = req.headers['webhook-id'];
     if (webhookId) {
         const dedupKey = `dodo-${webhookId}`;
         if (await stmt.checkEvent(dedupKey)) {
-            console.log(`[webhook/dodo] Duplicate webhook ${dedupKey} — skipping`);
+            log.webhook.info('Duplicate webhook skipped', { dedupKey });
             return res.json({ received: true });
         }
         // Mark as processed immediately to prevent concurrent duplicates
@@ -1256,7 +1262,7 @@ app.post('/webhook/dodo', webhookLimiter, asyncHandler(async (req, res) => {
                     try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
                     if (bot.bifrost_vk_id) {
                         bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-                            console.error(`[webhook] Failed to deactivate VK ${bot.bifrost_vk_id}: ${err.message}`);
+                            log.webhook.error('Failed to deactivate VK', { vkId: bot.bifrost_vk_id, error: err.message });
                         });
                     }
                     await stmt.updateStatus('stopped', target);
@@ -1368,7 +1374,7 @@ app.post('/webhook/dodo', webhookLimiter, asyncHandler(async (req, res) => {
         }
 
         default:
-            console.log(`[webhook/dodo] Unhandled event type: ${eventType}`);
+            log.webhook.info('Unhandled event type', { eventType });
     }
 
     return res.json({ received: true });
@@ -1449,7 +1455,7 @@ app.post('/notify-low-credits', webhookLimiter, adminAuth, asyncHandler(async (r
         return res.json({ success: true, messageId: data.result.message_id });
     }
 
-    console.error(`[NotifyLowCredits] Telegram API error: ${data.description}`);
+    log.system.error('Telegram API error', { error: data.description });
     return res.status(502).json({ error: 'Failed to send notification', detail: data.description });
 }));
 
@@ -1537,7 +1543,7 @@ function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax
     child.unref();
 
     child.on('error', (err) => {
-        console.error(`[picobot][pid=${child.pid}] spawn error: ${err.message}`);
+        log.deploy.error('picobot spawn error', { pid: child.pid, error: err.message });
     });
 
     return child.pid;
@@ -1622,7 +1628,7 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandle
     // ── Plan-based budget — unified $5.00/mo ──────────────────────────────
     const creditLimit = 5.00;
 
-    console.log(`[deploy] userId=${userId} model=${model} plan=${plan} bot=${tokenCheck.bot?.username || 'unknown'} budget=$${creditLimit} ip=${ip}`);
+    log.deploy.info('Deploy bot', { userId, model, plan, bot: tokenCheck.bot?.username || 'unknown', budget: creditLimit, ip });
     logEvent(userId, 'deploy_requested', { model, creditLimit, plan, botUsername: tokenCheck.bot?.username || null }, ip);
 
     // ── Stop existing bot if running ────────────────────────────────────────
@@ -1632,7 +1638,7 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandle
         // Deactivate old Virtual Key before creating a new one
         if (existing.bifrost_vk_id) {
             try { await bifrost.deactivateVirtualKey(existing.bifrost_vk_id); } catch (err) {
-                console.error(`[deploy] Failed to deactivate old VK ${existing.bifrost_vk_id}: ${err.message}`);
+                log.deploy.error('Failed to deactivate old VK', { vkId: existing.bifrost_vk_id, error: err.message });
             }
         }
         await stmt.updateStatus('stopped', userId);
@@ -1645,7 +1651,7 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandle
         virtualKey = await bifrost.createVirtualKey(userId, model, creditLimit);
         logEvent(userId, 'bifrost_vk_created', { id: virtualKey.id });
     } catch (err) {
-        console.error('[deploy] Bifrost error:', err.message);
+        log.deploy.error('Bifrost error', { error: err.message });
         logEvent(userId, 'bifrost_error', err.message);
         const detail = isProd ? undefined : err.message;
         return res.status(502).json({ error: 'Failed to create API key', detail });
@@ -1678,7 +1684,7 @@ app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandle
         pid = spawnPicobot(userId, telegramToken, virtualKey.key, model, allowFrom, safeMcpServers);
         logEvent(userId, 'picobot_spawned', { pid, model, allowFrom: allowFrom.length });
     } catch (err) {
-        console.error('[deploy] picobot spawn error:', err.message);
+        log.deploy.error('picobot spawn error', { error: err.message });
         logEvent(userId, 'picobot_error', err.message);
         const detail = isProd ? undefined : err.message;
         return res.status(500).json({ error: 'Failed to spawn agent', detail });
@@ -1724,7 +1730,7 @@ app.post('/stop-bot', asyncHandler(authMiddleware), asyncHandler(async (req, res
     // Deactivate the Bifrost Virtual Key so it stops accepting requests
     if (bot.bifrost_vk_id) {
         bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-            console.error(`[stop-bot] Failed to deactivate VK ${bot.bifrost_vk_id}: ${err.message}`);
+            log.deploy.error('Failed to deactivate VK on stop', { vkId: bot.bifrost_vk_id, error: err.message });
         });
     }
 
@@ -2657,6 +2663,202 @@ app.post('/admin/users/:userId/credit', adminAuth, asyncHandler(async (req, res)
     return res.json({ success: true, userId, oldLimit: bot.credit_limit, newLimit });
 }));
 
+// ─── POST /admin/users/:userId/subscription — Admin Subscription Management ─
+app.post('/admin/users/:userId/subscription', adminAuth, asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { action, trialHours } = req.body;
+
+    if (!action || !['cancel', 'activate', 'extend_trial', 'reset_trial'].includes(action)) {
+        return res.status(400).json({ error: 'action must be: cancel, activate, extend_trial, or reset_trial' });
+    }
+
+    const sub = await stmtSubs.getByUserId(userId);
+    if (!sub) return res.status(404).json({ error: 'No subscription found for this user' });
+
+    switch (action) {
+        case 'cancel': {
+            await stmtSubs.updateStatus('cancelled', userId);
+            const bot = await stmt.getBot(userId);
+            if (bot && bot.status === 'running') {
+                try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
+                if (bot.bifrost_vk_id) bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(() => {});
+                await stmt.updateStatus('stopped', userId);
+            }
+            logEvent(userId, 'admin_subscription_cancelled', { previousStatus: sub.status });
+            return res.json({ success: true, action: 'cancelled', userId });
+        }
+        case 'activate': {
+            await stmtSubs.upsert({
+                user_id: userId,
+                dodo_customer_id: sub.dodo_customer_id,
+                dodo_subscription_id: sub.dodo_subscription_id,
+                plan: 'standard',
+                status: 'active',
+                current_period_start: new Date().toISOString(),
+                current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            });
+            logEvent(userId, 'admin_subscription_activated', { previousStatus: sub.status });
+            return res.json({ success: true, action: 'activated', userId });
+        }
+        case 'extend_trial': {
+            const hours = Math.min(Math.max(parseInt(trialHours, 10) || 24, 1), 720);
+            const newEnd = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+            await db.run(
+                'UPDATE subscriptions SET status = ?, trial_ends_at = ?, current_period_end = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
+                ['trialing', newEnd, newEnd, userId]
+            );
+            logEvent(userId, 'admin_trial_extended', { hours, newEnd, previousStatus: sub.status });
+            return res.json({ success: true, action: 'trial_extended', userId, trialEndsAt: newEnd });
+        }
+        case 'reset_trial': {
+            await db.run(
+                'UPDATE subscriptions SET trial_ends_at = NULL, status = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
+                ['inactive', userId]
+            );
+            logEvent(userId, 'admin_trial_reset', { previousStatus: sub.status });
+            return res.json({ success: true, action: 'trial_reset', userId });
+        }
+    }
+}));
+
+// ─── DELETE /admin/users/:userId — Admin Delete User Data ───────────────────
+app.post('/admin/users/:userId/delete', adminAuth, asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { confirm } = req.body;
+    if (confirm !== 'DELETE') {
+        return res.status(400).json({ error: 'Must pass { confirm: "DELETE" } to confirm' });
+    }
+
+    const bot = await stmt.getBot(userId);
+    if (bot && bot.status === 'running') {
+        try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
+        if (bot.bifrost_vk_id) bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(() => {});
+    }
+
+    await db.run('DELETE FROM bots WHERE user_id = ?', [userId]);
+    await db.run('DELETE FROM subscriptions WHERE user_id = ?', [userId]);
+    await db.run('DELETE FROM payments WHERE user_id = ?', [userId]);
+    await db.run('DELETE FROM referrals WHERE referrer_id = ? OR referee_id = ?', [userId, userId]);
+    // Keep event_logs for audit trail
+
+    logEvent(userId, 'admin_user_deleted', { deletedBy: 'admin' });
+    return res.json({ success: true, message: `All data for ${userId} deleted (event logs preserved).` });
+}));
+
+// ─── POST /admin/system/kill-orphans — Kill Orphaned Picobot Processes ──────
+app.post('/admin/system/kill-orphans', adminAuth, asyncHandler(async (req, res) => {
+    const killed = [];
+    try {
+        const psOut = execSync('pgrep -a picobot 2>/dev/null || true', { timeout: 2000 }).toString().trim();
+        if (psOut) {
+            const bots = await stmt.runningBots();
+            const trackedPids = new Set(bots.map(b => b.pid));
+            const osPids = psOut.split('\n')
+                .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
+                .filter(pid => !isNaN(pid) && !trackedPids.has(pid));
+            for (const pid of osPids) {
+                try { process.kill(pid, 'SIGTERM'); killed.push(pid); } catch (_) { /* best-effort */ }
+            }
+        }
+    } catch (_) { /* no picobot processes */ }
+    logEvent('system', 'admin_kill_orphans', { killed });
+    return res.json({ success: true, killed, count: killed.length });
+}));
+
+// ─── POST /admin/users/:userId/restart — Admin Force Restart Bot ────────────
+app.post('/admin/users/:userId/restart', adminAuth, asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const bot = await stmt.getBot(userId);
+    if (!bot) return res.status(404).json({ error: 'User not found' });
+
+    const sub = await stmtSubs.getByUserId(userId);
+    if (!sub || !['active', 'trialing'].includes(sub.status)) {
+        return res.status(403).json({ error: 'User subscription is not active' });
+    }
+
+    // Kill existing if running
+    try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
+
+    try {
+        const decryptedToken = decryptToken(bot.telegram_token);
+        const decryptedVk = decryptToken(bot.bifrost_vk);
+        const newPid = spawnPicobot(bot.user_id, decryptedToken, decryptedVk, bot.model);
+        await stmt.updatePid(newPid, 'running', userId);
+        logEvent(userId, 'admin_bot_restarted', { oldPid: bot.pid, newPid });
+        return res.json({ success: true, userId, oldPid: bot.pid, newPid });
+    } catch (err) {
+        await stmt.updateStatus('crashed', userId);
+        logEvent(userId, 'admin_bot_restart_failed', { error: err.message });
+        return res.status(500).json({ error: 'Restart failed: ' + err.message });
+    }
+}));
+
+// ─── GET /admin/audit — Admin Action Audit Log ──────────────────────────────
+app.get('/admin/audit', adminAuth, asyncHandler(async (req, res) => {
+    const { limit = 100, offset = 0 } = req.query;
+    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+    const off = Math.max(parseInt(offset, 10) || 0, 0);
+
+    const events = await db.all(
+        "SELECT * FROM event_logs WHERE event LIKE 'admin_%' ORDER BY ts DESC LIMIT ? OFFSET ?",
+        [lim, off]
+    );
+    const total = (await db.get("SELECT COUNT(*) as c FROM event_logs WHERE event LIKE 'admin_%'")).c;
+
+    return res.json({ events, total, limit: lim, offset: off });
+}));
+
+// ─── GET /admin/subscriptions — Full Subscription List ──────────────────────
+app.get('/admin/subscriptions', adminAuth, asyncHandler(async (req, res) => {
+    const { status, limit = 100, offset = 0 } = req.query;
+    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+    const off = Math.max(parseInt(offset, 10) || 0, 0);
+
+    let query = 'SELECT * FROM subscriptions';
+    const params = [];
+    if (status && ['active', 'trialing', 'past_due', 'cancelled', 'inactive'].includes(status)) {
+        query += ' WHERE status = ?';
+        params.push(status);
+    }
+    query += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?';
+    params.push(lim, off);
+
+    const subs = await db.all(query, params);
+
+    let countQuery = 'SELECT COUNT(*) as c FROM subscriptions';
+    const countParams = [];
+    if (status && ['active', 'trialing', 'past_due', 'cancelled', 'inactive'].includes(status)) {
+        countQuery += ' WHERE status = ?';
+        countParams.push(status);
+    }
+    const total = (await db.get(countQuery, countParams)).c;
+
+    return res.json({ subscriptions: subs, total, limit: lim, offset: off });
+}));
+
+// ─── POST /admin/beta-codes/import — Bulk Import Beta Codes ─────────────────
+app.post('/admin/beta-codes/import', adminAuth, asyncHandler(async (req, res) => {
+    const { codes } = req.body;
+    if (!Array.isArray(codes) || codes.length === 0) {
+        return res.status(400).json({ error: 'codes must be a non-empty array of XXXX-XXXX-XXXX strings' });
+    }
+    const valid = codes.filter(c => typeof c === 'string' && /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c.toUpperCase().trim()));
+    let imported = 0;
+    let dodoSynced = 0;
+    for (const code of valid) {
+        const result = await stmtBeta.insert(code.toUpperCase().trim());
+        if (result.changes > 0) {
+            imported++;
+            try {
+                await dodo.createBetaDiscount(code.toUpperCase().trim());
+                dodoSynced++;
+            } catch (_) { /* Dodo sync optional */ }
+        }
+    }
+    logEvent('system', 'admin_beta_codes_imported', { count: imported, dodoSynced, invalid: codes.length - valid.length });
+    return res.json({ success: true, imported, dodoSynced, rejected: codes.length - valid.length, total: valid.length });
+}));
+
 // ─── POST /admin/beta-codes/generate — Generate Beta Codes ──────────────────
 // Idempotent: generates codes until there are exactly 100 in the table.
 // Uses crypto.randomBytes for true randomness — XXXX-XXXX-XXXX format (A-Z0-9).
@@ -2708,7 +2910,7 @@ app.post('/admin/beta-codes/generate', adminAuth, asyncHandler(async (req, res) 
                 dodoSynced++;
             } catch (err) {
                 dodoErrors.push({ code, error: err.message });
-                console.error(`[beta-codes] Failed to create Dodo discount for ${code}: ${err.message}`);
+                log.admin.error('Failed to create Dodo discount', { code, error: err.message });
             }
         }
         attempts++;
@@ -2759,8 +2961,8 @@ app.use((_req, res) => {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
     const status = err.statusCode || 500;
-    console.error(`[${req.requestId || '-'}] Error ${status}:`, err.message);
-    if (!isProd) console.error(err.stack);
+    log.system.error(`Error ${status}`, { requestId: req.requestId, error: err.message, status });
+    if (!isProd) log.system.debug('Stack trace', { stack: err.stack });
 
     res.status(status).json({
         error: isProd ? 'Internal server error' : err.message,
@@ -2771,11 +2973,11 @@ app.use((err, req, res, _next) => {
 let server;
 
 async function gracefulShutdown(signal) {
-    console.log(`\n[shutdown] Received ${signal}. Cleaning up...`);
+    log.system.info('Shutting down', { signal });
 
     // 1. Stop accepting new connections
     if (server) {
-        server.close(() => console.log('[shutdown] HTTP server closed.'));
+        server.close(() => log.system.info('HTTP server closed'));
     }
 
     // 2. SIGTERM all running bot processes
@@ -2784,7 +2986,7 @@ async function gracefulShutdown(signal) {
         for (const bot of bots) {
             try {
                 process.kill(bot.pid, 'SIGTERM');
-                console.log(`[shutdown] Sent SIGTERM to picobot pid=${bot.pid} (user=${bot.user_id})`);
+                log.system.info('Sent SIGTERM to picobot', { pid: bot.pid, userId: bot.user_id });
             } catch (_) { /* already dead */ }
             await stmt.updateStatus('stopped', bot.user_id);
         }
@@ -2793,7 +2995,7 @@ async function gracefulShutdown(signal) {
     // 3. Close database
     try {
         await db.close();
-        console.log('[shutdown] Database closed.');
+        log.system.info('Database closed');
     } catch (_) { /* noop */ }
 
     process.exit(0);
@@ -2813,41 +3015,14 @@ if (config.nodeEnv !== 'test') {
             pbVer = fs.readFileSync(path.join(path.dirname(config.picobotPath), '.picobot-version'), 'utf8').trim();
         } catch (_) { /* not installed yet */ }
 
-        console.log(`\n🦀 LiveClaw Orchestrator v2.0.0`);
-        console.log(`   Environment: ${config.nodeEnv}`);
-        console.log(`   Picobot:     ${pbVer}`);
-        console.log(`   Bots dir:    ${config.botsDir}`);
-        console.log(`   Listening:   http://localhost:${config.port}`);
-        console.log(`   Plan:        $12.99/mo (Early Bird $9.99 w/ EARLYCLAW)`);
-        console.log(`   Max bots:    ${MAX_CONCURRENT_BOTS} concurrent`);
-        console.log(`   Beta codes:  XXXX-XXXX-XXXX (24h free access, no card)`);
-        console.log(`   Endpoints:`);
-        console.log(`     POST /deploy-bot`);
-        console.log(`     POST /stop-bot`);
-        console.log(`     GET  /status/:userId`);
-        console.log(`     GET  /health`);
-        console.log(`     POST /verify-turnstile`);
-        console.log(`   Subscriptions (Dodo Payments):`);
-        console.log(`     POST /create-checkout-session  ${config.dodoApiKey ? '(ready)' : '(pending — no DODO_API_KEY)'}`);
-        console.log(`     POST /create-portal-session`);
-        console.log(`     GET  /subscription/:userId`);
-        console.log(`     POST /webhook/dodo`);
-        console.log(`     GET  /pricing`);
-        console.log(`   Referrals:`);
-        console.log(`     POST /referral/generate`);
-        console.log(`     POST /referral/apply`);
-        console.log(`   Notifications:`);
-        console.log(`     POST /register-chat`);
-        console.log(`     POST /notify-low-credits`);
-        console.log(`   Admin:`);
-        console.log(`     GET  /admin/stats`);
-        console.log(`     GET  /admin/system`);
-        console.log(`     GET  /admin/revenue`);
-        console.log(`     GET  /admin/users`);
-        console.log(`     GET  /admin/users/:userId`);
-        console.log(`     GET  /admin/events`);
-        console.log(`     POST /admin/users/:userId/stop`);
-        console.log(`     POST /admin/users/:userId/credit\n`);
+        log.startup.info('LiveClaw Orchestrator v2.0.0 started', {
+            env: config.nodeEnv,
+            picobot: pbVer,
+            botsDir: config.botsDir,
+            port: config.port,
+            maxBots: MAX_CONCURRENT_BOTS,
+            dodoReady: !!config.dodoApiKey,
+        });
 
         // Ensure bots directory exists
         fs.mkdirSync(config.botsDir, { recursive: true });
@@ -2867,14 +3042,14 @@ if (config.nodeEnv !== 'test') {
                     try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
                     if (bot.bifrost_vk_id) {
                         bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-                            console.error(`[watchdog] Failed to deactivate VK ${bot.bifrost_vk_id}: ${err.message}`);
+                log.watchdog.error('Failed to deactivate VK', { vkId: bot.bifrost_vk_id, error: err.message });
                         });
                     }
                     await stmt.updateStatus('stopped', user_id);
                     logEvent(user_id, 'bot_stopped_beta_trial_expired', {});
                 }
                 logEvent(user_id, 'beta_trial_expired', {});
-                console.log(`[watchdog] Beta trial expired for user=${user_id}`);
+                log.watchdog.info('Beta trial expired', { userId: user_id });
             }
 
             // ── Crashed-bot detection & restart ────────────────────────────
@@ -2887,12 +3062,12 @@ if (config.nodeEnv !== 'test') {
                     // Skip restart if subscription is no longer active
                     const sub = await stmtSubs.getByUserId(bot.user_id);
                     if (!sub || !['active', 'trialing', 'past_due'].includes(sub.status)) {
-                        console.log(`[watchdog] Skipping restart for user=${bot.user_id} — subscription status: ${sub?.status ?? 'none'}`);
+                        log.watchdog.info('Skipping restart — no active subscription', { userId: bot.user_id, subStatus: sub?.status ?? 'none' });
                         await stmt.updateStatus('stopped', bot.user_id);
                         continue;
                     }
 
-                    console.warn(`[watchdog] Bot for user=${bot.user_id} pid=${bot.pid} is dead. Auto-restarting...`);
+                    log.watchdog.warn('Dead bot detected, auto-restarting', { userId: bot.user_id, pid: bot.pid });
 
                     try {
                         const decryptedToken = decryptToken(bot.telegram_token);
@@ -2900,9 +3075,9 @@ if (config.nodeEnv !== 'test') {
                         const newPid = spawnPicobot(bot.user_id, decryptedToken, decryptedVk, bot.model);
                         await stmt.updatePid(newPid, 'running', bot.user_id);
                         logEvent(bot.user_id, 'bot_auto_restarted', { oldPid: bot.pid, newPid });
-                        console.log(`[watchdog] Restarted bot for user=${bot.user_id} newPid=${newPid}`);
+                        log.watchdog.info('Bot restarted', { userId: bot.user_id, newPid });
                     } catch (err) {
-                        console.error(`[watchdog] Failed to restart bot for user=${bot.user_id}: ${err.message}`);
+                        log.watchdog.error('Failed to restart bot', { userId: bot.user_id, error: err.message });
                         await stmt.updateStatus('crashed', bot.user_id);
                         logEvent(bot.user_id, 'bot_restart_failed', err.message);
                     }
@@ -2921,7 +3096,7 @@ if (config.nodeEnv !== 'test') {
                     for (const zombiePid of osPids) {
                         try {
                             process.kill(zombiePid, 'SIGTERM');
-                            console.warn(`[watchdog] Killed orphaned picobot pid=${zombiePid}`);
+                            log.watchdog.warn('Killed orphaned picobot', { pid: zombiePid });
                         } catch (_) { /* already dead */ }
                     }
                 }
@@ -2930,17 +3105,17 @@ if (config.nodeEnv !== 'test') {
             // ── Memory Pressure Alert ──────────────────────────────────────
             const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
             if (freeMemMB < 150) {
-                console.warn(`[watchdog] ⚠️  Low memory: ${freeMemMB} MB free`);
+                log.watchdog.warn('Low memory', { freeMemMB });
             }
         } catch (err) {
-            console.error(`[watchdog] Error: ${err.message}`);
+            log.watchdog.error('Watchdog error', { error: err.message });
         }
     }, config.watchdogIntervalMs);
 
     // Prevent watchdog from keeping process alive during shutdown
     watchdogTimer.unref();
     }).catch(err => {
-        console.error('[startup] Database initialization failed:', err.message);
+        log.startup.error('Database initialization failed', { error: err.message });
         process.exit(1);
     });
 }
