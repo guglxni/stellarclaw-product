@@ -1,9 +1,44 @@
 # LiveClaw — Security Audit & Product Readiness Assessment
 
-**Last Updated:** March 9, 2026  
+**Last Updated:** March 16, 2026  
 **Original Review:** March 6, 2026  
 **Reviewer:** GitHub Copilot  
 **Methodology:** OWASP Top 10 (2021), Node.js security best practices, full-stack review
+
+---
+
+## March 16, 2026 Security Delta (Comprehensive Re-audit)
+
+### New Findings (Validated)
+
+| ID | Severity | Finding | Location | Status |
+|----|----------|---------|----------|--------|
+| S-2026-01 | High | `adminAuth` could fall through in non-prod when `ADMIN_SECRET` was unset | [backend/server.js](backend/server.js#L1839) | Fixed |
+| S-2026-02 | Medium | Hardcoded JWT fallback (`dev-secret`) for admin bearer auth | [backend/server.js](backend/server.js#L1844) | Fixed |
+| S-2026-03 | Medium | Token encryption key validation was too lax (`< 32` chars, no strict hex validation) | [backend/server.js](backend/server.js#L228) | Fixed |
+| S-2026-04 | Medium | `decryptToken` had no guarded failure path for malformed encrypted payloads | [backend/server.js](backend/server.js#L247) | Fixed |
+| S-2026-05 | Medium | Shell command interpolation for per-user disk usage in admin telemetry (`du` via shell string) | [backend/server.js](backend/server.js#L2042) | Fixed |
+| S-2026-06 | Medium | Path traversal hardening missing in local static admin server | [admin-server.js](admin-server.js#L54) | Fixed |
+| S-2026-07 | Low (Dev-only) | `flatted` transitive dev dependency advisory (GHSA-25h7-pfq9-p65f) | [backend/package.json](backend/package.json) | Mitigated via override |
+| S-2026-08 | Medium (Non-prod model) | User auth middleware allowed unauthenticated requests by default outside production | [backend/server.js](backend/server.js#L217) | Fixed |
+
+### Implemented Remediations
+
+- Hardened `adminAuth` to require valid admin credentials consistently; removed permissive non-prod fallthrough.
+- Removed admin JWT fallback secret and now require explicit `ADMIN_JWT_SECRET` for bearer-based admin sessions.
+- Enforced strict `TOKEN_ENCRYPTION_KEY` format (`64` hex chars). Non-production now warns once on insecure fallback.
+- Added safe decryption error handling path for malformed encrypted token payloads.
+- Replaced shell-interpolated `du` command with `execFileSync('du', ['-sk', ...])` argument form.
+- Added explicit static-root boundary check in local admin server using `path.resolve(...)` containment.
+- Added npm `overrides` for `flatted` to move to patched range.
+- Made non-production user auth bypass opt-in via `ALLOW_DEV_AUTH_BYPASS` (default deny).
+- Made non-production admin login fallback opt-in via `ALLOW_DEV_ADMIN_LOGIN_FALLBACK` with required 6-digit `ADMIN_DEV_TOTP_CODE`.
+- Enforced user/token identity checks whenever `req.verifiedUserId` is present, regardless of environment.
+
+### Residual Risk / Deferred Items
+
+- Non-production bypass modes remain available for local workflows, but now require explicit env opt-in and are startup-warned.
+- Test suites currently opt into non-production bypass in `tests/setup.js`; this is intentional for integration coverage and should stay test-only.
 
 ---
 

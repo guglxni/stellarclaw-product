@@ -16,6 +16,14 @@
     // ─── Config ─────────────────────────────────────────────────────────────
     const API_BASE = window.LIVECLAW_API_BASE || '/api'; // Nginx proxies /api → :3000
     const GOOGLE_CLIENT_ID = window.LIVECLAW_GOOGLE_CLIENT_ID || '';
+    const MODEL_ID_TO_LABEL = {
+        'minimax-m2.5': 'MiniMax M2.5',
+        'kimi-k2.5': 'Kimi K2.5',
+    };
+    const MODEL_LABEL_TO_ID = {
+        'MiniMax M2.5': 'minimax-m2.5',
+        'Kimi K2.5': 'kimi-k2.5',
+    };
 
     // ─── State ──────────────────────────────────────────────────────────────
     let state = {
@@ -45,6 +53,8 @@
             }
         }
     } catch (_) { /* noop */ }
+
+    state.selectedModel = normalizeModelId(state.selectedModel);
 
     function saveState() {
         try {
@@ -102,6 +112,7 @@
 
     // ─── Token Refresh ────────────────────────────────────────────────────
     let _tokenRefreshResolve = null;
+    let checkoutResetLifecycleBound = false;
 
     function handleGoogleCredential(response) {
         // Store the raw JWT for Authorization header
@@ -353,11 +364,7 @@
     }
 
     async function executeDeploy(buttonEl, origHTML, headers) {
-        const modelMap = {
-            'MiniMax M2.5': 'minimax-m2.5',
-            'Kimi K2.5': 'kimi-k2.5',
-        };
-        const modelId = modelMap[state.selectedModel] || 'minimax-m2.5';
+        const modelId = normalizeModelId(state.selectedModel);
 
         try {
             const res = await fetch(API_BASE + '/deploy-bot', {
@@ -599,7 +606,7 @@
                             </div>
                             <div class="flex items-center justify-between">
                                 <span class="text-zinc-400 text-sm">Model</span>
-                                <span class="text-white text-sm font-medium">${escapeHtml(state.selectedModel || 'MiniMax M2.5')}</span>
+                                <span class="text-white text-sm font-medium">${escapeHtml(getModelLabel(state.selectedModel))}</span>
                             </div>
                             <div class="flex items-center justify-between">
                                 <span class="text-zinc-400 text-sm">Budget</span>
@@ -776,33 +783,49 @@
         modal.id = 'liveclaw-pricing-modal';
         modal.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem;';
         modal.innerHTML = `
+            <style>
+                #liveclaw-pricing-modal .pricing-panel { width: 100%; max-width: 42rem; max-height: 90dvh; overflow-y: auto; border-radius: 1rem; border: 1px solid rgba(255,255,255,0.08); background: #09090b; box-shadow: 0 8px 40px rgba(0,0,0,0.5); padding: 1.5rem 2rem; }
+                #liveclaw-pricing-modal .pricing-grid { display: flex; gap: 1rem; flex-wrap: wrap; }
+                #liveclaw-pricing-modal .pricing-meta { margin-top: 1rem; display: flex; align-items: center; gap: 0.75rem; padding: 0 0.25rem; }
+                #liveclaw-pricing-modal .pricing-meta-right { margin-left: auto; }
+                #liveclaw-pricing-modal .pricing-promo-row { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
+                @media (max-width: 640px) {
+                    #liveclaw-pricing-modal { padding: 0.5rem !important; align-items: flex-end; }
+                    #liveclaw-pricing-modal .pricing-panel { max-height: 94dvh; border-radius: 1rem 1rem 0.75rem 0.75rem; padding: 1rem; }
+                    #liveclaw-pricing-modal .pricing-grid { flex-direction: column; }
+                    #liveclaw-pricing-modal .pricing-meta { flex-direction: column; align-items: flex-start; gap: 0.4rem; }
+                    #liveclaw-pricing-modal .pricing-meta-right { margin-left: 0; }
+                    #liveclaw-pricing-modal .pricing-promo-row { flex-direction: column; }
+                    #liveclaw-pricing-modal #pricing-promo-btn { width: 100%; }
+                }
+            </style>
             <div id="pricing-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);"></div>
-            <div style="position:relative;z-index:10;width:100%;max-width:42rem;max-height:90dvh;overflow-y:auto;border-radius:1rem;border:1px solid rgba(255,255,255,0.08);background:#09090b;box-shadow:0 8px 40px rgba(0,0,0,0.5);padding:1.5rem 2rem;">
+            <div class="pricing-panel" style="position:relative;z-index:10;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
                     <h2 style="color:#fff;font-weight:600;font-size:1.25rem;">Get LiveClaw</h2>
                     <button id="pricing-close-btn" style="color:#71717a;font-size:1.5rem;line-height:1;cursor:pointer;background:none;border:none;">&times;</button>
                 </div>
                 <p style="color:#a1a1aa;font-size:0.875rem;margin-bottom:1.25rem;">Deploy your 24/7 AI agent on Telegram. Choose the plan that works for you.</p>
 
-                <div id="pricing-loading" style="display:flex;gap:1rem;">
+                <div id="pricing-loading" class="pricing-grid">
                     <div style="flex:1;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.5rem;height:14rem;"></div>
                     <div style="flex:1;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.5rem;height:14rem;"></div>
                 </div>
 
                 <div id="pricing-plans" style="display:none;gap:1rem;"></div>
 
-                <div style="margin-top:1rem;display:flex;align-items:center;gap:0.75rem;padding:0 0.25rem;">
+                <div class="pricing-meta">
                     <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;">
                         <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
                         Secure checkout by Dodo Payments
                     </div>
-                    <div style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;margin-left:auto;">
+                    <div class="pricing-meta-right" style="display:flex;align-items:center;gap:0.375rem;color:#71717a;font-size:0.75rem;">
                         <svg style="width:0.875rem;height:0.875rem;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 1a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
                         Global taxes included
                     </div>
                 </div>
 
-                <div style="margin-top:0.75rem;display:flex;gap:0.5rem;">
+                <div class="pricing-promo-row">
                     <input id="pricing-promo-input" type="text" maxlength="20" placeholder="Promo code"
                         style="flex:1;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);padding:0.5rem 0.875rem;font-size:0.875rem;color:#fff;outline:none;" />
                     <button id="pricing-promo-btn"
@@ -882,6 +905,7 @@
                         ${makeFeaturesHtml(trial.features)}
                     </ul>
                     <button id="pricing-trial-btn"
+                        data-liveclaw-checkout-label="Start Trial — $0.99"
                         style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:transparent;border:1px solid rgba(99,102,241,0.4);color:#a5b4fc;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
                         Start Trial — $0.99
                     </button>
@@ -909,6 +933,7 @@
                         ${makeFeaturesHtml(subPlan.features)}
                     </ul>
                     <button id="pricing-sub-btn"
+                        data-liveclaw-checkout-label="Subscribe — $${subPlan.price.toFixed(2)}/mo"
                         style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:${subCtaBg};color:#fff;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
                         Subscribe — $${subPlan.price.toFixed(2)}/mo
                     </button>
@@ -916,7 +941,7 @@
                 </div>`;
 
             container.innerHTML = `
-                <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+                <div class="pricing-grid">
                     ${trialCardHtml}
                     ${subCardHtml}
                 </div>
@@ -944,12 +969,15 @@
             const origHTML = btn.innerHTML;
             btn.disabled = true;
             btn.style.opacity = '0.7';
+            btn.dataset.liveclawCheckoutPending = '1';
+            btn.dataset.liveclawCheckoutOriginal = origHTML;
             btn.innerHTML = '<svg style="width:1rem;height:1rem;animation:spin 1s linear infinite;" viewBox="0 0 24 24" fill="none"><circle style="opacity:0.25;" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path style="opacity:0.75;" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Redirecting\u2026';
             try {
                 if (!await ensureFreshToken()) {
                     btn.disabled = false;
                     btn.style.opacity = '1';
                     btn.innerHTML = origHTML;
+                    btn.dataset.liveclawCheckoutPending = '0';
                     return;
                 }
                 const headers = { 'Content-Type': 'application/json' };
@@ -978,12 +1006,14 @@
                     btn.disabled = false;
                     btn.style.opacity = '1';
                     btn.innerHTML = origHTML;
+                    btn.dataset.liveclawCheckoutPending = '0';
                 }
             } catch (_) {
                 showToast('Network error. Please try again.', 'error');
                 btn.disabled = false;
                 btn.style.opacity = '1';
                 btn.innerHTML = origHTML;
+                btn.dataset.liveclawCheckoutPending = '0';
             }
         }
 
@@ -1091,10 +1121,47 @@
             const img = btn.querySelector('img');
             if (img && (img.alt === 'MiniMax M2.5' || img.alt === 'Kimi K2.5')) {
                 btn.addEventListener('click', function () {
-                    if (img.alt === 'Kimi K2.5') return; // disabled / coming soon
-                    state.selectedModel = img.alt;
+                    const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.5';
+                    state.selectedModel = normalizeModelId(modelId);
                     saveState();
+                    syncModelSelectionUI();
                 });
+            }
+        });
+
+        syncModelSelectionUI();
+    }
+
+    function normalizeModelId(model) {
+        if (typeof model !== 'string') return 'minimax-m2.5';
+        return MODEL_ID_TO_LABEL[model] ? model : (MODEL_LABEL_TO_ID[model] || 'minimax-m2.5');
+    }
+
+    function getModelLabel(model) {
+        const modelId = normalizeModelId(model);
+        return MODEL_ID_TO_LABEL[modelId] || MODEL_ID_TO_LABEL['minimax-m2.5'];
+    }
+
+    function syncModelSelectionUI() {
+        const selectedModelId = normalizeModelId(state.selectedModel);
+        const allBtns = document.querySelectorAll('button.options-card');
+        allBtns.forEach(function (btn) {
+            const img = btn.querySelector('img');
+            if (!img || (img.alt !== 'MiniMax M2.5' && img.alt !== 'Kimi K2.5')) return;
+
+            const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.5';
+            const isSelected = modelId === selectedModelId;
+            btn.classList.toggle('selected', isSelected);
+
+            const checkIcon = btn.querySelector('.tabler-icon-check');
+            if (checkIcon && checkIcon.parentElement) {
+                checkIcon.parentElement.style.display = isSelected ? '' : 'none';
+            }
+
+            const label = btn.querySelector('h2');
+            if (label) {
+                label.classList.toggle('text-white', isSelected);
+                label.classList.toggle('text-zinc-400', !isSelected);
             }
         });
     }
@@ -1135,6 +1202,21 @@
                 video.currentTime = 0;
             }
         }
+    }
+
+    function resetCheckoutButtons() {
+        const buttons = document.querySelectorAll('#pricing-trial-btn, #pricing-sub-btn');
+        buttons.forEach((btn) => {
+            const isRedirecting = /redirecting/i.test(btn.textContent || '');
+            const isPending = btn.dataset.liveclawCheckoutPending === '1';
+            if (!isRedirecting && !isPending) return;
+
+            const originalLabel = btn.dataset.liveclawCheckoutLabel || btn.dataset.liveclawCheckoutOriginal || 'Continue';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.textContent = originalLabel;
+            btn.dataset.liveclawCheckoutPending = '0';
+        });
     }
 
     // ─── CSS Injection ──────────────────────────────────────────────────────
@@ -1210,6 +1292,14 @@
         wireConnectButton();
         wireModelTracking();
         handleCheckoutReturn();
+        resetCheckoutButtons();
+        if (!checkoutResetLifecycleBound) {
+            checkoutResetLifecycleBound = true;
+            window.addEventListener('pageshow', resetCheckoutButtons);
+            document.addEventListener('visibilitychange', function () {
+                if (document.visibilityState === 'visible') resetCheckoutButtons();
+            });
+        }
     }
 
     if (document.readyState === 'loading') {

@@ -82,6 +82,14 @@ cp liveclaw-web/.env.example liveclaw-web/.env && nano liveclaw-web/.env
 # Quick code-only updates (no full provision):
 ./scripts/deploy-backend.sh --code-only
 ./scripts/deploy-frontend.sh --code-only
+
+# Scale readiness checks + infra mitigation
+./scripts/scale-readiness-check.sh
+./scripts/enable-db-replica.sh --apply
+./scripts/enable-db-pool.sh --apply
+
+# Load-test + SLO evidence capture
+./scripts/run-load-test.sh --url https://api.liveclaw.xyz/health --connections 50 --duration 60
 ```
 
 See [CREDENTIALS.md](CREDENTIALS.md) for step-by-step key setup.
@@ -115,6 +123,10 @@ liveclaw/
 │   ├── deploy-single-droplet.sh  # Legacy single-droplet deploy
 │   ├── update-picobot.sh    # Picobot binary auto-updater
 │   ├── keychain-secrets.sh  # macOS Keychain secret management
+│   ├── scale-readiness-check.sh # Validates scale launch gates (HA/pool/alerts)
+│   ├── enable-db-replica.sh # Creates managed PostgreSQL standby/replica
+│   ├── enable-db-pool.sh    # Creates managed PostgreSQL connection pool
+│   ├── run-load-test.sh      # Autocannon-based SLO/load test harness
 │   └── set-webhook.js       # Telegram webhook registration
 ├── .github/workflows/
 │   ├── main.yml             # CI/CD pipeline (test → deploy)
@@ -122,6 +134,10 @@ liveclaw/
 ├── docs/
 │   ├── LAUNCH_PLAN.md       # Pricing, unit economics, revenue model
 │   ├── CHECKPOINT.md        # Development progress tracker
+│   ├── LAUNCH_READINESS_SCALE_AUDIT_2026-03-16.md # 3-pass launch and scale audit
+│   ├── SCALING_MIGRATION_GUIDE.md # Large-scale growth and migration playbook
+│   ├── AI_AGENT_MAINTENANCE_GUIDE.md # Rich context guide for maintenance agents
+│   ├── DB_FAILOVER_DRILL_RUNBOOK.md # Database failover drill process and evidence checklist
 │   └── security-review.md   # Security audit findings
 ├── CREDENTIALS.md           # Credentials acquisition guide
 ├── LICENSE                  # Proprietary
@@ -136,7 +152,9 @@ liveclaw/
 |--------|------|------|-------------|
 | `POST` | `/deploy-bot` | Google JWT | Spawn a picobot agent |
 | `POST` | `/stop-bot` | Google JWT | Stop a user's agent |
+| `GET` | `/orchestration/commands/:commandId` | Google JWT | Queue command status lookup |
 | `GET` | `/status/:userId` | — | Check agent status |
+| `GET` | `/readyz` | — | Low-cost readiness probe (DB reachability) |
 | `GET` | `/health` | — | Health check |
 | `POST` | `/verify-turnstile` | — | Cloudflare Turnstile verification |
 | `GET` | `/pricing` | — | Public pricing info |

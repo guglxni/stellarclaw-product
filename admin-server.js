@@ -58,6 +58,14 @@ const server = http.createServer(async (req, res) => {
         filePath = path.join(STATIC_ROOT, 'admin', 'index.html');
     }
 
+    const resolvedRoot = path.resolve(STATIC_ROOT);
+    const resolvedPath = path.resolve(filePath);
+    if (!resolvedPath.startsWith(resolvedRoot + path.sep) && resolvedPath !== resolvedRoot) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+    }
+
     // If directory, try index.html inside
     try {
         if (fs.statSync(filePath).isDirectory()) {
@@ -65,13 +73,13 @@ const server = http.createServer(async (req, res) => {
         }
     } catch (_) {}
 
-    fs.readFile(filePath, (err, data) => {
+    fs.readFile(resolvedPath, (err, data) => {
         if (err) {
             res.writeHead(404, { 'Content-Type': 'text/plain' });
             res.end('Not found: ' + pathname);
             return;
         }
-        const ext = path.extname(filePath).toLowerCase();
+        const ext = path.extname(resolvedPath).toLowerCase();
         res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
         res.end(data);
     });

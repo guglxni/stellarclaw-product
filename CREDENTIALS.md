@@ -18,6 +18,9 @@ Every secret the service needs, where to get it, and exactly where to put it.
 | `TURNSTILE_SITE_KEY` | Cloudflare Dashboard | Frontend | **Critical** |
 | `GOOGLE_CLIENT_ID` | Google Cloud Console | Frontend | **Critical** |
 | MiniMax API Key | MiniMax Platform | Bifrost UI | **Critical** |
+| `ALLOW_DEV_AUTH_BYPASS` | Local dev only | Backend `.env` (non-prod) | Optional |
+| `ALLOW_DEV_ADMIN_LOGIN_FALLBACK` | Local dev only | Backend `.env` (non-prod) | Optional |
+| `ADMIN_DEV_TOTP_CODE` | Local dev only | Backend `.env` (non-prod) | Optional |
 
 ---
 
@@ -246,6 +249,27 @@ BIFROST_GATEWAY_URL=http://localhost:8080
 DB_PATH=/opt/liveclaw/backend/liveclaw.db
 BOTS_DIR=/opt/liveclaw/bots
 PICOBOT_PATH=/opt/liveclaw/backend/picobot
+
+# ─── Database (required in production) ───────────────────────────
+DATABASE_URL=postgresql://<user>:<pass>@<host>:<port>/<db>
+
+# Optional PostgreSQL pool tuning
+PG_POOL_MAX=20
+PG_POOL_IDLE_TIMEOUT_MS=30000
+PG_POOL_CONNECTION_TIMEOUT_MS=5000
+PG_POOL_QUERY_TIMEOUT_MS=15000
+PG_SSL_REJECT_UNAUTHORIZED=false
+PG_APP_NAME=liveclaw-orchestrator
+
+# Optional queue-orchestration rollout flags
+SCALE_QUEUE_ORCHESTRATION=0
+SCALE_QUEUE_ASYNC_MODE=0
+SCALE_QUEUE_POLL_MS=1500
+
+# ─── Non-prod auth toggles (keep disabled in production) ─────────
+ALLOW_DEV_AUTH_BYPASS=0
+ALLOW_DEV_ADMIN_LOGIN_FALLBACK=0
+# ADMIN_DEV_TOTP_CODE=<6-digit code; only if fallback is explicitly enabled>
 ```
 
 After saving:

@@ -15,6 +15,19 @@
 
 'use strict';
 
+function parseIntEnv(name, fallback) {
+    const raw = process.env[name];
+    if (raw === undefined) return fallback;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBoolEnv(name, fallback) {
+    const raw = process.env[name];
+    if (raw === undefined) return fallback;
+    return /^(1|true|yes|on)$/i.test(String(raw).trim());
+}
+
 // ─── SQL Dialect Conversion ─────────────────────────────────────────────────
 
 /**
@@ -143,12 +156,22 @@ class PostgresBackend {
         const cleanConnectionString = connectionString
             .replace(/[?&]sslmode=[^&]*/g, '')
             .replace(/\?$/, '');
+
+        const poolMax = parseIntEnv('PG_POOL_MAX', 20);
+        const idleTimeoutMillis = parseIntEnv('PG_POOL_IDLE_TIMEOUT_MS', 30000);
+        const connectionTimeoutMillis = parseIntEnv('PG_POOL_CONNECTION_TIMEOUT_MS', 5000);
+        const queryTimeoutMillis = parseIntEnv('PG_POOL_QUERY_TIMEOUT_MS', 15000);
+        const rejectUnauthorized = parseBoolEnv('PG_SSL_REJECT_UNAUTHORIZED', false);
+
         const poolConfig = {
             connectionString: cleanConnectionString,
-            max: 20,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 5000,
-            ssl: { rejectUnauthorized: false },
+            max: poolMax,
+            idleTimeoutMillis,
+            connectionTimeoutMillis,
+            query_timeout: queryTimeoutMillis,
+            statement_timeout: queryTimeoutMillis,
+            ssl: { rejectUnauthorized },
+            application_name: process.env.PG_APP_NAME || 'liveclaw-orchestrator',
         };
         this.pool = new Pool(poolConfig);
         this.type = 'postgres';
