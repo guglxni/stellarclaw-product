@@ -21,3 +21,4 @@ process.env.BOTS_DIR = '/tmp/liveclaw-test-bots';
 process.env.WATCHDOG_INTERVAL_MS = '999999'; // Effectively disable watchdog in tests
 process.env.ADMIN_SECRET = 'test-admin-secret';
 process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
+process.env.ALLOW_DEV_AUTH_BYPASS = '1';

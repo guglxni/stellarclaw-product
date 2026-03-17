@@ -26,11 +26,10 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { createDatabase } = require('./database');
 const bifrost = require('./bifrost');
 const dodo = require('./dodo');
-const { TOTP } = require('otpauth');
 const jwt = require('jsonwebtoken');
 const createLogger = require('./logger');
 
@@ -64,6 +63,12 @@ const log = {
 //   Safe for 500+ users
 const MAX_CONCURRENT_BOTS = parseInt(process.env.MAX_CONCURRENT_BOTS, 10) || 200;
 
+function parseBooleanEnv(name, defaultValue = false) {
+    const raw = process.env[name];
+    if (raw === undefined) return defaultValue;
+    return /^(1|true|yes|on)$/i.test(String(raw).trim());
+}
+
 // ─── Configuration ──────────────────────────────────────────────────────────
 const config = Object.freeze({
     port: parseInt(process.env.PORT, 10) || 3000,
@@ -86,14 +91,88 @@ const config = Object.freeze({
     // Admin TOTP + JWT (see scripts/setup-totp.js)
     adminTotpSecret: process.env.ADMIN_TOTP_SECRET || '',
     adminJwtSecret: process.env.ADMIN_JWT_SECRET || '',
+    allowDevAuthBypass: parseBooleanEnv('ALLOW_DEV_AUTH_BYPASS', false),
+    allowDevAdminLoginFallback: parseBooleanEnv('ALLOW_DEV_ADMIN_LOGIN_FALLBACK', false),
+    adminDevTotpCode: process.env.ADMIN_DEV_TOTP_CODE || '',
+    scaleQueueOrchestration: parseBooleanEnv('SCALE_QUEUE_ORCHESTRATION', false),
+    scaleQueueAsyncMode: parseBooleanEnv('SCALE_QUEUE_ASYNC_MODE', false),
+    scaleQueuePollMs: parseInt(process.env.SCALE_QUEUE_POLL_MS, 10) || 1500,
 });
 
 const isProd = config.nodeEnv === 'production';
+const devAuthBypassEnabled = !isProd && config.allowDevAuthBypass;
+
+if (devAuthBypassEnabled) {
+    log.startup.warn('Non-production auth bypass is ENABLED via ALLOW_DEV_AUTH_BYPASS. Do not use outside local development.');
+}
+if (!isProd && config.allowDevAdminLoginFallback) {
+    log.startup.warn('Non-production admin login fallback is ENABLED via ALLOW_DEV_ADMIN_LOGIN_FALLBACK.');
+}
+if (config.scaleQueueOrchestration) {
+    log.startup.info('Queue orchestration rollout is enabled.', {
+        asyncMode: config.scaleQueueAsyncMode,
+        pollMs: config.scaleQueuePollMs,
+    });
+}
+
+// ─── Safe Shell Helpers (no string interpolation → no injection) ────────────
+/** Get disk usage for root partition via `df -P /`. Returns parsed object or null. */
+function getDiskUsage(humanReadable = false) {
+    try {
+        const args = humanReadable ? ['-Ph', '/'] : ['-P', '/'];
+        const dfOut = execFileSync('df', args, { timeout: 2000 }).toString();
+        const lines = dfOut.trim().split('\n');
+        const parts = lines[lines.length - 1].trim().split(/\s+/);
+        if (humanReadable) {
+            return { total: parts[1], used: parts[2], avail: parts[3], usedPct: parseInt(parts[4], 10) };
+        }
+        return {
+            totalGB: Math.round(parseInt(parts[1], 10) / 1024 / 1024),
+            usedGB: Math.round(parseInt(parts[2], 10) / 1024 / 1024),
+            availGB: Math.round(parseInt(parts[3], 10) / 1024 / 1024),
+            usedPct: parseInt(parts[4], 10) || 0,
+        };
+    } catch (_) { return null; }
+}
+
+/** Get RSS (in KB) for a process by PID. Returns integer or null. */
+function getProcessRssKB(pid) {
+    try {
+        const out = execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { timeout: 1200 }).toString().trim();
+        const val = parseInt(out, 10);
+        return Number.isNaN(val) ? null : val;
+    } catch (_) { return null; }
+}
+
+/** List picobot PIDs via pgrep. Returns array of integers. */
+function listPicobotPids(fullMatch = false) {
+    try {
+        const args = fullMatch ? ['-af', 'picobot'] : ['-a', 'picobot'];
+        const out = execFileSync('pgrep', args, { timeout: 2000 }).toString().trim();
+        if (!out) return [];
+        return out.split('\n')
+            .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
+            .filter(pid => !isNaN(pid));
+    } catch (_) { return []; }
+}
+
+/** Get Docker container stats. Returns object or null. */
+function getDockerContainerStats(containerName) {
+    try {
+        const out = execFileSync('docker', [
+            'stats', containerName, '--no-stream',
+            '--format', '{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'
+        ], { timeout: 5000 }).toString().trim();
+        const [cpu, mem, memPct] = out.split('|');
+        return { cpu: cpu?.trim(), memory: mem?.trim(), memPct: memPct?.trim() };
+    } catch (_) { return null; }
+}
 
 // ─── Startup Environment Validation ────────────────────────────────────────
 // Fail fast in production if critical secrets are missing or still set to
 // placeholder values. Prevents accidentally running with insecure defaults.
 const REQUIRED_IN_PROD = [
+    ['DATABASE_URL',            process.env.DATABASE_URL, null, null],
     ['TOKEN_ENCRYPTION_KEY',      config.encryptionKey,    64, 'hex'],
     ['ADMIN_SECRET',              process.env.ADMIN_SECRET, null, null],
     ['ADMIN_TOTP_SECRET',         config.adminTotpSecret,  null, null],
@@ -195,14 +274,14 @@ async function verifyGoogleToken(idToken) {
 /**
  * Middleware that verifies Authorization: Bearer <google_id_token>
  * Sets req.verifiedUserId and req.verifiedEmail on success.
- * In dev mode, falls through if no token is provided.
+ * In non-production, bypass requires explicit ALLOW_DEV_AUTH_BYPASS opt-in.
  */
 async function authMiddleware(req, res, next) {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        if (!isProd) {
-            // Dev mode: allow unauthenticated requests
+        if (devAuthBypassEnabled) {
+            // Explicit non-production bypass for local development/testing.
             return next();
         }
         return res.status(401).json({ error: 'Authorization header required' });
@@ -224,10 +303,19 @@ async function authMiddleware(req, res, next) {
 // Encrypt sensitive tokens at rest in SQLite (AES-256-GCM)
 const ALGO = 'aes-256-gcm';
 const IV_LEN = 16;
+let warnedInsecureTokenStorage = false;
 
 function deriveKey() {
-    if (!config.encryptionKey || config.encryptionKey.length < 32) {
-        // In dev/test, fall through to plaintext (warn loudly)
+    const raw = config.encryptionKey || '';
+    const valid = /^[a-fA-F0-9]{64}$/.test(raw);
+    if (!valid) {
+        if (isProd) {
+            throw new Error('TOKEN_ENCRYPTION_KEY must be 64 hex chars in production');
+        }
+        if (!warnedInsecureTokenStorage) {
+            warnedInsecureTokenStorage = true;
+            log.startup.warn('TOKEN_ENCRYPTION_KEY is missing/invalid in non-production. Falling back to plaintext token storage.');
+        }
         return null;
     }
     return Buffer.from(config.encryptionKey, 'hex');
@@ -247,23 +335,32 @@ function encryptToken(plaintext) {
 function decryptToken(ciphertext) {
     const key = deriveKey();
     if (!key) return ciphertext; // dev fallback
-    const [ivHex, tagHex, encHex] = ciphertext.split(':');
-    if (!ivHex || !tagHex || !encHex) return ciphertext; // plaintext legacy
-    const decipher = crypto.createDecipheriv(ALGO, key, Buffer.from(ivHex, 'hex'));
-    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-    let dec = decipher.update(encHex, 'hex', 'utf8');
-    dec += decipher.final('utf8');
-    return dec;
+    try {
+        const [ivHex, tagHex, encHex] = String(ciphertext).split(':');
+        if (!ivHex || !tagHex || !encHex) return ciphertext; // plaintext legacy
+        const decipher = crypto.createDecipheriv(ALGO, key, Buffer.from(ivHex, 'hex'));
+        decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+        let dec = decipher.update(encHex, 'hex', 'utf8');
+        dec += decipher.final('utf8');
+        return dec;
+    } catch (err) {
+        throw new Error(`Encrypted token decryption failed: ${err.message}`, { cause: err });
+    }
 }
 
 // ─── Database ───────────────────────────────────────────────────────────────
-let db, stmt, stmtSubs, stmtBeta;
+let db, stmt, stmtSubs, stmtBeta, stmtOrch;
+let orchestrationWorkerBusy = false;
 
 async function initDatabase() {
 db = createDatabase({
     databaseUrl: process.env.DATABASE_URL,
     dbPath: config.dbPath,
 });
+
+if (isProd && db.type !== 'postgres') {
+    throw new Error('Production requires PostgreSQL (DATABASE_URL must be configured)');
+}
 
 await db.exec(`
     CREATE TABLE IF NOT EXISTS bots (
@@ -300,6 +397,8 @@ await db.exec(`
 
     CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
     CREATE INDEX IF NOT EXISTS idx_logs_user   ON event_logs(user_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_logs_ts     ON event_logs(ts);
+    CREATE INDEX IF NOT EXISTS idx_logs_event_ts ON event_logs(event, ts);
     CREATE INDEX IF NOT EXISTS idx_pe_user     ON processed_events(user_id);
 `);
 
@@ -356,11 +455,30 @@ await db.exec(`
         created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS orchestration_commands (
+        command_id   TEXT PRIMARY KEY,
+        command_type TEXT NOT NULL CHECK(command_type IN ('deploy', 'stop')),
+        user_id      TEXT NOT NULL,
+        payload      TEXT,
+        status       TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+        error        TEXT,
+        result       TEXT,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        started_at   DATETIME,
+        finished_at  DATETIME,
+        updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_subs_user     ON subscriptions(user_id);
     CREATE INDEX IF NOT EXISTS idx_subs_dodo     ON subscriptions(dodo_subscription_id);
+    CREATE INDEX IF NOT EXISTS idx_subs_status_updated ON subscriptions(status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_subs_trial_ends ON subscriptions(trial_ends_at);
     CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(code);
     CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_status_created ON payments(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_beta_code     ON beta_codes(code);
+    CREATE INDEX IF NOT EXISTS idx_orch_status_created ON orchestration_commands(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_orch_user_created ON orchestration_commands(user_id, created_at);
 `);
 
 // Migrate existing tables — add new columns if they don't exist yet
@@ -459,12 +577,295 @@ stmtBeta = {
     countTotal: () => db.get('SELECT COUNT(*) as count FROM beta_codes'),
     countUsed: () => db.get('SELECT COUNT(*) as count FROM beta_codes WHERE redeemed_by IS NOT NULL'),
 };
+
+stmtOrch = {
+    enqueue: (params) => db.run(
+        'INSERT INTO orchestration_commands (command_id, command_type, user_id, payload, status) VALUES (@command_id, @command_type, @user_id, @payload, @status)',
+        params
+    ),
+    getById: (commandId) => db.get('SELECT * FROM orchestration_commands WHERE command_id = ?', [commandId]),
+    getNextQueued: () => db.get("SELECT * FROM orchestration_commands WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"),
+    markRunning: (commandId) => db.run(
+        "UPDATE orchestration_commands SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE command_id = ? AND status = 'queued'",
+        [commandId]
+    ),
+    markCompleted: (result, commandId) => db.run(
+        "UPDATE orchestration_commands SET status = 'completed', result = ?, error = NULL, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE command_id = ?",
+        [result, commandId]
+    ),
+    markFailed: (error, commandId) => db.run(
+        "UPDATE orchestration_commands SET status = 'failed', error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE command_id = ?",
+        [error, commandId]
+    ),
+};
+    // Populate the admin router placeholder now that all deps are ready
+    const adminRouter = createAdminRouter({
+        config, isProd, db, stmt, stmtSubs, stmtBeta,
+        logEvent, log, bifrost, asyncHandler, adminAuth, adminLoginLimiter,
+        requestTelemetry, calcRequestWindowStats,
+        vkUsageCache, romUsageCache,
+        getDiskUsage, getProcessRssKB,
+        MAX_CONCURRENT_BOTS,
+    });
+    adminRouterPlaceholder.use(adminRouter);
 } // end initDatabase
 
 function logEvent(userId, event, detail = null, ip = null) {
     stmt.insertLog(userId, event, typeof detail === 'object' ? JSON.stringify(detail) : detail, ip).catch(err => {
         log.system.error('logEvent failed', { error: err.message });
     });
+}
+
+function httpError(statusCode, body) {
+    const err = new Error((body && body.error) || 'Request failed');
+    err.statusCode = statusCode;
+    err.body = body;
+    return err;
+}
+
+function serializeJson(value) {
+    try {
+        return JSON.stringify(value);
+    } catch (_) {
+        return null;
+    }
+}
+
+function parseJson(value, fallback) {
+    try {
+        return JSON.parse(value);
+    } catch (_) {
+        return fallback;
+    }
+}
+
+async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.5', telegramAllowFrom = [], mcpServers = null, ip = null, verifiedUserId = null }) {
+    if (verifiedUserId && verifiedUserId !== userId) {
+        throw httpError(403, { error: 'userId does not match authenticated user' });
+    }
+
+    if (!userId || typeof userId !== 'string' || userId.length > 128) {
+        throw httpError(400, { error: 'userId is required (string, max 128 chars)' });
+    }
+    if (!telegramToken || typeof telegramToken !== 'string') {
+        throw httpError(400, { error: 'telegramToken is required' });
+    }
+    if (!/^\d+:[A-Za-z0-9_-]{30,50}$/.test(telegramToken)) {
+        throw httpError(400, { error: 'Invalid Telegram bot token format' });
+    }
+
+    const ALLOWED_MODELS = ['minimax-m2.5', 'kimi-k2.5'];
+    if (!ALLOWED_MODELS.includes(model)) {
+        throw httpError(400, { error: `Invalid model. Allowed: ${ALLOWED_MODELS.join(', ')}` });
+    }
+
+    const sub = await stmtSubs.getByUserId(userId);
+    const activeSub = sub && ['active', 'trialing', 'past_due'].includes(sub.status);
+    if (!activeSub) {
+        logEvent(userId, 'deploy_blocked_no_subscription', {}, ip);
+        throw httpError(402, {
+            error: 'Active subscription required',
+            message: 'Please subscribe to a plan before deploying a bot.',
+            pricingUrl: '/pricing',
+        });
+    }
+
+    const plan = sub.plan;
+    const maxBots = 1;
+    const currentBots = await stmtSubs.countUserBots(userId);
+    const runningBots = currentBots ? currentBots.count : 0;
+    const existingBot = await stmt.getBot(userId);
+    const isRedeploy = existingBot && existingBot.status === 'running';
+    if (runningBots >= maxBots && !isRedeploy) {
+        logEvent(userId, 'deploy_blocked_bot_limit', { plan, maxBots, runningBots }, ip);
+        throw httpError(403, {
+            error: `Bot limit reached for ${plan} plan`,
+            message: `Your ${plan} plan allows ${maxBots} bot(s). Upgrade to deploy more.`,
+            currentBots: runningBots,
+            maxBots,
+        });
+    }
+
+    const globalRunning = (await stmt.countRunning()).count;
+    if (globalRunning >= MAX_CONCURRENT_BOTS && !isRedeploy) {
+        logEvent(userId, 'deploy_blocked_server_capacity', { globalRunning, max: MAX_CONCURRENT_BOTS }, ip);
+        throw httpError(503, {
+            error: 'Server at capacity',
+            message: 'All bot slots are currently in use. Please try again later.',
+        });
+    }
+
+    const tokenCheck = await verifyTelegramBotToken(telegramToken);
+    if (!tokenCheck.ok) {
+        logEvent(userId, 'deploy_blocked_invalid_telegram_token', { error: tokenCheck.error }, ip);
+        throw httpError(tokenCheck.status, {
+            error: tokenCheck.error,
+            message: 'Please connect a valid Telegram bot token from @BotFather.',
+        });
+    }
+
+    const creditLimit = 5.00;
+
+    log.deploy.info('Deploy bot', { userId, model, plan, bot: tokenCheck.bot?.username || 'unknown', budget: creditLimit, ip });
+    logEvent(userId, 'deploy_requested', { model, creditLimit, plan, botUsername: tokenCheck.bot?.username || null }, ip);
+
+    const existing = await stmt.getBot(userId);
+    if (existing && existing.status === 'running') {
+        try { process.kill(existing.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+        if (existing.bifrost_vk_id) {
+            try { await bifrost.deactivateVirtualKey(existing.bifrost_vk_id); } catch (err) {
+                log.deploy.error('Failed to deactivate old VK', { vkId: existing.bifrost_vk_id, error: err.message });
+            }
+        }
+        await stmt.updateStatus('stopped', userId);
+        logEvent(userId, 'existing_bot_stopped', { pid: existing.pid });
+    }
+
+    let virtualKey;
+    try {
+        virtualKey = await bifrost.createVirtualKey(userId, model, creditLimit);
+        logEvent(userId, 'bifrost_vk_created', { id: virtualKey.id });
+    } catch (err) {
+        log.deploy.error('Bifrost error', { error: err.message });
+        logEvent(userId, 'bifrost_error', err.message);
+        const detail = isProd ? undefined : err.message;
+        throw httpError(502, { error: 'Failed to create API key', detail });
+    }
+
+    let pid;
+    try {
+        const allowFrom = Array.isArray(telegramAllowFrom)
+            ? telegramAllowFrom.map(String).filter(s => /^\d+$/.test(s))
+            : [];
+
+        let safeMcpServers = null;
+        if (mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers)) {
+            safeMcpServers = {};
+            for (const [name, server] of Object.entries(mcpServers)) {
+                if (typeof name !== 'string' || name.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(name)) continue;
+                if (server && typeof server.url === 'string' && /^https?:\/\//i.test(server.url) && !isPrivateUrl(server.url)) {
+                    safeMcpServers[name] = { url: server.url };
+                    if (server.headers && typeof server.headers === 'object') {
+                        safeMcpServers[name].headers = server.headers;
+                    }
+                }
+            }
+            if (Object.keys(safeMcpServers).length === 0) safeMcpServers = null;
+        }
+
+        pid = spawnPicobot(userId, telegramToken, virtualKey.key, model, allowFrom, safeMcpServers);
+        logEvent(userId, 'picobot_spawned', { pid, model, allowFrom: allowFrom.length });
+    } catch (err) {
+        log.deploy.error('picobot spawn error', { error: err.message });
+        logEvent(userId, 'picobot_error', err.message);
+        const detail = isProd ? undefined : err.message;
+        throw httpError(500, { error: 'Failed to spawn agent', detail });
+    }
+
+    await stmt.upsertBot({
+        user_id: userId,
+        pid,
+        model,
+        telegram_token: encryptToken(telegramToken),
+        bifrost_vk_id: virtualKey.id,
+        bifrost_vk: encryptToken(virtualKey.key),
+        credit_limit: creditLimit,
+    });
+
+    return {
+        success: true,
+        pid,
+        model,
+        creditLimit,
+        message: 'Your Claw agent is live on Telegram!',
+    };
+}
+
+async function runStopCommand({ userId, verifiedUserId = null }) {
+    if (!userId || typeof userId !== 'string') {
+        throw httpError(400, { error: 'userId is required' });
+    }
+
+    if (verifiedUserId && verifiedUserId !== userId) {
+        throw httpError(403, { error: 'userId does not match authenticated user' });
+    }
+
+    const bot = await stmt.getBot(userId);
+    if (!bot) throw httpError(404, { error: 'No bot found for this user' });
+
+    try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+
+    if (bot.bifrost_vk_id) {
+        bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
+            log.deploy.error('Failed to deactivate VK on stop', { vkId: bot.bifrost_vk_id, error: err.message });
+        });
+    }
+
+    await stmt.updateStatus('stopped', userId);
+    logEvent(userId, 'bot_stopped_manual', { pid: bot.pid });
+
+    return { success: true, message: `Agent (pid ${bot.pid}) stopped.` };
+}
+
+async function enqueueOrchestrationCommand(commandType, userId, payload) {
+    const commandId = crypto.randomUUID();
+    await stmtOrch.enqueue({
+        command_id: commandId,
+        command_type: commandType,
+        user_id: userId,
+        payload: serializeJson(payload),
+        status: 'queued',
+    });
+    return commandId;
+}
+
+function formatCommandResponse(row) {
+    if (!row) return null;
+    return {
+        commandId: row.command_id,
+        commandType: row.command_type,
+        userId: row.user_id,
+        status: row.status,
+        payload: parseJson(row.payload, null),
+        result: parseJson(row.result, row.result),
+        error: parseJson(row.error, row.error),
+        createdAt: row.created_at,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+async function processQueuedOrchestrationCommand() {
+    if (!config.scaleQueueOrchestration || !config.scaleQueueAsyncMode || orchestrationWorkerBusy) return;
+
+    orchestrationWorkerBusy = true;
+    try {
+        const next = await stmtOrch.getNextQueued();
+        if (!next) return;
+
+        const claim = await stmtOrch.markRunning(next.command_id);
+        if (!claim.changes) return;
+
+        try {
+            const payload = parseJson(next.payload, {}) || {};
+            let result;
+            if (next.command_type === 'deploy') {
+                result = await runDeployCommand({ ...payload, verifiedUserId: null });
+            } else if (next.command_type === 'stop') {
+                result = await runStopCommand({ ...payload, verifiedUserId: null });
+            } else {
+                throw new Error(`Unsupported command type: ${next.command_type}`);
+            }
+            await stmtOrch.markCompleted(serializeJson(result), next.command_id);
+        } catch (err) {
+            const errorBody = err && err.body ? err.body : { error: err.message || 'Unknown queue processing error' };
+            await stmtOrch.markFailed(serializeJson(errorBody), next.command_id);
+            log.deploy.error('Queue orchestration command failed', { commandId: next.command_id, commandType: next.command_type, error: errorBody.error || String(errorBody) });
+        }
+    } finally {
+        orchestrationWorkerBusy = false;
+    }
 }
 
 // ─── SSRF Guard ─────────────────────────────────────────────────────────────
@@ -484,7 +885,12 @@ function isPrivateUrl(url) {
             if (a === 169 && b === 254) return true;           // 169.254.0.0/16 (cloud metadata)
             if (a === 0) return true;                          // 0.0.0.0/8
         }
-        if (hostname === '::1' || /^fe80:/i.test(hostname)) return true; // IPv6 loopback/link-local
+        // IPv6 private/reserved ranges
+        if (hostname === '::1') return true;                            // loopback
+        if (/^fe80:/i.test(hostname)) return true;                     // link-local
+        if (/^fc00:/i.test(hostname) || /^fd/i.test(hostname)) return true; // unique local (fc00::/7)
+        if (/^2001:db8:/i.test(hostname)) return true;                 // documentation prefix
+        if (hostname === '::' || /^\[?::ffff:/i.test(hostname)) return true; // mapped IPv4 / unspecified
         return false;
     } catch (_) {
         return true; // unparseable URL → block
@@ -576,6 +982,7 @@ app.use((req, res, next) => {
 
 // ─── Rate Limiters ──────────────────────────────────────────────────────────
 const isTest = config.nodeEnv === 'test';
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/readyz']);
 
 const deployLimiter = rateLimit({
     windowMs: 60 * 1000,   // 1 minute
@@ -599,7 +1006,7 @@ const generalLimiter = rateLimit({
     max: 60,
     standardHeaders: true,
     legacyHeaders: false,
-    skip: () => isTest,
+    skip: (req) => isTest || RATE_LIMIT_EXEMPT_PATHS.has(req.path),
 });
 
 // Admin login: 7 attempts per 15 min per IP — locks out on 8th attempt
@@ -700,7 +1107,7 @@ app.post('/verify-telegram-token', deployLimiter, asyncHandler(authMiddleware), 
         return res.status(400).json({ error: 'userId is required' });
     }
 
-    if (isProd && req.verifiedUserId && req.verifiedUserId !== userId) {
+    if (req.verifiedUserId && req.verifiedUserId !== userId) {
         return res.status(403).json({ error: 'userId does not match authenticated user' });
     }
 
@@ -838,7 +1245,7 @@ app.get('/subscription/:userId', asyncHandler(authMiddleware), asyncHandler(asyn
     const { userId } = req.params;
 
     // In production, ensure user can only check their own subscription
-    if (isProd && req.verifiedUserId && req.verifiedUserId !== userId) {
+    if (req.verifiedUserId && req.verifiedUserId !== userId) {
         return res.status(403).json({ error: 'Cannot view another user\'s subscription' });
     }
 
@@ -1551,200 +1958,110 @@ function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax
 
 // ─── POST /deploy-bot ───────────────────────────────────────────────────────
 app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const { userId, telegramToken, model = 'minimax-m2.5', telegramAllowFrom = [], mcpServers = null } = req.body;
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+    const payload = {
+        userId: req.body.userId,
+        telegramToken: req.body.telegramToken,
+        model: req.body.model || 'minimax-m2.5',
+        telegramAllowFrom: req.body.telegramAllowFrom || [],
+        mcpServers: req.body.mcpServers || null,
+        ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress,
+        verifiedUserId: req.verifiedUserId || null,
+    };
 
-    // In production, ensure the userId matches the verified Google token
-    if (isProd && req.verifiedUserId && req.verifiedUserId !== userId) {
-        return res.status(403).json({ error: 'userId does not match authenticated user' });
-    }
-
-    // ── Validation ──────────────────────────────────────────────────────────
-    if (!userId || typeof userId !== 'string' || userId.length > 128) {
+    if (!payload.userId || typeof payload.userId !== 'string' || payload.userId.length > 128) {
         return res.status(400).json({ error: 'userId is required (string, max 128 chars)' });
     }
-    if (!telegramToken || typeof telegramToken !== 'string') {
-        return res.status(400).json({ error: 'telegramToken is required' });
-    }
-    if (!/^\d+:[A-Za-z0-9_-]{30,50}$/.test(telegramToken)) {
-        return res.status(400).json({ error: 'Invalid Telegram bot token format' });
-    }
 
-    const ALLOWED_MODELS = ['minimax-m2.5', 'kimi-k2.5'];
-    if (!ALLOWED_MODELS.includes(model)) {
-        return res.status(400).json({ error: `Invalid model. Allowed: ${ALLOWED_MODELS.join(', ')}` });
-    }
+    let commandId = null;
+    if (config.scaleQueueOrchestration) {
+        commandId = await enqueueOrchestrationCommand('deploy', payload.userId, payload);
+        logEvent(payload.userId, 'deploy_enqueued', { commandId, asyncMode: config.scaleQueueAsyncMode }, payload.ip);
 
-    // ── Subscription Gate ───────────────────────────────────────────────────
-    const sub = await stmtSubs.getByUserId(userId);
-    const activeSub = sub && ['active', 'trialing', 'past_due'].includes(sub.status);
-    if (!activeSub) {
-        logEvent(userId, 'deploy_blocked_no_subscription', {}, ip);
-        return res.status(402).json({
-            error: 'Active subscription required',
-            message: 'Please subscribe to a plan before deploying a bot.',
-            pricingUrl: '/pricing',
-        });
-    }
-
-    // ── Bot Limit Check ─────────────────────────────────────────────────────
-    const plan = sub.plan;
-    const maxBots = 1; // unified plan: 1 bot per user
-    const currentBots = await stmtSubs.countUserBots(userId);
-    const runningBots = currentBots ? currentBots.count : 0;
-    // Allow re-deploy (stop + start) but not exceeding limit with new bots
-    const existingBot = await stmt.getBot(userId);
-    const isRedeploy = existingBot && existingBot.status === 'running';
-    if (runningBots >= maxBots && !isRedeploy) {
-        logEvent(userId, 'deploy_blocked_bot_limit', { plan, maxBots, runningBots }, ip);
-        return res.status(403).json({
-            error: `Bot limit reached for ${plan} plan`,
-            message: `Your ${plan} plan allows ${maxBots} bot(s). Upgrade to deploy more.`,
-            currentBots: runningBots,
-            maxBots,
-        });
-    }
-
-    // ── Global Capacity Check ───────────────────────────────────────────────
-    const globalRunning = (await stmt.countRunning()).count;
-    if (globalRunning >= MAX_CONCURRENT_BOTS && !isRedeploy) {
-        logEvent(userId, 'deploy_blocked_server_capacity', { globalRunning, max: MAX_CONCURRENT_BOTS }, ip);
-        return res.status(503).json({
-            error: 'Server at capacity',
-            message: 'All bot slots are currently in use. Please try again later.',
-        });
-    }
-
-    // Validate token with Telegram before allocating/rotating resources.
-    const tokenCheck = await verifyTelegramBotToken(telegramToken);
-    if (!tokenCheck.ok) {
-        logEvent(userId, 'deploy_blocked_invalid_telegram_token', { error: tokenCheck.error }, ip);
-        return res.status(tokenCheck.status).json({
-            error: tokenCheck.error,
-            message: 'Please connect a valid Telegram bot token from @BotFather.',
-        });
-    }
-
-    // ── Plan-based budget — unified $5.00/mo ──────────────────────────────
-    const creditLimit = 5.00;
-
-    log.deploy.info('Deploy bot', { userId, model, plan, bot: tokenCheck.bot?.username || 'unknown', budget: creditLimit, ip });
-    logEvent(userId, 'deploy_requested', { model, creditLimit, plan, botUsername: tokenCheck.bot?.username || null }, ip);
-
-    // ── Stop existing bot if running ────────────────────────────────────────
-    const existing = await stmt.getBot(userId);
-    if (existing && existing.status === 'running') {
-        try { process.kill(existing.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
-        // Deactivate old Virtual Key before creating a new one
-        if (existing.bifrost_vk_id) {
-            try { await bifrost.deactivateVirtualKey(existing.bifrost_vk_id); } catch (err) {
-                log.deploy.error('Failed to deactivate old VK', { vkId: existing.bifrost_vk_id, error: err.message });
-            }
+        if (config.scaleQueueAsyncMode) {
+            return res.status(202).json({
+                queued: true,
+                commandId,
+                status: 'queued',
+                message: 'Deploy request queued for asynchronous processing.',
+            });
         }
-        await stmt.updateStatus('stopped', userId);
-        logEvent(userId, 'existing_bot_stopped', { pid: existing.pid });
+
+        await stmtOrch.markRunning(commandId);
     }
 
-    // ── Create Bifrost Virtual Key ──────────────────────────────────────────
-    let virtualKey;
     try {
-        virtualKey = await bifrost.createVirtualKey(userId, model, creditLimit);
-        logEvent(userId, 'bifrost_vk_created', { id: virtualKey.id });
-    } catch (err) {
-        log.deploy.error('Bifrost error', { error: err.message });
-        logEvent(userId, 'bifrost_error', err.message);
-        const detail = isProd ? undefined : err.message;
-        return res.status(502).json({ error: 'Failed to create API key', detail });
-    }
-
-    // ── Spawn picobot ───────────────────────────────────────────────────────
-    let pid;
-    try {
-        // Normalize telegramAllowFrom to array of strings
-        const allowFrom = Array.isArray(telegramAllowFrom)
-            ? telegramAllowFrom.map(String).filter(s => /^\d+$/.test(s))
-            : [];
-        // Validate user MCP servers (if provided) — only allow http URL-based servers
-        let safeMcpServers = null;
-        if (mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers)) {
-            safeMcpServers = {};
-            for (const [name, server] of Object.entries(mcpServers)) {
-                if (typeof name !== 'string' || name.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(name)) continue;
-                // Only allow HTTP-based MCP servers from users (no arbitrary command exec).
-                // Block SSRF: reject loopback, private ranges, and cloud metadata endpoints.
-                if (server && typeof server.url === 'string' && /^https?:\/\//i.test(server.url) && !isPrivateUrl(server.url)) {
-                    safeMcpServers[name] = { url: server.url };
-                    if (server.headers && typeof server.headers === 'object') {
-                        safeMcpServers[name].headers = server.headers;
-                    }
-                }
-            }
-            if (Object.keys(safeMcpServers).length === 0) safeMcpServers = null;
+        const result = await runDeployCommand(payload);
+        if (commandId) {
+            await stmtOrch.markCompleted(serializeJson(result), commandId);
         }
-        pid = spawnPicobot(userId, telegramToken, virtualKey.key, model, allowFrom, safeMcpServers);
-        logEvent(userId, 'picobot_spawned', { pid, model, allowFrom: allowFrom.length });
+        return res.status(201).json(result);
     } catch (err) {
-        log.deploy.error('picobot spawn error', { error: err.message });
-        logEvent(userId, 'picobot_error', err.message);
-        const detail = isProd ? undefined : err.message;
-        return res.status(500).json({ error: 'Failed to spawn agent', detail });
+        if (commandId) {
+            await stmtOrch.markFailed(serializeJson(err.body || { error: err.message }), commandId);
+        }
+        return res.status(err.statusCode || 500).json(err.body || { error: isProd ? 'Internal server error' : err.message });
     }
-
-    // ── Persist to SQLite (token encrypted at rest) ─────────────────────────
-    await stmt.upsertBot({
-        user_id: userId,
-        pid,
-        model,
-        telegram_token: encryptToken(telegramToken),
-        bifrost_vk_id: virtualKey.id,
-        bifrost_vk: encryptToken(virtualKey.key),
-        credit_limit: creditLimit,
-    });
-
-    return res.status(201).json({
-        success: true,
-        pid,
-        model,
-        creditLimit,
-        message: 'Your Claw agent is live on Telegram!',
-    });
 }));
 
 // ─── POST /stop-bot ─────────────────────────────────────────────────────────
 app.post('/stop-bot', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const { userId } = req.body;
-    if (!userId || typeof userId !== 'string') {
+    const payload = {
+        userId: req.body.userId,
+        verifiedUserId: req.verifiedUserId || null,
+    };
+
+    if (!payload.userId || typeof payload.userId !== 'string') {
         return res.status(400).json({ error: 'userId is required' });
     }
 
-    // Ensure authenticated user can only stop their own bot (IDOR prevention)
-    if (isProd && req.verifiedUserId && req.verifiedUserId !== userId) {
-        return res.status(403).json({ error: 'userId does not match authenticated user' });
+    let commandId = null;
+    if (config.scaleQueueOrchestration) {
+        commandId = await enqueueOrchestrationCommand('stop', payload.userId, payload);
+        logEvent(payload.userId, 'stop_enqueued', { commandId, asyncMode: config.scaleQueueAsyncMode });
+
+        if (config.scaleQueueAsyncMode) {
+            return res.status(202).json({
+                queued: true,
+                commandId,
+                status: 'queued',
+                message: 'Stop request queued for asynchronous processing.',
+            });
+        }
+
+        await stmtOrch.markRunning(commandId);
     }
 
-    const bot = await stmt.getBot(userId);
-    if (!bot) return res.status(404).json({ error: 'No bot found for this user' });
+    try {
+        const result = await runStopCommand(payload);
+        if (commandId) {
+            await stmtOrch.markCompleted(serializeJson(result), commandId);
+        }
+        return res.json(result);
+    } catch (err) {
+        if (commandId) {
+            await stmtOrch.markFailed(serializeJson(err.body || { error: err.message }), commandId);
+        }
+        return res.status(err.statusCode || 500).json(err.body || { error: isProd ? 'Internal server error' : err.message });
+    }
+}));
 
-    try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+// ─── GET /orchestration/commands/:commandId ───────────────────────────────
+app.get('/orchestration/commands/:commandId', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
+    const command = await stmtOrch.getById(req.params.commandId);
+    if (!command) return res.status(404).json({ error: 'Command not found' });
 
-    // Deactivate the Bifrost Virtual Key so it stops accepting requests
-    if (bot.bifrost_vk_id) {
-        bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-            log.deploy.error('Failed to deactivate VK on stop', { vkId: bot.bifrost_vk_id, error: err.message });
-        });
+    if (req.verifiedUserId && req.verifiedUserId !== command.user_id) {
+        return res.status(403).json({ error: 'Forbidden' });
     }
 
-    await stmt.updateStatus('stopped', userId);
-    logEvent(userId, 'bot_stopped_manual', { pid: bot.pid });
-
-    return res.json({ success: true, message: `Agent (pid ${bot.pid}) stopped.` });
+    return res.json(formatCommandResponse(command));
 }));
 
 // ─── GET /status/:userId ────────────────────────────────────────────────────
 app.get('/status/:userId', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
     const { userId } = req.params;
     // IDOR: only the authenticated user may query their own bot status
-    if (isProd && req.verifiedUserId !== userId) {
+    if (req.verifiedUserId && req.verifiedUserId !== userId) {
         return res.status(403).json({ error: 'Forbidden' });
     }
     const bot = await stmt.getBot(userId);
@@ -1771,63 +2088,61 @@ app.get('/status/:userId', asyncHandler(authMiddleware), asyncHandler(async (req
     });
 }));
 
-// ─── GET /health ────────────────────────────────────────────────────────────
-app.get('/health', async (_req, res) => {
-    // DB check
+// ─── GET /readyz ────────────────────────────────────────────────────────────
+// Minimal readiness probe: verifies API can reach its primary datastore.
+// Cached for 5 seconds to avoid DB round-trip on every LB probe.
+let readyzCache = { ts: 0, status: 503, body: null };
+const READYZ_CACHE_TTL_MS = 5000;
+
+app.get('/readyz', async (_req, res) => {
+    const now = Date.now();
+    if (readyzCache.body && (now - readyzCache.ts) < READYZ_CACHE_TTL_MS) {
+        return res.status(readyzCache.status).json(readyzCache.body);
+    }
+
     let dbOk = false;
-    let runningBots = 0;
     try {
-        const row = await stmt.countRunning();
-        runningBots = row.count;
+        await stmt.countRunning();
         dbOk = true;
     } catch (_) { /* DB inaccessible */ }
 
-    // Bifrost check
+    const status = dbOk ? 200 : 503;
+    const body = {
+        status: dbOk ? 'ok' : 'critical',
+        checks: { db: dbOk },
+        ts: new Date().toISOString(),
+    };
+
+    readyzCache = { ts: now, status, body };
+    return res.status(status).json(body);
+});
+
+// ─── GET /health ────────────────────────────────────────────────────────────
+// Public: minimal status + dependency checks only (no system details).
+// Detailed telemetry moved to GET /admin/health (adminAuth required).
+app.get('/health', async (_req, res) => {
+    let dbOk = false;
+    try {
+        await stmt.countRunning();
+        dbOk = true;
+    } catch (_) { /* DB inaccessible */ }
+
     let bifrostOk = false;
     try {
         const bfRes = await fetch(`${config.bifrostBase}/health`, { signal: AbortSignal.timeout(2000) });
         bifrostOk = bfRes.ok;
     } catch (_) { /* Bifrost unreachable */ }
 
-    // Picobot version
-    let picobotVersion = 'unknown';
-    try {
-        const versionFile = path.join(path.dirname(config.picobotPath), '.picobot-version');
-        picobotVersion = fs.readFileSync(versionFile, 'utf8').trim();
-    } catch (_) { /* version file not found */ }
-
-    // OS-level memory
-    const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
-    const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
-    const memUsedPct = Math.round(((totalMemMB - freeMemMB) / totalMemMB) * 100);
-
-    // Disk usage (root partition)
-    let diskOk = true;
-    let diskUsedPct = 0;
-    try {
-        const dfOut = execSync('df -P / | tail -1', { timeout: 2000 }).toString();
-        const parts = dfOut.trim().split(/\s+/);
-        diskUsedPct = parseInt(parts[4], 10) || 0;
-        if (diskUsedPct > 90) diskOk = false;
-    } catch (_) { /* df not available */ }
+    const diskResult = getDiskUsage();
+    const diskOk = !diskResult || diskResult.usedPct <= 90;
 
     const checks = { db: dbOk, bifrost: bifrostOk, disk: diskOk };
     const allOk = Object.values(checks).every(Boolean);
     const status = allOk ? 'ok' : (dbOk ? 'degraded' : 'critical');
-    const code = dbOk ? 200 : 503;
 
-    return res.status(code).json({
+    return res.status(dbOk ? 200 : 503).json({
         status,
         checks,
-        service: 'LiveClaw Orchestrator',
-        version: '2.0.0',
-        picobotVersion,
-        env: config.nodeEnv,
-        runningBots,
-        maxBots: MAX_CONCURRENT_BOTS,
-        botCapacityPct: runningBots > 0 ? Math.round((runningBots / MAX_CONCURRENT_BOTS) * 100) : 0,
-        memory: { totalMB: totalMemMB, freeMB: freeMemMB, usedPct: memUsedPct },
-        disk: { usedPct: diskUsedPct },
         ts: new Date().toISOString(),
     });
 });
@@ -1841,7 +2156,7 @@ function adminAuth(req, res, next) {
     const authHeader = req.headers['authorization'];
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7);
-        const jwtSecret = config.adminJwtSecret || (!isProd ? 'dev-secret' : null);
+        const jwtSecret = config.adminJwtSecret || null;
         if (!jwtSecret) return res.status(403).json({ error: 'ADMIN_JWT_SECRET not configured' });
         try {
             jwt.verify(token, jwtSecret);
@@ -1859,46 +2174,17 @@ function adminAuth(req, res, next) {
     if (adminSecret && req.headers['x-admin-secret'] !== adminSecret) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
-    if (!adminSecret && isProd) {
+    if (!adminSecret) {
         return res.status(403).json({ error: 'ADMIN_SECRET not configured' });
     }
-    next();
+    return res.status(401).json({ error: 'Unauthorized' });
 }
 
-// ─── POST /admin/login — Exchange TOTP code for a short-lived JWT ────────────
-app.post('/admin/login', adminLoginLimiter, asyncHandler(async (req, res) => {
-    const { code } = req.body || {};
-    if (!code || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
-        return res.status(400).json({ error: 'A 6-digit code is required' });
-    }
-
-    const jwtSecret = config.adminJwtSecret || (!isProd ? 'dev-secret' : null);
-    if (!jwtSecret) return res.status(403).json({ error: 'ADMIN_JWT_SECRET not configured' });
-
-    if (!config.adminTotpSecret) {
-        if (isProd) return res.status(403).json({ error: 'ADMIN_TOTP_SECRET not configured' });
-        // Dev fallback: accept ADMIN_SECRET value directly as code (local only)
-        const devSecret = process.env.ADMIN_SECRET || '';
-        if (!devSecret || code.trim() !== devSecret) {
-            return res.status(401).json({ error: 'Invalid code' });
-        }
-    } else {
-        const totp = new TOTP({
-            issuer: 'LiveClaw',
-            label: 'admin',
-            secret: config.adminTotpSecret,
-            digits: 6,
-            period: 30,
-        });
-        const delta = totp.validate({ token: code.trim(), window: 1 });
-        if (delta === null) {
-            return res.status(401).json({ error: 'Invalid code' });
-        }
-    }
-
-    const token = jwt.sign({ role: 'admin' }, jwtSecret, { expiresIn: '8h' });
-    return res.json({ token });
-}));
+// ─── Admin Routes (extracted to routes/admin.js) ───────────────────────────
+// Admin login, health, and dashboard-live are mounted via the admin router.
+// The remaining admin routes below will be migrated incrementally.
+const { createAdminRouter } = require('./routes/admin');
+// Note: admin router is mounted later in initDatabase() after db/stmt are ready.
 
 function calcRequestWindowStats(windowMs) {
     const now = Date.now();
@@ -1923,7 +2209,8 @@ function calcRequestWindowStats(windowMs) {
     };
 }
 
-// ─── GET /admin/dashboard-live — Unified live telemetry snapshot ────────────
+// ─── GET /admin/dashboard-live (MOVED to routes/admin.js) ───────────────────
+// This route is now served by the admin router mounted via adminRouterPlaceholder.
 app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
     const paymentsLimit = Math.min(Math.max(parseInt(req.query.paymentsLimit, 10) || 50, 1), 200);
     const eventsLimit = Math.min(Math.max(parseInt(req.query.eventsLimit, 10) || 50, 1), 300);
@@ -1977,16 +2264,8 @@ app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
     const loadAvg = os.loadavg();
 
     let disk = { totalGB: null, usedGB: null, availGB: null, usedPct: null };
-    try {
-        const dfOut = execSync('df -P / | tail -1', { timeout: 2000 }).toString();
-        const parts = dfOut.trim().split(/\s+/);
-        disk = {
-            totalGB: Math.round(parseInt(parts[1], 10) / 1024 / 1024),
-            usedGB: Math.round(parseInt(parts[2], 10) / 1024 / 1024),
-            availGB: Math.round(parseInt(parts[3], 10) / 1024 / 1024),
-            usedPct: parseInt(parts[4], 10) || 0,
-        };
-    } catch (_) { /* df unavailable */ }
+    const diskResult = getDiskUsage();
+    if (diskResult) disk = diskResult;
 
     // Health checks
     let dbOk = true;
@@ -2025,10 +2304,8 @@ app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
         try {
             process.kill(bot.pid, 0);
             alive = true;
-            try {
-                const rssKB = parseInt(execSync(`ps -o rss= -p ${bot.pid} 2>/dev/null`, { timeout: 1200 }).toString().trim(), 10);
-                if (!Number.isNaN(rssKB)) rssMB = Math.round(rssKB / 1024);
-            } catch (_) { /* ps unavailable */ }
+            const rssKB = getProcessRssKB(bot.pid);
+                if (rssKB !== null) rssMB = Math.round(rssKB / 1024);
         } catch (_) { /* dead process */ }
 
         let romMB = 0;
@@ -2038,9 +2315,9 @@ app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
             romMB = cachedRom.value;
         } else {
             try {
-                const safeUserId = String(bot.user_id || '').replace(/'/g, "'\\''");
-                const duOut = execSync(`du -sk '${config.botsDir}/${safeUserId}' 2>/dev/null | cut -f1 || echo 0`, { timeout: 1200 }).toString().trim();
-                const kb = parseInt(duOut, 10) || 0;
+                const userPath = path.resolve(config.botsDir, String(bot.user_id || ''));
+                const duOut = execFileSync('du', ['-sk', userPath], { timeout: 1200 }).toString().trim();
+                const kb = parseInt(duOut.split(/\s+/)[0], 10) || 0;
                 romMB = Math.round((kb / 1024) * 10) / 10;
                 romUsageCache.set(bot.user_id, { value: romMB, ts: Date.now() });
             } catch (_) { /* workspace missing */ }
@@ -2247,17 +2524,7 @@ app.get('/admin/stats', adminAuth, asyncHandler(async (req, res) => {
         const cpuCount = os.cpus().length;
 
         // Disk usage
-        let diskInfo = null;
-        try {
-            const dfOut = execSync('df -P / | tail -1', { timeout: 2000 }).toString();
-            const parts = dfOut.trim().split(/\s+/);
-            diskInfo = {
-                totalGB: Math.round(parseInt(parts[1], 10) / 1024 / 1024),
-                usedGB: Math.round(parseInt(parts[2], 10) / 1024 / 1024),
-                availGB: Math.round(parseInt(parts[3], 10) / 1024 / 1024),
-                usedPct: parseInt(parts[4], 10) || 0,
-            };
-        } catch (_) { /* df not available */ }
+        const diskInfo = getDiskUsage();
 
         // Per-bot instance health (PID alive check + RSS via /proc or ps)
         const botInstances = [];
@@ -2268,11 +2535,8 @@ app.get('/admin/stats', adminAuth, asyncHandler(async (req, res) => {
             try {
                 process.kill(bot.pid, 0);
                 alive = true;
-                // Try to get RSS from /proc (Linux) or ps (macOS)
-                try {
-                    const rssKB = parseInt(execSync(`ps -o rss= -p ${bot.pid} 2>/dev/null`, { timeout: 1000 }).toString().trim(), 10);
-                    rssMB = Math.round(rssKB / 1024);
-                } catch (_) { /* ps unavailable */ }
+                const rssKB = getProcessRssKB(bot.pid);
+                if (rssKB !== null) rssMB = Math.round(rssKB / 1024);
             } catch (_) { /* process dead */ }
             botInstances.push({
                 userId: bot.user_id,
@@ -2402,12 +2666,7 @@ app.get('/admin/system', adminAuth, async (req, res) => {
         const cpuCount = os.cpus().length;
 
         // Disk
-        let disk = null;
-        try {
-            const dfOut = execSync('df -Ph / | tail -1', { timeout: 2000 }).toString();
-            const parts = dfOut.trim().split(/\s+/);
-            disk = { total: parts[1], used: parts[2], avail: parts[3], usedPct: parseInt(parts[4], 10) };
-        } catch (_) { /* non-Linux */ }
+        const disk = getDiskUsage(true);
 
         // ── Bifrost Gateway ─────────────────────────────────────────────────
         let bifrost_health = null;
@@ -2419,15 +2678,7 @@ app.get('/admin/system', adminAuth, async (req, res) => {
         }
 
         // Docker container stats (Bifrost)
-        let dockerStats = null;
-        try {
-            const dockerOut = execSync(
-                'docker stats bifrost-gateway --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null',
-                { timeout: 5000 }
-            ).toString().trim();
-            const [cpu, mem, memPct] = dockerOut.split('|');
-            dockerStats = { cpu: cpu?.trim(), memory: mem?.trim(), memPct: memPct?.trim() };
-        } catch (_) { /* docker unavailable */ }
+        const dockerStats = getDockerContainerStats('bifrost-gateway');
 
         // ── Per-Bot Instance Metrics ────────────────────────────────────────
         const bots = await db.all("SELECT user_id, pid, model, credit_limit, created_at FROM bots WHERE status = 'running'");
@@ -2439,11 +2690,11 @@ app.get('/admin/system', adminAuth, async (req, res) => {
             try {
                 process.kill(bot.pid, 0);
                 instance.alive = true;
-                try {
-                    const rssKB = parseInt(execSync(`ps -o rss= -p ${bot.pid} 2>/dev/null`, { timeout: 1000 }).toString().trim(), 10);
+                const rssKB = getProcessRssKB(bot.pid);
+                if (rssKB !== null) {
                     instance.rssMB = Math.round(rssKB / 1024);
                     totalBotRSS += instance.rssMB;
-                } catch (_) { /* ps unavailable */ }
+                }
             } catch (_) { /* process dead */ }
             instance.creditRemaining = parseFloat(bot.credit_limit.toFixed(4));
             instance.uptimeHours = Math.round((Date.now() - new Date(bot.created_at).getTime()) / 3600000);
@@ -2454,17 +2705,9 @@ app.get('/admin/system', adminAuth, async (req, res) => {
         const deadCount = instances.filter(i => !i.alive).length;
 
         // ── Zombie Detection ────────────────────────────────────────────────
-        let orphanedProcesses = [];
-        try {
-            const psOut = execSync('pgrep -af picobot 2>/dev/null || true', { timeout: 2000 }).toString().trim();
-            if (psOut) {
-                const trackedPids = new Set(bots.map(b => b.pid));
-                const psPids = psOut.split('\n')
-                    .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
-                    .filter(pid => !isNaN(pid) && !trackedPids.has(pid));
-                orphanedProcesses = psPids;
-            }
-        } catch (_) { /* pgrep unavailable */ }
+        const allPicobotPids = listPicobotPids(true);
+        const trackedPidSet = new Set(bots.map(b => b.pid));
+        const orphanedProcesses = allPicobotPids.filter(pid => !trackedPidSet.has(pid));
 
         // ── Capacity Projection ─────────────────────────────────────────────
         const avgBotMB = totalBotRSS > 0 && aliveCount > 0 ? Math.round(totalBotRSS / aliveCount) : 20;
@@ -2748,19 +2991,15 @@ app.post('/admin/users/:userId/delete', adminAuth, asyncHandler(async (req, res)
 // ─── POST /admin/system/kill-orphans — Kill Orphaned Picobot Processes ──────
 app.post('/admin/system/kill-orphans', adminAuth, asyncHandler(async (req, res) => {
     const killed = [];
-    try {
-        const psOut = execSync('pgrep -a picobot 2>/dev/null || true', { timeout: 2000 }).toString().trim();
-        if (psOut) {
-            const bots = await stmt.runningBots();
-            const trackedPids = new Set(bots.map(b => b.pid));
-            const osPids = psOut.split('\n')
-                .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
-                .filter(pid => !isNaN(pid) && !trackedPids.has(pid));
-            for (const pid of osPids) {
-                try { process.kill(pid, 'SIGTERM'); killed.push(pid); } catch (_) { /* best-effort */ }
-            }
+    const allPids = listPicobotPids();
+    if (allPids.length > 0) {
+        const bots = await stmt.runningBots();
+        const trackedPids = new Set(bots.map(b => b.pid));
+        const orphanPids = allPids.filter(pid => !trackedPids.has(pid));
+        for (const pid of orphanPids) {
+            try { process.kill(pid, 'SIGTERM'); killed.push(pid); } catch (_) { /* best-effort */ }
         }
-    } catch (_) { /* no picobot processes */ }
+    }
     logEvent('system', 'admin_kill_orphans', { killed });
     return res.json({ success: true, killed, count: killed.length });
 }));
@@ -2879,7 +3118,6 @@ app.post('/admin/beta-codes/generate', adminAuth, asyncHandler(async (req, res) 
      */
     const ACCEPT_LIMIT = Math.floor(256 / CHARSET.length) * CHARSET.length; // 252
     const getUnbiasedChar = () => {
-        // eslint-disable-next-line no-constant-condition
         while (true) {
             const [b] = crypto.randomBytes(1);
             if (b < ACCEPT_LIMIT) return CHARSET[b % CHARSET.length];
@@ -2952,13 +3190,17 @@ app.get('/admin/beta-codes', adminAuth, asyncHandler(async (req, res) => {
     });
 }));
 
+// ─── Admin Router Mount Point (populated by initDatabase()) ────────────────
+// Mounted here to ensure it sits before the 404 catch-all in the middleware stack.
+const adminRouterPlaceholder = express.Router();
+app.use('/admin', adminRouterPlaceholder);
+
 // ─── 404 Catch-All ──────────────────────────────────────────────────────────
 app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });
 });
 
 // ─── Global Error Handler ───────────────────────────────────────────────────
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
     const status = err.statusCode || 500;
     log.system.error(`Error ${status}`, { requestId: req.requestId, error: err.message, status });
@@ -3026,7 +3268,18 @@ if (config.nodeEnv !== 'test') {
 
         // Ensure bots directory exists
         fs.mkdirSync(config.botsDir, { recursive: true });
+
     });
+
+    if (config.scaleQueueOrchestration && config.scaleQueueAsyncMode) {
+        const queueWorkerTimer = setInterval(() => {
+            processQueuedOrchestrationCommand().catch(err => {
+                log.deploy.error('Queue worker loop failed', { error: err.message });
+            });
+        }, config.scaleQueuePollMs);
+        queueWorkerTimer.unref();
+        log.startup.info('Queue orchestration worker started', { pollMs: config.scaleQueuePollMs });
+    }
 
     // ─── Bot Watchdog ───────────────────────────────────────────────────────
     // Periodically checks running bots and auto-restarts crashed ones.
@@ -3086,21 +3339,14 @@ if (config.nodeEnv !== 'test') {
 
             // ── Zombie / Orphan Process Cleanup ────────────────────────────
             // Kill picobot processes that exist on the OS but aren't tracked in DB
-            try {
-                const psOut = execSync('pgrep -a picobot 2>/dev/null || true', { timeout: 2000 }).toString().trim();
-                if (psOut) {
-                    const trackedPids = new Set(bots.map(b => b.pid));
-                    const osPids = psOut.split('\n')
-                        .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
-                        .filter(pid => !isNaN(pid) && !trackedPids.has(pid));
-                    for (const zombiePid of osPids) {
-                        try {
-                            process.kill(zombiePid, 'SIGTERM');
-                            log.watchdog.warn('Killed orphaned picobot', { pid: zombiePid });
-                        } catch (_) { /* already dead */ }
-                    }
-                }
-            } catch (_) { /* pgrep unavailable */ }
+            const allPicobotPids = listPicobotPids();
+            const trackedPids = new Set(bots.map(b => b.pid));
+            for (const zombiePid of allPicobotPids.filter(pid => !trackedPids.has(pid))) {
+                try {
+                    process.kill(zombiePid, 'SIGTERM');
+                    log.watchdog.warn('Killed orphaned picobot', { pid: zombiePid });
+                } catch (_) { /* already dead */ }
+            }
 
             // ── Memory Pressure Alert ──────────────────────────────────────
             const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
@@ -3124,4 +3370,4 @@ if (config.nodeEnv !== 'test') {
 // Export app and db so supertest and test harnesses can use them.
 // In production, this export is unused.
 const dbReady = config.nodeEnv === 'test' ? initDatabase() : Promise.resolve();
-module.exports = { app, dbReady, initDatabase, get db() { return db; }, get stmt() { return stmt; }, get stmtSubs() { return stmtSubs; } };
+module.exports = { app, dbReady, initDatabase, get db() { return db; }, get stmt() { return stmt; }, get stmtSubs() { return stmtSubs; }, get stmtOrch() { return stmtOrch; } };

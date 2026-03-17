@@ -1,0 +1,22 @@
+{
+  "target": "https://api.liveclaw.xyz/readyz",
+  "timestamp": "20260316-161053",
+  "source_file": "./artifacts/load-tests/autocannon-20260316-161053.json",
+  "metrics": {
+    "latency_p95_ms": 1352,
+    "latency_p99_ms": 1606,
+    "avg_rps": 8,
+    "non2xx": 0,
+    "server_5xx": 0,
+    "rate_limited_429": 0,
+    "errors": 0,
+    "timeouts": 0,
+    "ok_2xx": 480
+  },
+  "slo": {
+    "latency_p95_under_300ms": false,
+    "server_5xx_rate_under_0_5pct": true,
+    "rate_limited_429_rate_under_1pct": true,
+    "non2xx_rate_under_0_5pct": true
+  }
+}

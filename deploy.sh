@@ -175,26 +175,67 @@ if [ -f ".picobot-version" ]; then
 fi
 LATEST_VER=$(curl -sf https://api.github.com/repos/louisho5/picobot/releases/latest | grep -o '"tag_name":\s*"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
 
+verify_picobot_checksum() {
+    local binary_path="$1"
+    local version="$2"
+    local checksum_url="https://github.com/louisho5/picobot/releases/download/${version}/checksums.txt"
+    local expected_checksum
+
+    # Attempt to download checksums file
+    expected_checksum=$(curl -sfL "$checksum_url" 2>/dev/null | grep "picobot_linux_amd64" | awk '{print $1}')
+    if [ -z "$expected_checksum" ]; then
+        echo "  ⚠️  No checksum file found for ${version} — skipping verification"
+        return 0  # Non-blocking: proceed without checksum if not published
+    fi
+
+    local actual_checksum
+    actual_checksum=$(sha256sum "$binary_path" | awk '{print $1}')
+
+    if [ "$expected_checksum" = "$actual_checksum" ]; then
+        echo "  ✅ SHA256 checksum verified: ${actual_checksum:0:16}..."
+        return 0
+    else
+        echo "  ❌ SHA256 MISMATCH — expected: ${expected_checksum:0:16}..., got: ${actual_checksum:0:16}..."
+        echo "  Refusing to install untrusted binary. Keeping existing version."
+        return 1
+    fi
+}
+
 if [ -n "$LATEST_VER" ] && [ "$CURRENT_VER" != "$LATEST_VER" ]; then
     echo "  Updating picobot: ${CURRENT_VER:-none} → ${LATEST_VER}"
     curl -fSL --retry 3 -o picobot.tmp \
         "https://github.com/louisho5/picobot/releases/download/${LATEST_VER}/picobot_linux_amd64" 2>/dev/null
     if [ -s picobot.tmp ]; then
-        mv picobot.tmp picobot
-        chmod +x picobot
-        echo "$LATEST_VER" > .picobot-version
-        echo "  picobot ${LATEST_VER}: $(ls -lh picobot | awk '{print $5}')"
+        if verify_picobot_checksum picobot.tmp "$LATEST_VER"; then
+            mv picobot.tmp picobot
+            chmod +x picobot
+            echo "$LATEST_VER" > .picobot-version
+            echo "  picobot ${LATEST_VER}: $(ls -lh picobot | awk '{print $5}')"
+        else
+            rm -f picobot.tmp
+        fi
     else
         rm -f picobot.tmp
         echo "  ⚠️  Download failed — keeping existing binary"
     fi
 elif [ ! -f picobot ]; then
     echo "  Downloading picobot (first install)..."
-    curl -fSL --retry 3 -o picobot \
-        "https://github.com/louisho5/picobot/releases/latest/download/picobot_linux_amd64" 2>/dev/null || touch picobot
-    chmod +x picobot
-    [ -n "$LATEST_VER" ] && echo "$LATEST_VER" > .picobot-version
-    echo "  picobot ready: $(ls -lh picobot | awk '{print $5}')"
+    curl -fSL --retry 3 -o picobot.tmp \
+        "https://github.com/louisho5/picobot/releases/latest/download/picobot_linux_amd64" 2>/dev/null
+    if [ -s picobot.tmp ]; then
+        if verify_picobot_checksum picobot.tmp "${LATEST_VER:-unknown}"; then
+            mv picobot.tmp picobot
+            chmod +x picobot
+            [ -n "$LATEST_VER" ] && echo "$LATEST_VER" > .picobot-version
+            echo "  picobot ready: $(ls -lh picobot | awk '{print $5}')"
+        else
+            rm -f picobot.tmp
+            echo "  ⚠️  Checksum verification failed — no picobot installed"
+        fi
+    else
+        rm -f picobot.tmp
+        echo "  ⚠️  Download failed — no picobot installed"
+    fi
 else
     echo "  picobot up-to-date: ${CURRENT_VER}"
 fi
@@ -244,7 +285,7 @@ DODO_WEBHOOK_SECRET=your_dodo_webhook_secret
 DODO_PRODUCT_ID=your_dodo_product_id
 OPENROUTER_API_KEY=your_openrouter_api_key
 # TELEGRAM_MASTER_BOT_TOKEN=  # optional
-# DATABASE_URL=postgresql://...  # set to managed PG connection string
+DATABASE_URL=postgresql://...  # required in production (managed PostgreSQL)
 MCP_SERVERS_CONFIG=
 ENVEOF
     echo "  ⚠️  Created .env with placeholders — edit with real keys!"

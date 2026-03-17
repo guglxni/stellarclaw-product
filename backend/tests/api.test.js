@@ -49,12 +49,70 @@ afterAll(async () => {
 // GET /health
 // ═══════════════════════════════════════════════════════════════════════════
 describe('GET /health', () => {
-    it('returns 200 with service info', async () => {
+    it('returns 200 with minimal status (no system details)', async () => {
         const res = await request(app)
             .get('/health')
             .expect(200);
 
-        expect(res.body.status).toMatch(/^(ok|degraded)$/); // bifrost may be unreachable in test
+        expect(res.body.status).toMatch(/^(ok|degraded)$/);
+        expect(res.body).toHaveProperty('checks');
+        expect(res.body.checks).toHaveProperty('db');
+        expect(res.body).toHaveProperty('ts');
+        // Sensitive details should NOT be exposed on public health
+        expect(res.body).not.toHaveProperty('memory');
+        expect(res.body).not.toHaveProperty('runningBots');
+        expect(res.body).not.toHaveProperty('version');
+        expect(res.body).not.toHaveProperty('env');
+    });
+
+    it('includes correct content-type', async () => {
+        const res = await request(app)
+            .get('/health')
+            .expect('Content-Type', /json/);
+
+        expect(res.body.status).toBeDefined();
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /readyz
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /readyz', () => {
+    it('returns 200 with db check', async () => {
+        const res = await request(app)
+            .get('/readyz')
+            .expect(200);
+
+        expect(res.body.status).toBe('ok');
+        expect(res.body.checks).toHaveProperty('db', true);
+        expect(res.body).toHaveProperty('ts');
+        // Should NOT expose service name or system details
+        expect(res.body).not.toHaveProperty('service');
+        expect(res.body).not.toHaveProperty('memory');
+    });
+
+    it('caches response for subsequent requests', async () => {
+        const res1 = await request(app).get('/readyz').expect(200);
+        const res2 = await request(app).get('/readyz').expect(200);
+        // Both should return the same cached timestamp (within 5s TTL)
+        expect(res1.body.ts).toBe(res2.body.ts);
+    });
+});
+
+describe('GET /admin/health', () => {
+    it('returns 401 without admin secret', async () => {
+        await request(app)
+            .get('/admin/health')
+            .expect(401);
+    });
+
+    it('returns detailed system info with admin secret', async () => {
+        const res = await request(app)
+            .get('/admin/health')
+            .set('X-Admin-Secret', 'test-admin-secret')
+            .expect(200);
+
+        expect(res.body.status).toMatch(/^(ok|degraded)$/);
         expect(res.body.service).toBe('LiveClaw Orchestrator');
         expect(res.body.version).toBe('2.0.0');
         expect(res.body).toHaveProperty('runningBots');
@@ -65,14 +123,6 @@ describe('GET /health', () => {
         expect(res.body.memory).toHaveProperty('totalMB');
         expect(res.body.memory).toHaveProperty('freeMB');
         expect(res.body).toHaveProperty('ts');
-    });
-
-    it('includes correct content-type', async () => {
-        const res = await request(app)
-            .get('/health')
-            .expect('Content-Type', /json/);
-
-        expect(res.body.status).toBeDefined();
     });
 });
 
@@ -473,6 +523,19 @@ describe('POST /deploy-bot', () => {
             .expect(400);
 
         expect(res.body.error).toMatch(/Invalid model/i);
+    });
+
+    it('accepts kimi-k2.5 as a valid model', async () => {
+        const res = await request(app)
+            .post('/deploy-bot')
+            .send({
+                userId: 'user-kimi',
+                telegramToken: '1234567890:ABCDEFghijklmnopqrstuvwxyz123456789',
+                model: 'kimi-k2.5',
+            });
+
+        expect(res.status).not.toBe(400);
+        expect(res.body.error || '').not.toMatch(/Invalid model/i);
     });
 
     it('rejects userId longer than 128 chars', async () => {
