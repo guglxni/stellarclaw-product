@@ -169,7 +169,6 @@ class PostgresBackend {
             idleTimeoutMillis,
             connectionTimeoutMillis,
             query_timeout: queryTimeoutMillis,
-            statement_timeout: queryTimeoutMillis,
             ssl: { rejectUnauthorized },
             application_name: process.env.PG_APP_NAME || 'liveclaw-orchestrator',
         };
