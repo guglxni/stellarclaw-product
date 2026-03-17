@@ -402,7 +402,11 @@ jobs:
             done
 
             if [ "$HEALTHY" = "false" ]; then
-              echo "::error::Health check failed after 5 attempts!"
+              echo "=== PM2 LOGS (last 30 lines) ==="
+              pm2 logs liveclaw-orchestrator --nostream --lines 30 2>&1 || true
+              echo "=== PM2 STATUS ==="
+              pm2 list 2>&1 || true
+              echo "::error::Health check failed after 8 attempts!"
               echo "=== ROLLING BACK ==="
               if [ -d "$RELEASE_DIR" ] && [ -f "$RELEASE_DIR/server.js" ]; then
                 cp "$RELEASE_DIR"/server.js "$RELEASE_DIR"/dodo.js \
