@@ -43,10 +43,10 @@ function getClient() {
 }
 
 // ─── Product IDs ─────────────────────────────────────────────────────────────
-// Standard plan: $12.99/mo
-// Apply EARLYCLAW promo code → Dodo applies 23.10% off → ~$9.99/mo (locked in, first 500)
+// Standard plan: $9.99/mo
+// Apply EARLYCLAW promo code → Dodo applies ~30.1% off → ~$6.99/mo (locked in, first 500)
 const PRODUCT_ID = process.env.DODO_PRODUCT_ID || '';
-// One-day trial: $0.99 one-time payment → 24h trialing access, then prompted to subscribe
+// Two-day trial: $0.99 one-time payment → 48h trialing access, then prompted to subscribe
 const TRIAL_PRODUCT_ID = process.env.DODO_TRIAL_PRODUCT_ID || '';
 
 // ─── Bifrost budget — unified $5.00/mo per subscriber ───────────────────────
@@ -81,6 +81,9 @@ async function createCheckoutSession(plan, userId, email, returnUrl, discountCod
         // so the webhook handler can confirm and assign the spot after payment clears
         metadata: { liveclaw_user_id: userId, plan, ...(earlyClaw && { early_bird: '1' }) },
         return_url: returnUrl || 'https://liveclaw.xyz?checkout=success',
+        // Enable UPI for Indian customers (Adaptive Currency must be on in Dodo dashboard).
+        // credit/debit cover all international cards + Rupay; upi_collect adds UPI QR/VPA.
+        allowed_payment_method_types: ['credit', 'debit', 'apple_pay', 'google_pay', 'upi_collect'],
     };
 
     if (discountCode) {
@@ -95,8 +98,8 @@ async function createCheckoutSession(plan, userId, email, returnUrl, discountCod
 }
 
 /**
- * Create a $0.99 one-day trial checkout session.
- * On payment.succeeded the webhook activates a 24-hour trialing subscription.
+ * Create a $0.99 two-day trial checkout session.
+ * On payment.succeeded the webhook activates a 48-hour trialing subscription.
  *
  * @param {string} userId          - Google sub
  * @param {string} email           - Customer email
@@ -118,6 +121,7 @@ async function createTrialCheckoutSession(userId, email, returnUrl, discountCode
             ...(discountCode && { beta_code: discountCode }),
         },
         return_url: returnUrl || 'https://liveclaw.xyz?checkout=trial-success',
+        allowed_payment_method_types: ['credit', 'debit', 'apple_pay', 'google_pay', 'upi_collect'],
     };
     if (discountCode) {
         params.discount_code = discountCode;

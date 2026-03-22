@@ -60,11 +60,11 @@ async function bifrostRequest(path, options = {}) {
  *   - Returns a `sk-bf-*` key that picobot uses as its OPENAI_API_KEY
  *
  * @param  {string} userId      - Unique user identifier
- * @param  {string} model       - Model name (e.g. 'minimax-m2.5', 'kimi-k2.5')
+ * @param  {string} model       - Model name (e.g. 'minimax-m2.7', 'minimax-m2.5', 'kimi-k2.5')
  * @param  {number} creditLimit - Starting budget in USD (default $0.05)
  * @returns {Promise<{id: string, key: string}>}
  */
-async function createVirtualKey(userId, model = 'minimax-m2.5', creditLimit = 0.05) {
+async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.05) {
     if (!userId || typeof userId !== 'string') {
         throw new TypeError('userId must be a non-empty string');
     }
@@ -211,6 +211,11 @@ function getGatewayUrl() {
  */
 function getProviderConfig(model) {
     const providers = {
+        'minimax-m2.7': {
+            provider: 'openrouter',
+            weight: 1.0,
+            allowed_models: ['minimax/minimax-m2.7'],
+        },
         'minimax-m2.5': {
             provider: 'openrouter',
             weight: 1.0,
@@ -223,7 +228,7 @@ function getProviderConfig(model) {
         },
     };
 
-    return providers[model] || providers['minimax-m2.5'];
+    return providers[model] || providers['minimax-m2.7'];
 }
 
 // ─── Exports ────────────────────────────────────────────────────────────────

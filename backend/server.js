@@ -9,7 +9,7 @@
  *  5. Manages Dodo Payments subscription lifecycle (checkout, portal, webhooks)
  *  6. Gracefully shuts down on SIGTERM/SIGINT
  *
- * Monetisation: Dodo Payments — $12.99/mo standard ($9.99 Early Claw offer w/ EARLYCLAW code) with 1-day trial.
+ * Monetisation: Dodo Payments — $9.99/mo standard ($6.99 Early Claw offer w/ EARLYCLAW code) with 2-day trial at $0.99.
  * MoR model: Dodo handles global taxes, invoicing, and checkout.
  */
 
@@ -97,6 +97,10 @@ const config = Object.freeze({
     scaleQueueOrchestration: parseBooleanEnv('SCALE_QUEUE_ORCHESTRATION', false),
     scaleQueueAsyncMode: parseBooleanEnv('SCALE_QUEUE_ASYNC_MODE', false),
     scaleQueuePollMs: parseInt(process.env.SCALE_QUEUE_POLL_MS, 10) || 1500,
+    // Vision MCP — image analysis tool injected into every picobot instance
+    openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+    visionDailyLimit: parseInt(process.env.VISION_DAILY_LIMIT || '80', 10),
+    visionModel: process.env.VISION_MODEL || 'qwen/qwen2.5-vl-72b-instruct:free',
 });
 
 const isProd = config.nodeEnv === 'production';
@@ -367,7 +371,7 @@ await db.exec(`
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id         TEXT    NOT NULL UNIQUE,
         pid             INTEGER NOT NULL,
-        model           TEXT    NOT NULL DEFAULT 'minimax-m2.5',
+        model           TEXT    NOT NULL DEFAULT 'minimax-m2.7',
         telegram_token  TEXT    NOT NULL,
         bifrost_vk_id   TEXT,
         bifrost_vk      TEXT    NOT NULL,
@@ -395,11 +399,19 @@ await db.exec(`
         ts       DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
-    CREATE INDEX IF NOT EXISTS idx_logs_user   ON event_logs(user_id, ts);
-    CREATE INDEX IF NOT EXISTS idx_logs_ts     ON event_logs(ts);
-    CREATE INDEX IF NOT EXISTS idx_logs_event_ts ON event_logs(event, ts);
-    CREATE INDEX IF NOT EXISTS idx_pe_user     ON processed_events(user_id);
+    CREATE TABLE IF NOT EXISTS vision_usage (
+        user_id TEXT NOT NULL,
+        day     TEXT NOT NULL,
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, day)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bots_status    ON bots(status);
+    CREATE INDEX IF NOT EXISTS idx_logs_user      ON event_logs(user_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_logs_ts        ON event_logs(ts);
+    CREATE INDEX IF NOT EXISTS idx_logs_event_ts  ON event_logs(event, ts);
+    CREATE INDEX IF NOT EXISTS idx_pe_user        ON processed_events(user_id);
+    CREATE INDEX IF NOT EXISTS idx_vision_user_day ON vision_usage(user_id, day);
 `);
 
 // ── Subscription & Referral Tables ──────────────────────────────────────────
@@ -601,19 +613,75 @@ stmtOrch = {
     // Populate the admin router placeholder now that all deps are ready
     const adminRouter = createAdminRouter({
         config, isProd, db, stmt, stmtSubs, stmtBeta,
-        logEvent, log, bifrost, asyncHandler, adminAuth, adminLoginLimiter,
+        logEvent, log, bifrost, dodo, asyncHandler, adminAuth, adminLoginLimiter,
         requestTelemetry, calcRequestWindowStats,
         vkUsageCache, romUsageCache,
         getDiskUsage, getProcessRssKB,
+        listPicobotPids, getDockerContainerStats,
+        decryptToken, spawnPicobot, encryptToken,
+        deactivateVirtualKeyWithRetry,
         MAX_CONCURRENT_BOTS,
     });
     adminRouterPlaceholder.use(adminRouter);
+
+    // Mount extracted route modules
+    const subscriptionRouter = createSubscriptionRouter({
+        config, isProd, db, stmt, stmtSubs, stmtBeta,
+        logEvent, log, dodo, asyncHandler, authMiddleware, deployLimiter, checkoutPerUser,
+    });
+    subscriptionRouterPlaceholder.use(subscriptionRouter);
+
+    const webhookRouter = createWebhookRouter({
+        db, stmt, stmtSubs, logEvent, log, dodo, bifrost,
+        asyncHandler, webhookLimiter,
+        deactivateVirtualKeyWithRetry,
+    });
+    webhookRouterPlaceholder.use(webhookRouter);
+
+    const botRouter = createBotRouter({
+        config, isProd, stmt, stmtSubs, stmtOrch,
+        logEvent, log, bifrost, asyncHandler, authMiddleware, adminAuth,
+        deployLimiter, deployPerUser, webhookLimiter,
+        runDeployCommand, runStopCommand, enqueueOrchestrationCommand,
+        formatCommandResponse, serializeJson,
+    });
+    botRouterPlaceholder.use(botRouter);
 } // end initDatabase
 
 function logEvent(userId, event, detail = null, ip = null) {
     stmt.insertLog(userId, event, typeof detail === 'object' ? JSON.stringify(detail) : detail, ip).catch(err => {
         log.system.error('logEvent failed', { error: err.message });
     });
+}
+
+// ─── Bifrost Circuit Breaker ─────────────────────────────────────────────
+// Retries VK deactivation up to 3 times with exponential backoff.
+// Logs all failures for admin visibility.
+async function deactivateVirtualKeyWithRetry(vkId, userId = 'system') {
+    const MAX_RETRIES = 3;
+    const BASE_DELAY_MS = 1000;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            await bifrost.deactivateVirtualKey(vkId);
+            return true;
+        } catch (err) {
+            log.deploy.error('Bifrost VK deactivation failed', {
+                vkId, attempt, maxRetries: MAX_RETRIES, error: err.message,
+            });
+
+            if (attempt < MAX_RETRIES) {
+                const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                logEvent(userId, 'bifrost_deactivation_failed', {
+                    vkId, attempts: MAX_RETRIES, lastError: err.message,
+                });
+                return false;
+            }
+        }
+    }
+    return false;
 }
 
 function httpError(statusCode, body) {
@@ -639,7 +707,7 @@ function parseJson(value, fallback) {
     }
 }
 
-async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.5', telegramAllowFrom = [], mcpServers = null, ip = null, verifiedUserId = null }) {
+async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7', telegramAllowFrom = [], mcpServers = null, ip = null, verifiedUserId = null }) {
     if (verifiedUserId && verifiedUserId !== userId) {
         throw httpError(403, { error: 'userId does not match authenticated user' });
     }
@@ -654,7 +722,7 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.5',
         throw httpError(400, { error: 'Invalid Telegram bot token format' });
     }
 
-    const ALLOWED_MODELS = ['minimax-m2.5', 'kimi-k2.5'];
+    const ALLOWED_MODELS = ['minimax-m2.7', 'minimax-m2.5', 'kimi-k2.5'];
     if (!ALLOWED_MODELS.includes(model)) {
         throw httpError(400, { error: `Invalid model. Allowed: ${ALLOWED_MODELS.join(', ')}` });
     }
@@ -713,9 +781,7 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.5',
     if (existing && existing.status === 'running') {
         try { process.kill(existing.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
         if (existing.bifrost_vk_id) {
-            try { await bifrost.deactivateVirtualKey(existing.bifrost_vk_id); } catch (err) {
-                log.deploy.error('Failed to deactivate old VK', { vkId: existing.bifrost_vk_id, error: err.message });
-            }
+            await deactivateVirtualKeyWithRetry(existing.bifrost_vk_id, userId);
         }
         await stmt.updateStatus('stopped', userId);
         logEvent(userId, 'existing_bot_stopped', { pid: existing.pid });
@@ -796,9 +862,7 @@ async function runStopCommand({ userId, verifiedUserId = null }) {
     try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
 
     if (bot.bifrost_vk_id) {
-        bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-            log.deploy.error('Failed to deactivate VK on stop', { vkId: bot.bifrost_vk_id, error: err.message });
-        });
+        deactivateVirtualKeyWithRetry(bot.bifrost_vk_id, userId);
     }
 
     await stmt.updateStatus('stopped', userId);
@@ -1019,6 +1083,53 @@ const adminLoginLimiter = rateLimit({
     skip: () => isTest,
 });
 
+// ─── Per-User Rate Limiters ────────────────────────────────────────────────
+// Prevents a single authenticated user from abusing deploy/checkout endpoints
+// even if they rotate IPs. Uses in-memory sliding window.
+const perUserWindows = new Map(); // userId → [timestamps]
+const PER_USER_CLEANUP_INTERVAL = 5 * 60 * 1000; // cleanup every 5 min
+
+function perUserRateLimit({ windowMs = 60000, max = 3, message = 'Too many requests' } = {}) {
+    return (req, res, next) => {
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId || isTest) return next();
+
+        const now = Date.now();
+        let timestamps = perUserWindows.get(userId);
+        if (!timestamps) {
+            timestamps = [];
+            perUserWindows.set(userId, timestamps);
+        }
+
+        // Remove expired timestamps
+        while (timestamps.length > 0 && timestamps[0] <= now - windowMs) {
+            timestamps.shift();
+        }
+
+        if (timestamps.length >= max) {
+            return res.status(429).json({ error: message });
+        }
+
+        timestamps.push(now);
+        next();
+    };
+}
+
+// Cleanup stale entries periodically
+const perUserCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [userId, timestamps] of perUserWindows) {
+        while (timestamps.length > 0 && timestamps[0] <= now - 120000) {
+            timestamps.shift();
+        }
+        if (timestamps.length === 0) perUserWindows.delete(userId);
+    }
+}, PER_USER_CLEANUP_INTERVAL);
+perUserCleanupTimer.unref();
+
+const deployPerUser = perUserRateLimit({ windowMs: 60000, max: 3, message: 'Too many deploy requests. Please try again in a minute.' });
+const checkoutPerUser = perUserRateLimit({ windowMs: 300000, max: 5, message: 'Too many checkout attempts. Please try again later.' });
+
 app.use(generalLimiter);
 
 // ─── Telegram Bot Token Verification ───────────────────────────────────────
@@ -1125,753 +1236,10 @@ app.post('/verify-telegram-token', deployLimiter, asyncHandler(authMiddleware), 
     });
 }));
 
-// ─── POST /create-checkout-session — Dodo Payments Checkout ─────────────────
-app.post('/create-checkout-session', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const { referralCode, promoCode } = req.body;
-    const plan = 'standard'; // unified plan
-    const userId = req.verifiedUserId || req.body.userId;
-    const email = req.verifiedEmail || req.body.email;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    // Check if user already has an active subscription
-    const existing = await stmtSubs.getByUserId(userId);
-    if (existing && ['active', 'trialing'].includes(existing.status)) {
-        return res.status(409).json({
-            error: 'You already have an active subscription',
-            plan: existing.plan,
-            status: existing.status,
-        });
-    }
-
-    // ── EARLYCLAW promo code validation ─────────────────────────────────────
-    // Count only confirmed-paying subscribers so abandoned checkouts never
-    // consume a spot. Spots are permanently assigned in the webhook handler
-    // once Dodo confirms the subscription is active/trialing.
-    let earlyBird = false;
-    let discountCode = null;
-    if (promoCode && typeof promoCode === 'string' && promoCode.toUpperCase() === 'EARLYCLAW') {
-        const usedCount = (await db.get(
-            "SELECT COUNT(*) as count FROM subscriptions WHERE early_bird = 1 AND status IN ('active','trialing','past_due')"
-        )).count;
-        if (usedCount >= 500) {
-            return res.status(410).json({
-                error: 'Early Claw offer has ended',
-                message: 'All 500 Early Claw spots have been claimed.',
-            });
-        }
-        earlyBird = true;
-        discountCode = 'EARLYCLAW'; // Dodo applies 23.10% off → ~$9.99/mo
-        logEvent(userId, 'promo_code_applied', { code: 'EARLYCLAW', spotsRemaining: 500 - usedCount - 1 });
-    }
-
-    // Handle referral code
-    if (referralCode && typeof referralCode === 'string') {
-        const referrer = await stmtSubs.getReferralByCode(referralCode.toUpperCase());
-        if (referrer && referrer.user_id !== userId) {
-            // Valid referral — track it
-            await stmtSubs.setReferredBy(referralCode.toUpperCase(), userId);
-            await stmtSubs.insertReferral(referrer.user_id, userId, referralCode.toUpperCase());
-            logEvent(userId, 'referral_applied', { code: referralCode, referrerId: referrer.user_id });
-        }
-    }
-
-    try {
-        const session = await dodo.createCheckoutSession(
-            plan, userId, email || `${userId}@liveclaw.xyz`,
-            'https://liveclaw.xyz?checkout=success',
-            discountCode,
-            earlyBird
-        );
-
-        // Ensure user has a subscription record (inactive until webhook confirms)
-        if (!existing) {
-            await stmtSubs.upsert({
-                user_id: userId,
-                dodo_customer_id: null,
-                dodo_subscription_id: null,
-                plan,
-                status: 'inactive',
-                current_period_start: null,
-                current_period_end: null,
-            });
-        }
-
-        // NOTE: early_bird = 1 is NOT set here — it is set in the webhook handler
-        // (subscription.active or payment.succeeded) once Dodo confirms payment,
-        // so abandoned checkouts never consume a promo spot.
-
-        logEvent(userId, 'checkout_session_created', { plan, sessionId: session.sessionId, earlyBird });
-
-        return res.json({
-            checkoutUrl: session.checkoutUrl,
-            sessionId: session.sessionId,
-            earlyBird,
-        });
-    } catch (err) {
-        log.checkout.error('Dodo checkout error', { error: err.message });
-        logEvent(userId, 'checkout_error', err.message);
-        return res.status(502).json({ error: 'Failed to create checkout session' });
-    }
-}));
-
-// ─── POST /create-portal-session — Dodo Customer Portal ────────────────────
-app.post('/create-portal-session', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const userId = req.verifiedUserId || req.body.userId;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    const sub = await stmtSubs.getByUserId(userId);
-    if (!sub || !sub.dodo_customer_id) {
-        return res.status(404).json({ error: 'No subscription found. Subscribe first.' });
-    }
-
-    try {
-        const portal = await dodo.createPortalSession(sub.dodo_customer_id);
-        logEvent(userId, 'portal_session_created');
-        return res.json({ portalUrl: portal.link });
-    } catch (err) {
-        log.checkout.error('Dodo portal error', { error: err.message });
-        return res.status(502).json({ error: 'Failed to create portal session' });
-    }
-}));
-
-// ─── GET /subscription/:userId — Subscription Status ───────────────────────
-app.get('/subscription/:userId', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-
-    // In production, ensure user can only check their own subscription
-    if (req.verifiedUserId && req.verifiedUserId !== userId) {
-        return res.status(403).json({ error: 'Cannot view another user\'s subscription' });
-    }
-
-    const sub = await stmtSubs.getByUserId(userId);
-    if (!sub) {
-        return res.json({
-            hasSubscription: false,
-            plan: null,
-            status: 'inactive',
-        });
-    }
-
-    return res.json({
-        hasSubscription: true,
-        plan: sub.plan,
-        status: sub.status,
-        currentPeriodEnd: sub.current_period_end,
-        earlyBird: !!sub.early_bird,
-        referralCode: sub.referral_code,
-        dodoCustomerId: sub.dodo_customer_id,
-    });
-}));
-
-// ─── POST /create-trial-checkout — $0.99 One-Day Trial Checkout ─────────────
-// Creates a Dodo one-time payment for the trial product ($0.99).
-// On payment.succeeded the webhook activates a 24h trialing subscription.
-app.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const userId = req.verifiedUserId || req.body.userId;
-    const email = req.verifiedEmail || req.body.email;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    // Block if user already has active/trialing access
-    const existing = await stmtSubs.getByUserId(userId);
-    if (existing && ['active', 'trialing'].includes(existing.status)) {
-        return res.status(409).json({
-            error: 'You already have an active subscription',
-            status: existing.status,
-        });
-    }
-
-    // Block if user has already used a trial (trial_ends_at was set at any point)
-    const usedTrial = await db.get(
-        'SELECT trial_ends_at FROM subscriptions WHERE user_id = ? AND trial_ends_at IS NOT NULL',
-        [userId]
-    );
-    if (usedTrial) {
-        return res.status(409).json({ error: 'Trial already used. Please subscribe to continue.' });
-    }
-
-    try {
-        const session = await dodo.createTrialCheckoutSession(
-            userId,
-            email || `${userId}@liveclaw.xyz`,
-            'https://liveclaw.xyz?checkout=trial-success'
-        );
-        logEvent(userId, 'trial_checkout_created', { sessionId: session.sessionId });
-        return res.json({ checkoutUrl: session.checkoutUrl, sessionId: session.sessionId });
-    } catch (err) {
-        log.checkout.error('Dodo trial checkout error', { error: err.message });
-        return res.status(502).json({ error: 'Failed to create trial checkout session' });
-    }
-}));
-
-// ─── GET /pricing — Public Pricing ──────────────────────────────────────────
-app.get('/pricing', asyncHandler(async (req, res) => {
-    const earlyBirdUsed = (await db.get(
-        "SELECT COUNT(*) as count FROM subscriptions WHERE early_bird = 1 AND status IN ('active','trialing','past_due')"
-    )).count;
-
-    // Check trial eligibility if userId is provided
-    let trialEligible = true;
-    const userId = req.query.userId;
-    if (userId && typeof userId === 'string') {
-        const usedTrial = await db.get(
-            'SELECT trial_ends_at FROM subscriptions WHERE user_id = ? AND trial_ends_at IS NOT NULL',
-            [userId]
-        );
-        if (usedTrial) trialEligible = false;
-    }
-
-    return res.json({
-        trialEligible,
-        plans: {
-            trial: {
-                id: 'trial',
-                name: 'LiveClaw Trial',
-                price: 0.99,
-                currency: 'usd',
-                interval: 'one-time',
-                duration: '24 hours',
-                features: [
-                    '24/7 AI agent on Telegram',
-                    'Custom personality (SOUL.md)',
-                    'Full access for 24 hours',
-                ],
-            },
-            standard: {
-                id: 'standard',
-                name: 'LiveClaw',
-                price: 12.99,
-                currency: 'usd',
-                interval: 'month',
-                bots: 1,
-                channels: ['telegram'],
-                features: [
-                    '24/7 AI agent on Telegram',
-                    'Custom personality (SOUL.md)',
-                    'Unlimited messages within budget',
-                    'Email support',
-                ],
-            },
-            earlyClaw: {
-                id: 'standard',
-                name: 'LiveClaw — Early Claw',
-                price: 9.99,
-                currency: 'usd',
-                interval: 'month',
-                bots: 1,
-                channels: ['telegram'],
-                promoCode: 'EARLYCLAW',
-                spotsRemaining: Math.max(0, 500 - earlyBirdUsed),
-                features: [
-                    '24/7 AI agent on Telegram',
-                    'Custom personality (SOUL.md)',
-                    'Unlimited messages within budget',
-                    'Email support',
-                    'Locked-in Early Claw pricing',
-                ],
-            },
-        },
-    });
-}));
-
-// ─── POST /redeem-beta — Redeem a Beta Access Code via Dodo Checkout ────────
-// Validates the beta code in our DB, then creates a Dodo trial checkout with
-// the code as a 100% discount coupon. Dodo handles billing ($0.99 - 100% = $0.00),
-// then fires payment.succeeded → webhook activates 24h trial.
-app.post('/redeem-beta', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const { betaCode } = req.body;
-    const userId = req.verifiedUserId || req.body.userId;
-    const email = req.verifiedEmail || req.body.email;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-    if (!betaCode || typeof betaCode !== 'string') {
-        return res.status(400).json({ error: 'betaCode is required' });
-    }
-
-    const code = betaCode.toUpperCase().trim();
-
-    // Validate format: XXXX-XXXX-XXXX (12 alphanumeric chars in 3 groups)
-    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
-        return res.status(400).json({ error: 'Invalid beta code format' });
-    }
-
-    // Check user doesn't already have an active/trialing subscription
-    const existing = await stmtSubs.getByUserId(userId);
-    if (existing && ['active', 'trialing'].includes(existing.status)) {
-        return res.status(409).json({
-            error: 'You already have an active subscription',
-            status: existing.status,
-        });
-    }
-
-    // Validate the beta code exists and is unclaimed in our DB
-    const record = await stmtBeta.getByCode(code);
-    if (!record) {
-        return res.status(404).json({ error: 'Beta code not found' });
-    }
-    if (record.redeemed_by) {
-        return res.status(410).json({ error: 'Beta code has already been used' });
-    }
-
-    // Atomically claim the code in our DB (prevents double-use)
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-    const ua = (req.headers['user-agent'] || '').slice(0, 256);
-    const changes = (await stmtBeta.redeem(userId, ip, ua, code)).changes;
-    if (changes === 0) {
-        return res.status(410).json({ error: 'Beta code has already been used' });
-    }
-
-    // Create a Dodo checkout for the trial product with this code as a 100% discount
-    try {
-        const session = await dodo.createTrialCheckoutSession(
-            userId,
-            email || `${userId}@liveclaw.xyz`,
-            'https://liveclaw.xyz?checkout=trial-success',
-            code  // beta code = Dodo discount code
-        );
-
-        // Track that this user used this beta code
-        await db.run(
-            'UPDATE subscriptions SET beta_code_used = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
-            [code, userId]
-        );
-
-        logEvent(userId, 'beta_code_redeemed', { code, sessionId: session.sessionId });
-
-        return res.json({
-            success: true,
-            checkoutUrl: session.checkoutUrl,
-            sessionId: session.sessionId,
-            message: 'Complete checkout to activate your 24-hour free trial.',
-        });
-    } catch (err) {
-        log.checkout.error('Beta redeem checkout error', { error: err.message });
-        // Roll back the DB claim so user can retry
-        await db.run(
-            'UPDATE beta_codes SET redeemed_by = NULL, redeemed_at = NULL, redeemed_ip = NULL, user_agent = NULL WHERE code = ? AND redeemed_by = ?',
-            [code, userId]
-        );
-        return res.status(502).json({ error: 'Failed to create trial checkout session' });
-    }
-}));
-
-// ─── POST /referral/generate — Generate Referral Code ───────────────────────
-app.post('/referral/generate', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const userId = req.verifiedUserId || req.body.userId;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    const sub = await stmtSubs.getByUserId(userId);
-    if (!sub) {
-        return res.status(404).json({ error: 'No subscription found. Subscribe first.' });
-    }
-
-    // Return existing code if already generated
-    if (sub.referral_code) {
-        return res.json({ referralCode: sub.referral_code });
-    }
-
-    // Generate unique code: LC-XXXXX (no I/O/0/1 confusion)
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let code;
-    let attempts = 0;
-    do {
-        code = 'LC-';
-        for (let i = 0; i < 5; i++) code += chars[crypto.randomInt(chars.length)];
-        attempts++;
-    } while (await stmtSubs.getReferralByCode(code) && attempts < 10);
-
-    if (attempts >= 10) {
-        return res.status(500).json({ error: 'Failed to generate unique code' });
-    }
-
-    await stmtSubs.setReferralCode(code, userId);
-    logEvent(userId, 'referral_code_generated', { code });
-
-    return res.json({ referralCode: code });
-}));
-
-// ─── POST /referral/apply — Apply Referral Code ────────────────────────────
-app.post('/referral/apply', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const userId = req.verifiedUserId || req.body.userId;
-    const { referralCode } = req.body;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-    if (!referralCode || typeof referralCode !== 'string') {
-        return res.status(400).json({ error: 'referralCode is required' });
-    }
-
-    const code = referralCode.toUpperCase().trim();
-
-    // Validate code format
-    if (!/^LC-[A-Z2-9]{5}$/.test(code)) {
-        return res.status(400).json({ error: 'Invalid referral code format' });
-    }
-
-    // Find referrer
-    const referrer = await stmtSubs.getReferralByCode(code);
-    if (!referrer) {
-        return res.status(404).json({ error: 'Referral code not found' });
-    }
-
-    // Can't refer yourself
-    if (referrer.user_id === userId) {
-        return res.status(400).json({ error: 'Cannot use your own referral code' });
-    }
-
-    // Ensure user hasn't already been referred
-    const userSub = await stmtSubs.getByUserId(userId);
-    if (userSub && userSub.referred_by) {
-        return res.status(409).json({ error: 'You have already used a referral code' });
-    }
-
-    // Ensure user has a subscription record
-    if (!userSub) {
-        await stmtSubs.upsert({
-            user_id: userId,
-            dodo_customer_id: null,
-            dodo_subscription_id: null,
-            plan: 'standard',
-            status: 'inactive',
-            current_period_start: null,
-            current_period_end: null,
-        });
-    }
-
-    await stmtSubs.setReferredBy(code, userId);
-    await stmtSubs.insertReferral(referrer.user_id, userId, code);
-    logEvent(userId, 'referral_applied', { code, referrerId: referrer.user_id });
-
-    return res.json({ success: true, message: 'Referral code applied successfully' });
-}));
-
-// ─── POST /webhook/dodo — Dodo Payments Lifecycle Webhook ───────────────────
-// Receives webhook events from Dodo Payments for subscription and payment lifecycle.
-// Events: subscription.active, subscription.on_hold, subscription.cancelled,
-//         subscription.plan_changed, subscription.renewed, payment.succeeded, payment.failed
-app.post('/webhook/dodo', webhookLimiter, asyncHandler(async (req, res) => {
-    let event;
-    try {
-        // rawBody saved by express.json verify callback
-        const rawBody = req.rawBody;
-        if (!rawBody) {
-            log.webhook.error('Missing raw body — cannot verify signature');
-            return res.status(400).json({ error: 'Missing raw body' });
-        }
-        event = dodo.verifyWebhookEvent(rawBody, req.headers);
-    } catch (err) {
-        log.webhook.error('Signature verification failed', { error: err.message });
-        return res.status(401).json({ error: 'Invalid webhook signature' });
-    }
-
-    const eventType = event.type;
-    const data = event.data;
-    log.webhook.info('Event received', { eventType });
-
-    // ── Idempotency: deduplicate by webhook-id header ───────────────────
-    const webhookId = req.headers['webhook-id'];
-    if (webhookId) {
-        const dedupKey = `dodo-${webhookId}`;
-        if (await stmt.checkEvent(dedupKey)) {
-            log.webhook.info('Duplicate webhook skipped', { dedupKey });
-            return res.json({ received: true });
-        }
-        // Mark as processed immediately to prevent concurrent duplicates
-        await stmt.markEvent(dedupKey, data?.metadata?.liveclaw_user_id || 'system', 'dodo_webhook');
-    }
-
-    // Extract userId from subscription metadata
-    const userId = data?.metadata?.liveclaw_user_id;
-    const subId = data?.subscription_id;
-    const customerId = data?.customer?.customer_id;
-
-    switch (eventType) {
-        case 'subscription.active':
-        case 'subscription.renewed': {
-            if (!userId && !subId) break;
-            const target = userId || (subId ? (await stmtSubs.getByDodoSubId(subId))?.user_id : null);
-            if (target) {
-                await stmtSubs.upsert({
-                    user_id: target,
-                    dodo_customer_id: customerId || null,
-                    dodo_subscription_id: subId || null,
-                    plan: 'standard',
-                    status: 'active',
-                    current_period_start: data.previous_billing_date || new Date().toISOString(),
-                    current_period_end: data.next_billing_date || null,
-                });
-
-                // Assign early bird spot now that payment is confirmed.
-                // Re-check the cap here (better-sqlite3 is sync so this is
-                // serialised — no race between concurrent webhook deliveries).
-                if (data?.metadata?.early_bird === '1') {
-                    // Atomic assignment: only update if the cap hasn't been reached yet.
-                    // The correlated sub-SELECT runs within the UPDATE statement, so under
-                    // PostgreSQL row-locking semantics the second concurrent UPDATE on the
-                    // same user_id row will re-evaluate after the first commits.
-                    // For different-user concurrent webhooks, the sub-SELECT provides a
-                    // best-effort guard; true atomicity across different rows requires a
-                    // serializable transaction but the 500-spot window makes collisions
-                    // vanishingly rare in practice.
-                    const result = await db.run(
-                        `UPDATE subscriptions SET early_bird = 1, updated_at = CURRENT_TIMESTAMP
-                         WHERE user_id = ? AND early_bird = 0
-                         AND (SELECT COUNT(*) FROM subscriptions
-                              WHERE early_bird = 1 AND status IN ('active','trialing','past_due')) < 500`,
-                        [target]
-                    );
-                    if (result.changes > 0) {
-                        logEvent(target, 'early_claw_spot_assigned', {});
-                    } else {
-                        logEvent(target, 'early_claw_cap_exceeded_at_webhook', {});
-                    }
-                }
-
-                logEvent(target, 'subscription_activated', { subId, eventType });
-            }
-            break;
-        }
-
-        case 'subscription.on_hold':
-        case 'subscription.failed': {
-            const target = userId || (subId ? (await stmtSubs.getByDodoSubId(subId))?.user_id : null);
-            if (target) {
-                await stmtSubs.updateStatus('past_due', target);
-                logEvent(target, 'subscription_past_due', { subId, eventType });
-            }
-            break;
-        }
-
-        case 'subscription.cancelled':
-        case 'subscription.expired': {
-            const target = userId || (subId ? (await stmtSubs.getByDodoSubId(subId))?.user_id : null);
-            if (target) {
-                await stmtSubs.updateStatus('cancelled', target);
-                logEvent(target, 'subscription_cancelled', { subId, eventType });
-
-                // Stop any running bots for this user
-                const bot = await stmt.getBot(target);
-                if (bot && bot.status === 'running') {
-                    try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
-                    if (bot.bifrost_vk_id) {
-                        bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-                            log.webhook.error('Failed to deactivate VK', { vkId: bot.bifrost_vk_id, error: err.message });
-                        });
-                    }
-                    await stmt.updateStatus('stopped', target);
-                    logEvent(target, 'bot_stopped_subscription_cancelled', { pid: bot.pid });
-                }
-            }
-            break;
-        }
-
-        case 'subscription.updated': {
-            const target = userId || (subId ? (await stmtSubs.getByDodoSubId(subId))?.user_id : null);
-            if (target) {
-                // Sync period dates if provided
-                if (data.next_billing_date) {
-                    await stmtSubs.upsert({
-                        user_id: target,
-                        dodo_customer_id: customerId || null,
-                        dodo_subscription_id: subId || null,
-                        plan: 'standard',
-                        status: 'active',
-                        current_period_start: data.previous_billing_date || null,
-                        current_period_end: data.next_billing_date,
-                    });
-                }
-                logEvent(target, 'subscription_updated', { subId });
-            }
-            break;
-        }
-
-        case 'subscription.plan_changed': {
-            const target = userId || (subId ? (await stmtSubs.getByDodoSubId(subId))?.user_id : null);
-            if (target) {
-                // Unified plan — log the event but plan stays 'standard'
-                logEvent(target, 'subscription_plan_changed', { subId });
-            }
-            break;
-        }
-
-        case 'payment.succeeded': {
-            // Log successful payment
-            const paymentUserId = data?.metadata?.liveclaw_user_id;
-            if (paymentUserId) {
-                const paymentId = data?.payment_id || `dodo-${Date.now()}`;
-                const amountCents = data?.total_amount || 0;
-                const currency = data?.currency || 'usd';
-                const plan = data?.metadata?.plan || 'standard';
-                try {
-                    await stmtSubs.insertPayment(paymentUserId, paymentId, amountCents, currency, plan, 'paid');
-                } catch (_) { /* duplicate payment_id — idempotent */ }
-                logEvent(paymentUserId, 'payment_succeeded', { paymentId, amountCents, currency, plan });
-
-                // ── Activate 24-hour trial if this was a trial product payment ──
-                if (plan === 'trial') {
-                    const trialEndsAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-                    await stmtSubs.upsert({
-                        user_id: paymentUserId,
-                        dodo_customer_id: data?.customer?.customer_id || null,
-                        dodo_subscription_id: null,
-                        plan: 'standard',
-                        status: 'trialing',
-                        current_period_start: new Date().toISOString(),
-                        current_period_end: trialEndsAt,
-                    });
-                    await db.run(
-                        'UPDATE subscriptions SET trial_ends_at = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
-                        [trialEndsAt, paymentUserId]
-                    );
-
-                    // Resolve which beta code (if any) was claimed by this user and record it
-                    const betaCodeRecord = await db.get(
-                        'SELECT code FROM beta_codes WHERE redeemed_by = ?',
-                        [paymentUserId]
-                    );
-                    if (betaCodeRecord) {
-                        await stmtSubs.setBetaCodeUsed(betaCodeRecord.code, paymentUserId);
-                        logEvent(paymentUserId, 'trial_activated', { trialEndsAt, paymentId, betaCode: betaCodeRecord.code });
-                    } else {
-                        logEvent(paymentUserId, 'trial_activated', { trialEndsAt, paymentId });
-                    }
-                    break;
-                }
-
-                // Check if referral should be converted (subscription payments only)
-                const pendingRef = await stmtSubs.getPendingReferral(paymentUserId);
-                if (pendingRef) {
-                    await stmtSubs.updateReferralStatus('converted', 'converted', pendingRef.id);
-                    logEvent(pendingRef.referrer_id, 'referral_converted', { refereeId: paymentUserId });
-
-                    // Check if referrer qualifies for reward (3 converted referrals)
-                    const converted = await stmtSubs.countConvertedReferrals(pendingRef.referrer_id);
-                    const rewarded = await stmtSubs.countRewardedReferrals(pendingRef.referrer_id);
-                    if (converted.count >= 3 && rewarded.count < 4) {
-                        logEvent(pendingRef.referrer_id, 'referral_reward_eligible', {
-                            convertedCount: converted.count,
-                            rewardedCount: rewarded.count,
-                        });
-                    }
-                }
-            }
-            break;
-        }
-
-        case 'payment.failed': {
-            const paymentUserId = data?.metadata?.liveclaw_user_id;
-            if (paymentUserId) {
-                logEvent(paymentUserId, 'payment_failed', { paymentId: data?.payment_id });
-            }
-            break;
-        }
-
-        default:
-            log.webhook.info('Unhandled event type', { eventType });
-    }
-
-    return res.json({ received: true });
-}));
-
-// ─── POST /register-chat — Register Telegram Chat ID for Push Notifications ──
-// Called by picobot processes on the same server. Requires ADMIN_SECRET for
-// authentication (picobot-facing internal API).
-app.post('/register-chat', webhookLimiter, adminAuth, asyncHandler(async (req, res) => {
-    const { userId, chatId } = req.body;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-    if (!chatId || (typeof chatId !== 'string' && typeof chatId !== 'number')) {
-        return res.status(400).json({ error: 'chatId is required' });
-    }
-
-    const bot = await stmt.getBot(userId);
-    if (!bot) {
-        return res.status(404).json({ error: 'No bot found for this user' });
-    }
-
-    await stmt.updateChatId(String(chatId), userId);
-    logEvent(userId, 'chat_id_registered', { chatId: String(chatId) });
-
-    return res.json({ success: true });
-}));
-
-// ─── POST /notify-low-credits — Send Inline Keyboard Refuel Prompt ──────────
-// Called internally when Bifrost returns budget_exceeded.
-// Sends an inline keyboard message via the master bot API to the user's Telegram chat.
-// Requires ADMIN_SECRET for authentication (internal API).
-app.post('/notify-low-credits', webhookLimiter, adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.body;
-
-    if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    const bot = await stmt.getBot(userId);
-    if (!bot) {
-        return res.status(404).json({ error: 'No bot found for this user' });
-    }
-
-    if (!bot.telegram_chat_id) {
-        return res.status(400).json({ error: 'No chat ID registered. Bot must call /register-chat first.' });
-    }
-
-    if (!config.masterBotToken) {
-        return res.status(500).json({ error: 'TELEGRAM_MASTER_BOT_TOKEN not configured' });
-    }
-
-    // Build inline keyboard — link to website for subscription management
-    const inlineKeyboard = {
-        inline_keyboard: [
-            [
-                { text: '📊 Manage Subscription', url: 'https://liveclaw.xyz' },
-            ],
-        ],
-    };
-
-    const result = await fetch(`https://api.telegram.org/bot${config.masterBotToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            chat_id: bot.telegram_chat_id,
-            text: '⚡ *Your Claw agent is running low on credits!*\n\nYour AI budget for this billing cycle is nearly depleted. It will automatically reset on your next billing date.\n\nTap below to check your subscription status.',
-            parse_mode: 'Markdown',
-            reply_markup: inlineKeyboard,
-        }),
-    });
-
-    const data = await result.json();
-
-    if (data.ok) {
-        logEvent(userId, 'low_credit_notification_sent', { chatId: bot.telegram_chat_id });
-        return res.json({ success: true, messageId: data.result.message_id });
-    }
-
-    log.system.error('Telegram API error', { error: data.description });
-    return res.status(502).json({ error: 'Failed to send notification', detail: data.description });
-}));
-
-
-
 // ─── Spawn picobot ──────────────────────────────────────────────────────────
 // picobot reads ~/.picobot/config.json — env vars only work in Docker.
 // We generate a per-user config.json in an isolated HOME directory.
-function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax-m2.5', telegramAllowFrom = [], userMcpServers = null) {
+function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax-m2.7', telegramAllowFrom = [], userMcpServers = null) {
     // Sanitize userId to prevent path traversal (defense-in-depth)
     if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
         throw new Error(`Invalid userId for picobot spawn: ${userId}`);
@@ -1909,10 +1277,28 @@ function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax
         },
     };
 
-    // ── MCP servers — merge global defaults + per-user overrides ────────────
+    // ── MCP servers — vision built-in + global defaults + per-user overrides ─
     let mcpServers = {};
+
+    // Vision MCP server — injected for every bot when OPENROUTER_API_KEY is set.
+    // Runs as a child of picobot, gets userId so the DB cap is per-user.
+    if (config.openrouterApiKey) {
+        mcpServers.vision = {
+            command: 'node',
+            args: [path.join(__dirname, 'vision-mcp.js')],
+            env: {
+                VISION_USER_ID: userId,
+                VISION_DAILY_LIMIT: String(config.visionDailyLimit),
+                VISION_MODEL: config.visionModel,
+                OPENROUTER_API_KEY: config.openrouterApiKey,
+                DB_PATH: config.dbPath,
+                ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
+            },
+        };
+    }
+
     if (config.mcpServersConfig) {
-        try { mcpServers = JSON.parse(config.mcpServersConfig); } catch (_) { /* invalid JSON — skip */ }
+        try { mcpServers = { ...mcpServers, ...JSON.parse(config.mcpServersConfig) }; } catch (_) { /* invalid JSON — skip */ }
     }
     if (userMcpServers && typeof userMcpServers === 'object') {
         mcpServers = { ...mcpServers, ...userMcpServers };
@@ -1955,138 +1341,6 @@ function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax
 
     return child.pid;
 }
-
-// ─── POST /deploy-bot ───────────────────────────────────────────────────────
-app.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const payload = {
-        userId: req.body.userId,
-        telegramToken: req.body.telegramToken,
-        model: req.body.model || 'minimax-m2.5',
-        telegramAllowFrom: req.body.telegramAllowFrom || [],
-        mcpServers: req.body.mcpServers || null,
-        ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress,
-        verifiedUserId: req.verifiedUserId || null,
-    };
-
-    if (!payload.userId || typeof payload.userId !== 'string' || payload.userId.length > 128) {
-        return res.status(400).json({ error: 'userId is required (string, max 128 chars)' });
-    }
-
-    let commandId = null;
-    if (config.scaleQueueOrchestration) {
-        commandId = await enqueueOrchestrationCommand('deploy', payload.userId, payload);
-        logEvent(payload.userId, 'deploy_enqueued', { commandId, asyncMode: config.scaleQueueAsyncMode }, payload.ip);
-
-        if (config.scaleQueueAsyncMode) {
-            return res.status(202).json({
-                queued: true,
-                commandId,
-                status: 'queued',
-                message: 'Deploy request queued for asynchronous processing.',
-            });
-        }
-
-        await stmtOrch.markRunning(commandId);
-    }
-
-    try {
-        const result = await runDeployCommand(payload);
-        if (commandId) {
-            await stmtOrch.markCompleted(serializeJson(result), commandId);
-        }
-        return res.status(201).json(result);
-    } catch (err) {
-        if (commandId) {
-            await stmtOrch.markFailed(serializeJson(err.body || { error: err.message }), commandId);
-        }
-        return res.status(err.statusCode || 500).json(err.body || { error: isProd ? 'Internal server error' : err.message });
-    }
-}));
-
-// ─── POST /stop-bot ─────────────────────────────────────────────────────────
-app.post('/stop-bot', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const payload = {
-        userId: req.body.userId,
-        verifiedUserId: req.verifiedUserId || null,
-    };
-
-    if (!payload.userId || typeof payload.userId !== 'string') {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    let commandId = null;
-    if (config.scaleQueueOrchestration) {
-        commandId = await enqueueOrchestrationCommand('stop', payload.userId, payload);
-        logEvent(payload.userId, 'stop_enqueued', { commandId, asyncMode: config.scaleQueueAsyncMode });
-
-        if (config.scaleQueueAsyncMode) {
-            return res.status(202).json({
-                queued: true,
-                commandId,
-                status: 'queued',
-                message: 'Stop request queued for asynchronous processing.',
-            });
-        }
-
-        await stmtOrch.markRunning(commandId);
-    }
-
-    try {
-        const result = await runStopCommand(payload);
-        if (commandId) {
-            await stmtOrch.markCompleted(serializeJson(result), commandId);
-        }
-        return res.json(result);
-    } catch (err) {
-        if (commandId) {
-            await stmtOrch.markFailed(serializeJson(err.body || { error: err.message }), commandId);
-        }
-        return res.status(err.statusCode || 500).json(err.body || { error: isProd ? 'Internal server error' : err.message });
-    }
-}));
-
-// ─── GET /orchestration/commands/:commandId ───────────────────────────────
-app.get('/orchestration/commands/:commandId', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const command = await stmtOrch.getById(req.params.commandId);
-    if (!command) return res.status(404).json({ error: 'Command not found' });
-
-    if (req.verifiedUserId && req.verifiedUserId !== command.user_id) {
-        return res.status(403).json({ error: 'Forbidden' });
-    }
-
-    return res.json(formatCommandResponse(command));
-}));
-
-// ─── GET /status/:userId ────────────────────────────────────────────────────
-app.get('/status/:userId', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    // IDOR: only the authenticated user may query their own bot status
-    if (req.verifiedUserId && req.verifiedUserId !== userId) {
-        return res.status(403).json({ error: 'Forbidden' });
-    }
-    const bot = await stmt.getBot(userId);
-    if (!bot) return res.status(404).json({ error: 'No bot found' });
-
-    let alive = false;
-    try { process.kill(bot.pid, 0); alive = true; } catch (_) { /* not running */ }
-
-    // Auto-detect crashed bots
-    if (bot.status === 'running' && !alive) {
-        await stmt.updateStatus('crashed', userId);
-        bot.status = 'crashed';
-    }
-
-    return res.json({
-        userId: bot.user_id,
-        pid: bot.pid,
-        model: bot.model,
-        status: bot.status,
-        creditLimit: bot.credit_limit,
-        creditDepleted: bot.credit_limit <= 0.001, // flag for frontend warning
-        createdAt: bot.created_at,
-        alive,
-    });
-}));
 
 // ─── GET /readyz ────────────────────────────────────────────────────────────
 // Minimal readiness probe: verifies API can reach its primary datastore.
@@ -2180,11 +1434,12 @@ function adminAuth(req, res, next) {
     return res.status(401).json({ error: 'Unauthorized' });
 }
 
-// ─── Admin Routes (extracted to routes/admin.js) ───────────────────────────
-// Admin login, health, and dashboard-live are mounted via the admin router.
-// The remaining admin routes below will be migrated incrementally.
+// ─── Route Modules (extracted from server.js) ──────────────────────────────
 const { createAdminRouter } = require('./routes/admin');
-// Note: admin router is mounted later in initDatabase() after db/stmt are ready.
+const { createSubscriptionRouter } = require('./routes/subscriptions');
+const { createWebhookRouter } = require('./routes/webhooks');
+const { createBotRouter } = require('./routes/bots');
+// Note: routers are mounted later in initDatabase() after db/stmt are ready.
 
 function calcRequestWindowStats(windowMs) {
     const now = Date.now();
@@ -2209,990 +1464,15 @@ function calcRequestWindowStats(windowMs) {
     };
 }
 
-// ─── GET /admin/dashboard-live (MOVED to routes/admin.js) ───────────────────
-// This route is now served by the admin router mounted via adminRouterPlaceholder.
-app.get('/admin/dashboard-live', adminAuth, asyncHandler(async (req, res) => {
-    const paymentsLimit = Math.min(Math.max(parseInt(req.query.paymentsLimit, 10) || 50, 1), 200);
-    const eventsLimit = Math.min(Math.max(parseInt(req.query.eventsLimit, 10) || 50, 1), 300);
-
-    const [
-        bots,
-        botCount,
-        runningCount,
-        stoppedCount,
-        crashedCount,
-        activeSubs,
-        trialingSubs,
-        pastDueSubs,
-        cancelledSubs,
-        totalPayments,
-        paidRevenue,
-        paymentRows,
-        eventRows,
-        earlyBirdCount,
-        trialEndingSoonCount,
-        betaTotalRow,
-        betaUsedRow,
-        betaAllRows,
-    ] = await Promise.all([
-        db.all('SELECT user_id, pid, model, status, credit_limit, bifrost_vk_id, telegram_chat_id, created_at, updated_at FROM bots ORDER BY created_at DESC'),
-        db.get('SELECT COUNT(*) as c FROM bots'),
-        db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'running'"),
-        db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'stopped'"),
-        db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'crashed'"),
-        db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'active'"),
-        db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'trialing'"),
-        db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'past_due'"),
-        db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'cancelled'"),
-        db.get('SELECT COUNT(*) as c FROM payments'),
-        db.get("SELECT COALESCE(SUM(amount_cents), 0) as c FROM payments WHERE status = 'paid'"),
-        db.all(
-            'SELECT user_id, dodo_payment_id, amount_cents, currency, plan, status, created_at FROM payments ORDER BY created_at DESC LIMIT ?',
-            [paymentsLimit]
-        ),
-        db.all('SELECT id, user_id, event, detail, ip, ts FROM event_logs ORDER BY ts DESC LIMIT ?', [eventsLimit]),
-        db.get("SELECT COUNT(*) as c FROM subscriptions WHERE early_bird = 1 AND status IN ('active','trialing','past_due')"),
-        db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'trialing' AND trial_ends_at IS NOT NULL AND trial_ends_at < datetime('now', '+7 days')"),
-        stmtBeta.countTotal(),
-        stmtBeta.countUsed(),
-        stmtBeta.listAll(),
-    ]);
-
-    // OS metrics
-    const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
-    const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
-    const loadAvg = os.loadavg();
-
-    let disk = { totalGB: null, usedGB: null, availGB: null, usedPct: null };
-    const diskResult = getDiskUsage();
-    if (diskResult) disk = diskResult;
-
-    // Health checks
-    let dbOk = true;
-    try { await db.get('SELECT 1 as ok'); } catch (_) { dbOk = false; }
-
-    let bifrostOk = false;
-    try {
-        const bfRes = await fetch(`${config.bifrostBase}/health`, { signal: AbortSignal.timeout(2500) });
-        bifrostOk = bfRes.ok;
-    } catch (_) { /* unreachable */ }
-
-    // Pre-fetch Bifrost VK usage for all bots in parallel (30s cache per vkId)
-    const vkUsageMap = new Map();
-    await Promise.all(
-        bots
-            .filter(b => b.bifrost_vk_id)
-            .map(async (b) => {
-                const cached = vkUsageCache.get(b.bifrost_vk_id);
-                if (cached && (Date.now() - cached.ts) < 30000) {
-                    vkUsageMap.set(b.bifrost_vk_id, cached.value);
-                    return;
-                }
-                try {
-                    const usage = await bifrost.getVirtualKeyUsage(b.bifrost_vk_id);
-                    vkUsageCache.set(b.bifrost_vk_id, { value: usage, ts: Date.now() });
-                    vkUsageMap.set(b.bifrost_vk_id, usage);
-                } catch (_) { /* Bifrost unreachable or VK not found */ }
-            })
-    );
-
-    // Instance-level telemetry (RAM + workspace disk + LLM cost)
-    const instances = [];
-    for (const bot of bots) {
-        let alive = false;
-        let rssMB = null;
-        try {
-            process.kill(bot.pid, 0);
-            alive = true;
-            const rssKB = getProcessRssKB(bot.pid);
-                if (rssKB !== null) rssMB = Math.round(rssKB / 1024);
-        } catch (_) { /* dead process */ }
-
-        let romMB = 0;
-        const cachedRom = romUsageCache.get(bot.user_id);
-        const romFresh = cachedRom && (Date.now() - cachedRom.ts) < 30 * 1000;
-        if (romFresh) {
-            romMB = cachedRom.value;
-        } else {
-            try {
-                const userPath = path.resolve(config.botsDir, String(bot.user_id || ''));
-                const duOut = execFileSync('du', ['-sk', userPath], { timeout: 1200 }).toString().trim();
-                const kb = parseInt(duOut.split(/\s+/)[0], 10) || 0;
-                romMB = Math.round((kb / 1024) * 10) / 10;
-                romUsageCache.set(bot.user_id, { value: romMB, ts: Date.now() });
-            } catch (_) { /* workspace missing */ }
-        }
-
-        const vkUsage = bot.bifrost_vk_id ? (vkUsageMap.get(bot.bifrost_vk_id) || null) : null;
-
-        instances.push({
-            userId: bot.user_id,
-            pid: bot.pid,
-            model: bot.model,
-            status: bot.status,
-            alive,
-            rssMB,
-            romMB,
-            llmSpentUsd: vkUsage ? vkUsage.spentUsd : null,
-            llmBudgetUsd: vkUsage ? vkUsage.limitUsd : null,
-            llmUsedPct: (vkUsage && vkUsage.limitUsd > 0) ? Math.round((vkUsage.spentUsd / vkUsage.limitUsd) * 100) : null,
-            creditRemaining: parseFloat((bot.credit_limit || 0).toFixed(4)),
-            hasTelegramChat: !!bot.telegram_chat_id,
-            hasBifrostKey: !!bot.bifrost_vk_id,
-            createdAt: bot.created_at,
-            updatedAt: bot.updated_at,
-        });
-    }
-
-    const live1m = calcRequestWindowStats(60 * 1000);
-    const live5m = calcRequestWindowStats(5 * 60 * 1000);
-
-    const mrrCents = (activeSubs.c * 1299);
-    const arrCents = mrrCents * 12;
-
-    return res.json({
-        ts: new Date().toISOString(),
-        health: {
-            overall: dbOk ? (bifrostOk ? 'ok' : 'degraded') : 'critical',
-            checks: { db: dbOk, bifrost: bifrostOk, disk: (disk.usedPct || 0) < 90 },
-        },
-        traffic: {
-            sinceStartTotal: requestTelemetry.total,
-            sinceStart5xx: requestTelemetry.errors5xx,
-            byStatusClass: requestTelemetry.byClass,
-            last1m: live1m,
-            last5m: live5m,
-        },
-        system: {
-            uptimeSeconds: Math.round(process.uptime()),
-            node: {
-                version: process.version,
-                pid: process.pid,
-                rssMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
-                heapUsedMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-                heapTotalMB: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
-            },
-            os: {
-                platform: os.platform(),
-                arch: os.arch(),
-                hostname: os.hostname(),
-                cpuCount: os.cpus().length,
-                loadAvg: {
-                    '1m': parseFloat(loadAvg[0].toFixed(2)),
-                    '5m': parseFloat(loadAvg[1].toFixed(2)),
-                    '15m': parseFloat(loadAvg[2].toFixed(2)),
-                },
-                memory: {
-                    totalMB: totalMemMB,
-                    freeMB: freeMemMB,
-                    usedPct: Math.round(((totalMemMB - freeMemMB) / totalMemMB) * 100),
-                },
-                disk,
-            },
-        },
-        agents: {
-            total: botCount.c,
-            running: runningCount.c,
-            stopped: stoppedCount.c,
-            crashed: crashedCount.c,
-            instances,
-        },
-        billing: {
-            subscriptions: {
-                active: activeSubs.c,
-                trialing: trialingSubs.c,
-                pastDue: pastDueSubs.c,
-                cancelled: cancelledSubs.c,
-                earlyBird: earlyBirdCount.c,
-                trialEndingSoon: trialEndingSoonCount.c,
-                total: activeSubs.c + trialingSubs.c + pastDueSubs.c + cancelledSubs.c,
-            },
-            beta: {
-                total: betaTotalRow?.count || 0,
-                used: betaUsedRow?.count || 0,
-                available: (betaTotalRow?.count || 0) - (betaUsedRow?.count || 0),
-                recentRedemptions: (betaAllRows || [])
-                    .filter(r => r.redeemed_at)
-                    .slice(-20)
-                    .reverse()
-                    .map(r => ({
-                        code: r.code,
-                        redeemedBy: r.redeemed_by,
-                        redeemedAt: r.redeemed_at,
-                        ip: r.redeemed_ip,
-                    })),
-            },
-            payments: {
-                totalCount: totalPayments.c,
-                paidRevenueUsd: parseFloat(((paidRevenue.c || 0) / 100).toFixed(2)),
-                mrrUsd: parseFloat((mrrCents / 100).toFixed(2)),
-                arrUsd: parseFloat((arrCents / 100).toFixed(2)),
-                arpuUsd: activeSubs.c > 0 ? parseFloat((mrrCents / activeSubs.c / 100).toFixed(2)) : 0,
-                recent: paymentRows.map(p => ({
-                    userId: p.user_id,
-                    paymentId: p.dodo_payment_id,
-                    amountUsd: parseFloat(((p.amount_cents || 0) / 100).toFixed(2)),
-                    currency: p.currency,
-                    plan: p.plan,
-                    status: p.status,
-                    createdAt: p.created_at,
-                })),
-            },
-            llm: {
-                totalSpentUsd: parseFloat(instances.reduce((s, i) => s + (i.llmSpentUsd || 0), 0).toFixed(4)),
-                totalBudgetUsd: parseFloat(instances.reduce((s, i) => s + (i.llmBudgetUsd || 0), 0).toFixed(4)),
-                activeVkCount: instances.filter(i => i.hasBifrostKey).length,
-            },
-        },
-        recentEvents: eventRows,
-    });
-}));
-
-// ─── GET /admin/metrics/prometheus — Prometheus-style export ───────────────
-app.get('/admin/metrics/prometheus', adminAuth, asyncHandler(async (_req, res) => {
-    const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
-    const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
-    const usedMemMB = totalMemMB - freeMemMB;
-    const live1m = calcRequestWindowStats(60 * 1000);
-
-    const running = (await db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'running'"))?.c || 0;
-    const crashed = (await db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'crashed'"))?.c || 0;
-    const activeSubs = (await db.get("SELECT COUNT(*) as c FROM subscriptions WHERE status = 'active'"))?.c || 0;
-    const paidRevenueCents = (await db.get("SELECT COALESCE(SUM(amount_cents), 0) as c FROM payments WHERE status = 'paid'"))?.c || 0;
-
-    // Aggregate LLM spend from in-memory VK usage cache (no extra Bifrost calls)
-    let totalLlmSpentUsd = 0;
-    for (const entry of vkUsageCache.values()) {
-        totalLlmSpentUsd += entry.value.spentUsd || 0;
-    }
-
-    const lines = [
-        '# HELP liveclaw_http_requests_total Total HTTP requests observed by orchestrator',
-        '# TYPE liveclaw_http_requests_total counter',
-        `liveclaw_http_requests_total ${requestTelemetry.total}`,
-        '# HELP liveclaw_http_5xx_total Total HTTP 5xx responses observed by orchestrator',
-        '# TYPE liveclaw_http_5xx_total counter',
-        `liveclaw_http_5xx_total ${requestTelemetry.errors5xx}`,
-        '# HELP liveclaw_http_rps_1m HTTP requests per second over last minute',
-        '# TYPE liveclaw_http_rps_1m gauge',
-        `liveclaw_http_rps_1m ${live1m.reqPerSec}`,
-        '# HELP liveclaw_http_p95_latency_ms_1m P95 request latency in milliseconds over last minute',
-        '# TYPE liveclaw_http_p95_latency_ms_1m gauge',
-        `liveclaw_http_p95_latency_ms_1m ${live1m.p95LatencyMs}`,
-        '# HELP liveclaw_agents_running Running bot instances',
-        '# TYPE liveclaw_agents_running gauge',
-        `liveclaw_agents_running ${running}`,
-        '# HELP liveclaw_agents_crashed Crashed bot instances',
-        '# TYPE liveclaw_agents_crashed gauge',
-        `liveclaw_agents_crashed ${crashed}`,
-        '# HELP liveclaw_subscriptions_active Active subscriptions',
-        '# TYPE liveclaw_subscriptions_active gauge',
-        `liveclaw_subscriptions_active ${activeSubs}`,
-        '# HELP liveclaw_revenue_paid_usd Total paid revenue in USD',
-        '# TYPE liveclaw_revenue_paid_usd gauge',
-        `liveclaw_revenue_paid_usd ${(paidRevenueCents / 100).toFixed(2)}`,
-        '# HELP liveclaw_llm_spent_usd_total Total LLM spend across all Virtual Keys (cached)',
-        '# TYPE liveclaw_llm_spent_usd_total gauge',
-        `liveclaw_llm_spent_usd_total ${totalLlmSpentUsd.toFixed(4)}`,
-        '# HELP liveclaw_os_memory_used_mb OS memory used in MB',
-        '# TYPE liveclaw_os_memory_used_mb gauge',
-        `liveclaw_os_memory_used_mb ${usedMemMB}`,
-    ];
-
-    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
-    res.status(200).send(lines.join('\n') + '\n');
-}));
-
-// ─── GET /admin/stats — Overview Dashboard ──────────────────────────────────
-app.get('/admin/stats', adminAuth, asyncHandler(async (req, res) => {
-    try {
-        const totalBots = (await db.get('SELECT COUNT(*) as c FROM bots')).c;
-        const running = (await db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'running'")).c;
-        const stopped = (await db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'stopped'")).c;
-        const crashed = (await db.get("SELECT COUNT(*) as c FROM bots WHERE status = 'crashed'")).c;
-        const totalCredit = (await db.get('SELECT COALESCE(SUM(credit_limit), 0) as c FROM bots')).c;
-        const depleted = (await db.get("SELECT COUNT(*) as c FROM bots WHERE credit_limit <= 0.001 AND status = 'running'")).c;
-        const recentEvents = await db.all("SELECT event, COUNT(*) as c FROM event_logs WHERE ts > datetime('now', '-1 hour') GROUP BY event");
-
-        // Node.js process memory
-        const memUsage = process.memoryUsage();
-
-        // OS-level resource metrics
-        const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
-        const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
-        const loadAvg = os.loadavg(); // [1min, 5min, 15min]
-        const cpuCount = os.cpus().length;
-
-        // Disk usage
-        const diskInfo = getDiskUsage();
-
-        // Per-bot instance health (PID alive check + RSS via /proc or ps)
-        const botInstances = [];
-        const runningBots = await db.all("SELECT user_id, pid, model, credit_limit, created_at FROM bots WHERE status = 'running'");
-        for (const bot of runningBots) {
-            let alive = false;
-            let rssMB = null;
-            try {
-                process.kill(bot.pid, 0);
-                alive = true;
-                const rssKB = getProcessRssKB(bot.pid);
-                if (rssKB !== null) rssMB = Math.round(rssKB / 1024);
-            } catch (_) { /* process dead */ }
-            botInstances.push({
-                userId: bot.user_id,
-                pid: bot.pid,
-                model: bot.model,
-                alive,
-                rssMB,
-                creditRemaining: parseFloat(bot.credit_limit.toFixed(4)),
-                uptimeHours: Math.round((Date.now() - new Date(bot.created_at).getTime()) / 3600000),
-            });
-        }
-
-        return res.json({
-            bots: {
-                total: totalBots, running, stopped, crashed,
-                creditDepleted: depleted,
-                maxConcurrent: MAX_CONCURRENT_BOTS,
-                capacityPct: running > 0 ? Math.round((running / MAX_CONCURRENT_BOTS) * 100) : 0,
-            },
-            credits: { totalAllocated: parseFloat(totalCredit.toFixed(4)) },
-            recentEventsLastHour: recentEvents,
-            botInstances,
-            system: {
-                uptime: Math.round(process.uptime()),
-                node: {
-                    version: process.version,
-                    rssMB: Math.round(memUsage.rss / 1024 / 1024),
-                    heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
-                    heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
-                    externalMB: Math.round((memUsage.external || 0) / 1024 / 1024),
-                },
-                os: {
-                    platform: os.platform(),
-                    arch: os.arch(),
-                    totalMemMB: totalMemMB,
-                    freeMemMB: freeMemMB,
-                    memUsedPct: Math.round(((totalMemMB - freeMemMB) / totalMemMB) * 100),
-                    cpuCount,
-                    loadAvg: {
-                        '1m': parseFloat(loadAvg[0].toFixed(2)),
-                        '5m': parseFloat(loadAvg[1].toFixed(2)),
-                        '15m': parseFloat(loadAvg[2].toFixed(2)),
-                    },
-                },
-                disk: diskInfo,
-            },
-            ts: new Date().toISOString(),
-        });
-    } catch (err) {
-        return res.status(500).json({ error: 'Stats query failed', detail: err.message });
-    }
-}));
-
-// ─── GET /admin/revenue — Revenue & Monetization Analytics ──────────────────
-app.get('/admin/revenue', adminAuth, asyncHandler(async (req, res) => {
-    const { period = '30d' } = req.query;
-
-    // Map period to SQLite datetime modifier
-    const periodMap = { '24h': '-1 day', '7d': '-7 days', '30d': '-30 days', '90d': '-90 days', 'all': '-100 years' };
-    const modifier = periodMap[period] || '-30 days';
-
-    try {
-        // Subscription revenue from payments table
-        const subscriptionRevenue = await db.get(`
-            SELECT COUNT(*) as count,
-                   COALESCE(SUM(amount_cents), 0) as totalCents
-            FROM payments WHERE status = 'paid' AND created_at > datetime('now', ?)
-        `, [modifier]);
-
-        // Active subscribers
-        const activeSubscribers = await db.get(`
-            SELECT COUNT(*) as count FROM subscriptions WHERE status IN ('active', 'trialing')
-        `);
-
-        // Churned subscribers (cancelled in period)
-        const churnedSubscribers = await db.get(`
-            SELECT COUNT(*) as count FROM subscriptions
-            WHERE status = 'cancelled' AND updated_at > datetime('now', ?)
-        `, [modifier]);
-
-        // Daily revenue breakdown
-        const dailyRevenue = await db.all(`
-            SELECT date(created_at) as day,
-                   SUM(amount_cents) as revenueCents,
-                   COUNT(*) as payments
-            FROM payments
-            WHERE status = 'paid' AND created_at > datetime('now', ?)
-            GROUP BY date(created_at) ORDER BY day DESC LIMIT 30
-        `, [modifier]);
-
-        const totalRevenueCents = subscriptionRevenue.totalCents || 0;
-        const mrr = activeSubscribers.count * 999; // $9.99 in cents
-
-        return res.json({
-            period,
-            subscriptions: {
-                active: activeSubscribers.count,
-                churned: churnedSubscribers.count,
-                mrrCents: mrr,
-                mrrUsd: parseFloat((mrr / 100).toFixed(2)),
-            },
-            revenue: {
-                payments: subscriptionRevenue.count,
-                totalCents: totalRevenueCents,
-                totalUsd: parseFloat((totalRevenueCents / 100).toFixed(2)),
-            },
-            dailyBreakdown: dailyRevenue.map(d => ({
-                day: d.day,
-                revenueUsd: parseFloat((d.revenueCents / 100).toFixed(2)),
-                payments: d.payments,
-            })),
-            ts: new Date().toISOString(),
-        });
-    } catch (err) {
-        return res.status(500).json({ error: 'Revenue query failed', detail: err.message });
-    }
-}));
-
-// ─── GET /admin/system — Deep System Health & Capacity ──────────────────────
-// Comprehensive resource monitoring: OS, Docker, per-bot processes, LLM usage
-app.get('/admin/system', adminAuth, async (req, res) => {
-    try {
-        // ── OS Metrics ──────────────────────────────────────────────────────
-        const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
-        const freeMemMB = Math.round(os.freemem() / 1024 / 1024);
-        const loadAvg = os.loadavg();
-        const cpuCount = os.cpus().length;
-
-        // Disk
-        const disk = getDiskUsage(true);
-
-        // ── Bifrost Gateway ─────────────────────────────────────────────────
-        let bifrost_health = null;
-        try {
-            const bfRes = await fetch(`${config.bifrostBase}/health`, { signal: AbortSignal.timeout(3000) });
-            bifrost_health = { status: bfRes.ok ? 'ok' : 'unhealthy', httpCode: bfRes.status };
-        } catch (err) {
-            bifrost_health = { status: 'unreachable', error: err.message };
-        }
-
-        // Docker container stats (Bifrost)
-        const dockerStats = getDockerContainerStats('bifrost-gateway');
-
-        // ── Per-Bot Instance Metrics ────────────────────────────────────────
-        const bots = await db.all("SELECT user_id, pid, model, credit_limit, created_at FROM bots WHERE status = 'running'");
-        const instances = [];
-        let totalBotRSS = 0;
-
-        for (const bot of bots) {
-            const instance = { userId: bot.user_id, pid: bot.pid, model: bot.model, alive: false, rssMB: null };
-            try {
-                process.kill(bot.pid, 0);
-                instance.alive = true;
-                const rssKB = getProcessRssKB(bot.pid);
-                if (rssKB !== null) {
-                    instance.rssMB = Math.round(rssKB / 1024);
-                    totalBotRSS += instance.rssMB;
-                }
-            } catch (_) { /* process dead */ }
-            instance.creditRemaining = parseFloat(bot.credit_limit.toFixed(4));
-            instance.uptimeHours = Math.round((Date.now() - new Date(bot.created_at).getTime()) / 3600000);
-            instances.push(instance);
-        }
-
-        const aliveCount = instances.filter(i => i.alive).length;
-        const deadCount = instances.filter(i => !i.alive).length;
-
-        // ── Zombie Detection ────────────────────────────────────────────────
-        const allPicobotPids = listPicobotPids(true);
-        const trackedPidSet = new Set(bots.map(b => b.pid));
-        const orphanedProcesses = allPicobotPids.filter(pid => !trackedPidSet.has(pid));
-
-        // ── Capacity Projection ─────────────────────────────────────────────
-        const avgBotMB = totalBotRSS > 0 && aliveCount > 0 ? Math.round(totalBotRSS / aliveCount) : 20;
-        const availableForBots = freeMemMB - 200; // 200 MB headroom
-        const additionalCapacity = Math.max(0, Math.floor(availableForBots / avgBotMB));
-
-        // ── Node.js Process ─────────────────────────────────────────────────
-        const memUsage = process.memoryUsage();
-
-        return res.json({
-            os: {
-                platform: os.platform(),
-                arch: os.arch(),
-                hostname: os.hostname(),
-                uptimeHours: Math.round(os.uptime() / 3600),
-                cpuCount,
-                loadAvg: { '1m': +loadAvg[0].toFixed(2), '5m': +loadAvg[1].toFixed(2), '15m': +loadAvg[2].toFixed(2) },
-                memory: { totalMB: totalMemMB, freeMB: freeMemMB, usedPct: Math.round(((totalMemMB - freeMemMB) / totalMemMB) * 100) },
-                disk,
-            },
-            node: {
-                version: process.version,
-                pid: process.pid,
-                uptimeSeconds: Math.round(process.uptime()),
-                rssMB: Math.round(memUsage.rss / 1024 / 1024),
-                heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
-                heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
-            },
-            bifrost: bifrost_health,
-            docker: dockerStats,
-            bots: {
-                running: aliveCount,
-                stale: deadCount,
-                maxConcurrent: MAX_CONCURRENT_BOTS,
-                capacityPct: Math.round((aliveCount / MAX_CONCURRENT_BOTS) * 100),
-                totalRssMB: totalBotRSS,
-                avgRssMB: avgBotMB,
-                additionalCapacity,
-                orphanedProcesses,
-            },
-            instances,
-            ts: new Date().toISOString(),
-        });
-    } catch (err) {
-        return res.status(500).json({ error: 'System query failed', detail: err.message });
-    }
-});
-
-// ─── GET /admin/users — User & Bot Listing ──────────────────────────────────
-app.get('/admin/users', adminAuth, asyncHandler(async (req, res) => {
-    const { status, sort = 'created_at', order = 'desc', limit = 50, offset = 0 } = req.query;
-
-    const allowedSort = ['created_at', 'updated_at', 'credit_limit', 'status'];
-    const sortCol = allowedSort.includes(sort) ? sort : 'created_at';
-    const sortDir = order === 'asc' ? 'ASC' : 'DESC';
-    const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
-    const off = Math.max(parseInt(offset, 10) || 0, 0);
-
-    try {
-        let query = `SELECT user_id, pid, model, status, credit_limit, created_at, updated_at FROM bots`;
-        const params = [];
-
-        if (status && ['running', 'stopped', 'crashed'].includes(status)) {
-            query += ' WHERE status = ?';
-            params.push(status);
-        }
-
-        query += ` ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`;
-        params.push(lim, off);
-
-        const users = await db.all(query, params);
-
-        let countQuery = 'SELECT COUNT(*) as c FROM bots';
-        const countParams = [];
-        if (status && ['running', 'stopped', 'crashed'].includes(status)) {
-            countQuery += ' WHERE status = ?';
-            countParams.push(status);
-        }
-        const total = (await db.get(countQuery, countParams)).c;
-
-        return res.json({ users, total, limit: lim, offset: off });
-    } catch (err) {
-        return res.status(500).json({ error: 'Users query failed', detail: err.message });
-    }
-}));
-
-// ─── GET /admin/users/:userId — Single User Detail ──────────────────────────
-app.get('/admin/users/:userId', adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    const bot = await stmt.getBot(userId);
-    if (!bot) return res.status(404).json({ error: 'User not found' });
-
-    // Check if process is alive
-    let alive = false;
-    try { process.kill(bot.pid, 0); alive = true; } catch (_) { /* not running */ }
-
-    // Get recent events for this user
-    const events = await db.all(
-        'SELECT event, detail, ip, ts FROM event_logs WHERE user_id = ? ORDER BY ts DESC LIMIT 50',
-        [userId]
-    );
-
-    // Revenue for this user
-    const userPayments = await db.get(
-        "SELECT COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as totalCents FROM payments WHERE user_id = ? AND status = 'paid'",
-        [userId]
-    );
-
-    // Subscription info
-    const userSub = await stmtSubs.getByUserId(userId);
-
-    return res.json({
-        user: {
-            userId: bot.user_id,
-            pid: bot.pid,
-            model: bot.model,
-            status: bot.status,
-            creditLimit: bot.credit_limit,
-            createdAt: bot.created_at,
-            updatedAt: bot.updated_at,
-            alive,
-        },
-        subscription: userSub ? {
-            plan: userSub.plan,
-            status: userSub.status,
-            currentPeriodEnd: userSub.current_period_end,
-        } : null,
-        revenue: {
-            payments: userPayments.count,
-            totalUsd: parseFloat((userPayments.totalCents / 100).toFixed(2)),
-        },
-        recentEvents: events,
-    });
-}));
-
-// ─── GET /admin/events — Event Log Viewer ───────────────────────────────────
-app.get('/admin/events', adminAuth, asyncHandler(async (req, res) => {
-    const { event, userId, limit = 100, offset = 0 } = req.query;
-    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
-    const off = Math.max(parseInt(offset, 10) || 0, 0);
-
-    try {
-        let query = 'SELECT * FROM event_logs WHERE 1=1';
-        const params = [];
-
-        if (event) { query += ' AND event = ?'; params.push(event); }
-        if (userId) { query += ' AND user_id = ?'; params.push(userId); }
-
-        // Count total matching
-        const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as c');
-        const total = (await db.get(countQuery, params)).c;
-
-        query += ' ORDER BY ts DESC LIMIT ? OFFSET ?';
-        params.push(lim, off);
-
-        const events = await db.all(query, params);
-
-        // Get distinct event types for filter dropdown
-        const eventTypes = (await db.all('SELECT DISTINCT event FROM event_logs ORDER BY event')).map(r => r.event);
-
-        return res.json({ events, total, limit: lim, offset: off, eventTypes });
-    } catch (err) {
-        return res.status(500).json({ error: 'Events query failed', detail: err.message });
-    }
-}));
-
-// ─── POST /admin/users/:userId/stop — Admin Force Stop ──────────────────────
-app.post('/admin/users/:userId/stop', adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    const bot = await stmt.getBot(userId);
-    if (!bot) return res.status(404).json({ error: 'User not found' });
-
-    try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
-    await stmt.updateStatus('stopped', userId);
-    logEvent(userId, 'bot_admin_stopped', { admin: true });
-
-    return res.json({ success: true, message: `Bot for ${userId} stopped by admin.` });
-}));
-
-// ─── POST /admin/users/:userId/credit — Admin Credit Adjustment ─────────────
-app.post('/admin/users/:userId/credit', adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    const { amount } = req.body;
-
-    if (typeof amount !== 'number' || amount === 0) {
-        return res.status(400).json({ error: 'amount must be a non-zero number' });
-    }
-
-    const bot = await stmt.getBot(userId);
-    if (!bot) return res.status(404).json({ error: 'User not found' });
-
-    const newLimit = Math.max(0, bot.credit_limit + amount);
-    await stmt.updateCredit(newLimit, userId);
-    logEvent(userId, 'admin_credit_adjustment', { amount, oldLimit: bot.credit_limit, newLimit });
-
-    return res.json({ success: true, userId, oldLimit: bot.credit_limit, newLimit });
-}));
-
-// ─── POST /admin/users/:userId/subscription — Admin Subscription Management ─
-app.post('/admin/users/:userId/subscription', adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    const { action, trialHours } = req.body;
-
-    if (!action || !['cancel', 'activate', 'extend_trial', 'reset_trial'].includes(action)) {
-        return res.status(400).json({ error: 'action must be: cancel, activate, extend_trial, or reset_trial' });
-    }
-
-    const sub = await stmtSubs.getByUserId(userId);
-    if (!sub) return res.status(404).json({ error: 'No subscription found for this user' });
-
-    switch (action) {
-        case 'cancel': {
-            await stmtSubs.updateStatus('cancelled', userId);
-            const bot = await stmt.getBot(userId);
-            if (bot && bot.status === 'running') {
-                try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
-                if (bot.bifrost_vk_id) bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(() => {});
-                await stmt.updateStatus('stopped', userId);
-            }
-            logEvent(userId, 'admin_subscription_cancelled', { previousStatus: sub.status });
-            return res.json({ success: true, action: 'cancelled', userId });
-        }
-        case 'activate': {
-            await stmtSubs.upsert({
-                user_id: userId,
-                dodo_customer_id: sub.dodo_customer_id,
-                dodo_subscription_id: sub.dodo_subscription_id,
-                plan: 'standard',
-                status: 'active',
-                current_period_start: new Date().toISOString(),
-                current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-            });
-            logEvent(userId, 'admin_subscription_activated', { previousStatus: sub.status });
-            return res.json({ success: true, action: 'activated', userId });
-        }
-        case 'extend_trial': {
-            const hours = Math.min(Math.max(parseInt(trialHours, 10) || 24, 1), 720);
-            const newEnd = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-            await db.run(
-                'UPDATE subscriptions SET status = ?, trial_ends_at = ?, current_period_end = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
-                ['trialing', newEnd, newEnd, userId]
-            );
-            logEvent(userId, 'admin_trial_extended', { hours, newEnd, previousStatus: sub.status });
-            return res.json({ success: true, action: 'trial_extended', userId, trialEndsAt: newEnd });
-        }
-        case 'reset_trial': {
-            await db.run(
-                'UPDATE subscriptions SET trial_ends_at = NULL, status = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
-                ['inactive', userId]
-            );
-            logEvent(userId, 'admin_trial_reset', { previousStatus: sub.status });
-            return res.json({ success: true, action: 'trial_reset', userId });
-        }
-    }
-}));
-
-// ─── DELETE /admin/users/:userId — Admin Delete User Data ───────────────────
-app.post('/admin/users/:userId/delete', adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    const { confirm } = req.body;
-    if (confirm !== 'DELETE') {
-        return res.status(400).json({ error: 'Must pass { confirm: "DELETE" } to confirm' });
-    }
-
-    const bot = await stmt.getBot(userId);
-    if (bot && bot.status === 'running') {
-        try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
-        if (bot.bifrost_vk_id) bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(() => {});
-    }
-
-    await db.run('DELETE FROM bots WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM subscriptions WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM payments WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM referrals WHERE referrer_id = ? OR referee_id = ?', [userId, userId]);
-    // Keep event_logs for audit trail
-
-    logEvent(userId, 'admin_user_deleted', { deletedBy: 'admin' });
-    return res.json({ success: true, message: `All data for ${userId} deleted (event logs preserved).` });
-}));
-
-// ─── POST /admin/system/kill-orphans — Kill Orphaned Picobot Processes ──────
-app.post('/admin/system/kill-orphans', adminAuth, asyncHandler(async (req, res) => {
-    const killed = [];
-    const allPids = listPicobotPids();
-    if (allPids.length > 0) {
-        const bots = await stmt.runningBots();
-        const trackedPids = new Set(bots.map(b => b.pid));
-        const orphanPids = allPids.filter(pid => !trackedPids.has(pid));
-        for (const pid of orphanPids) {
-            try { process.kill(pid, 'SIGTERM'); killed.push(pid); } catch (_) { /* best-effort */ }
-        }
-    }
-    logEvent('system', 'admin_kill_orphans', { killed });
-    return res.json({ success: true, killed, count: killed.length });
-}));
-
-// ─── POST /admin/users/:userId/restart — Admin Force Restart Bot ────────────
-app.post('/admin/users/:userId/restart', adminAuth, asyncHandler(async (req, res) => {
-    const { userId } = req.params;
-    const bot = await stmt.getBot(userId);
-    if (!bot) return res.status(404).json({ error: 'User not found' });
-
-    const sub = await stmtSubs.getByUserId(userId);
-    if (!sub || !['active', 'trialing'].includes(sub.status)) {
-        return res.status(403).json({ error: 'User subscription is not active' });
-    }
-
-    // Kill existing if running
-    try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
-
-    try {
-        const decryptedToken = decryptToken(bot.telegram_token);
-        const decryptedVk = decryptToken(bot.bifrost_vk);
-        const newPid = spawnPicobot(bot.user_id, decryptedToken, decryptedVk, bot.model);
-        await stmt.updatePid(newPid, 'running', userId);
-        logEvent(userId, 'admin_bot_restarted', { oldPid: bot.pid, newPid });
-        return res.json({ success: true, userId, oldPid: bot.pid, newPid });
-    } catch (err) {
-        await stmt.updateStatus('crashed', userId);
-        logEvent(userId, 'admin_bot_restart_failed', { error: err.message });
-        return res.status(500).json({ error: 'Restart failed: ' + err.message });
-    }
-}));
-
-// ─── GET /admin/audit — Admin Action Audit Log ──────────────────────────────
-app.get('/admin/audit', adminAuth, asyncHandler(async (req, res) => {
-    const { limit = 100, offset = 0 } = req.query;
-    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
-    const off = Math.max(parseInt(offset, 10) || 0, 0);
-
-    const events = await db.all(
-        "SELECT * FROM event_logs WHERE event LIKE 'admin_%' ORDER BY ts DESC LIMIT ? OFFSET ?",
-        [lim, off]
-    );
-    const total = (await db.get("SELECT COUNT(*) as c FROM event_logs WHERE event LIKE 'admin_%'")).c;
-
-    return res.json({ events, total, limit: lim, offset: off });
-}));
-
-// ─── GET /admin/subscriptions — Full Subscription List ──────────────────────
-app.get('/admin/subscriptions', adminAuth, asyncHandler(async (req, res) => {
-    const { status, limit = 100, offset = 0 } = req.query;
-    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
-    const off = Math.max(parseInt(offset, 10) || 0, 0);
-
-    let query = 'SELECT * FROM subscriptions';
-    const params = [];
-    if (status && ['active', 'trialing', 'past_due', 'cancelled', 'inactive'].includes(status)) {
-        query += ' WHERE status = ?';
-        params.push(status);
-    }
-    query += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?';
-    params.push(lim, off);
-
-    const subs = await db.all(query, params);
-
-    let countQuery = 'SELECT COUNT(*) as c FROM subscriptions';
-    const countParams = [];
-    if (status && ['active', 'trialing', 'past_due', 'cancelled', 'inactive'].includes(status)) {
-        countQuery += ' WHERE status = ?';
-        countParams.push(status);
-    }
-    const total = (await db.get(countQuery, countParams)).c;
-
-    return res.json({ subscriptions: subs, total, limit: lim, offset: off });
-}));
-
-// ─── POST /admin/beta-codes/import — Bulk Import Beta Codes ─────────────────
-app.post('/admin/beta-codes/import', adminAuth, asyncHandler(async (req, res) => {
-    const { codes } = req.body;
-    if (!Array.isArray(codes) || codes.length === 0) {
-        return res.status(400).json({ error: 'codes must be a non-empty array of XXXX-XXXX-XXXX strings' });
-    }
-    const valid = codes.filter(c => typeof c === 'string' && /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c.toUpperCase().trim()));
-    let imported = 0;
-    let dodoSynced = 0;
-    for (const code of valid) {
-        const result = await stmtBeta.insert(code.toUpperCase().trim());
-        if (result.changes > 0) {
-            imported++;
-            try {
-                await dodo.createBetaDiscount(code.toUpperCase().trim());
-                dodoSynced++;
-            } catch (_) { /* Dodo sync optional */ }
-        }
-    }
-    logEvent('system', 'admin_beta_codes_imported', { count: imported, dodoSynced, invalid: codes.length - valid.length });
-    return res.json({ success: true, imported, dodoSynced, rejected: codes.length - valid.length, total: valid.length });
-}));
-
-// ─── POST /admin/beta-codes/generate — Generate Beta Codes ──────────────────
-// Idempotent: generates codes until there are exactly 100 in the table.
-// Uses crypto.randomBytes for true randomness — XXXX-XXXX-XXXX format (A-Z0-9).
-// Each code is also created as a 100% discount coupon in Dodo, restricted to
-// the trial product (usage_limit=1). This means beta testers go through the
-// full Dodo checkout flow at $0.00, tracked in Dodo analytics.
-app.post('/admin/beta-codes/generate', adminAuth, asyncHandler(async (req, res) => {
-    const TARGET = 100;
-    const CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; // full alphanumeric
-
-    const existing = (await stmtBeta.countTotal()).count;
-    const toCreate = Math.max(0, TARGET - existing);
-
-    /**
-     * Generate a XXXX-XXXX-XXXX code using crypto.randomBytes.
-     * 12 chars from 36-char alphabet ≈ 62 bits of entropy.
-     * Uses rejection sampling to avoid modulo bias (256 % 36 = 4).
-     */
-    const ACCEPT_LIMIT = Math.floor(256 / CHARSET.length) * CHARSET.length; // 252
-    const getUnbiasedChar = () => {
-        while (true) {
-            const [b] = crypto.randomBytes(1);
-            if (b < ACCEPT_LIMIT) return CHARSET[b % CHARSET.length];
-        }
-    };
-    const generateCode = () => {
-        const segments = [];
-        for (let s = 0; s < 3; s++) {
-            let seg = '';
-            for (let i = 0; i < 4; i++) seg += getUnbiasedChar();
-            segments.push(seg);
-        }
-        return segments.join('-');
-    };
-
-    let created = 0;
-    let dodoSynced = 0;
-    const dodoErrors = [];
-    let attempts = 0;
-    while (created < toCreate && attempts < toCreate * 5) {
-        const code = generateCode();
-        const result = await stmtBeta.insert(code);
-        if (result.changes > 0) {
-            created++;
-            // Create matching 100% discount coupon in Dodo
-            try {
-                await dodo.createBetaDiscount(code);
-                dodoSynced++;
-            } catch (err) {
-                dodoErrors.push({ code, error: err.message });
-                log.admin.error('Failed to create Dodo discount', { code, error: err.message });
-            }
-        }
-        attempts++;
-    }
-    const allCodes = await stmtBeta.listAll();
-
-    return res.json({
-        success: true,
-        created,
-        dodoSynced,
-        dodoErrors: dodoErrors.length > 0 ? dodoErrors : undefined,
-        total: allCodes.length,
-        codes: allCodes,
-    });
-}));
-
-// ─── GET /admin/beta-codes — List All Beta Codes with Analytics ─────────────
-app.get('/admin/beta-codes', adminAuth, asyncHandler(async (req, res) => {
-    const codes = await stmtBeta.listAll();
-    const total = (await stmtBeta.countTotal()).count;
-    const used = (await stmtBeta.countUsed()).count;
-
-    // Build redemption timeline (codes redeemed per day)
-    const timeline = {};
-    for (const c of codes) {
-        if (c.redeemed_at) {
-            const day = c.redeemed_at.slice(0, 10);
-            timeline[day] = (timeline[day] || 0) + 1;
-        }
-    }
-
-    return res.json({
-        total,
-        used,
-        available: total - used,
-        redemptionRate: total > 0 ? `${((used / total) * 100).toFixed(1)}%` : '0%',
-        timeline,
-        codes,
-    });
-}));
-
-// ─── Admin Router Mount Point (populated by initDatabase()) ────────────────
-// Mounted here to ensure it sits before the 404 catch-all in the middleware stack.
+// ─── Router Mount Points (populated by initDatabase()) ─────────────────────
+// Mounted here to ensure they sit before the 404 catch-all in the middleware stack.
+const subscriptionRouterPlaceholder = express.Router();
+const webhookRouterPlaceholder = express.Router();
+const botRouterPlaceholder = express.Router();
 const adminRouterPlaceholder = express.Router();
+app.use(subscriptionRouterPlaceholder);
+app.use(webhookRouterPlaceholder);
+app.use(botRouterPlaceholder);
 app.use('/admin', adminRouterPlaceholder);
 
 // ─── 404 Catch-All ──────────────────────────────────────────────────────────
@@ -3284,7 +1564,36 @@ if (config.nodeEnv !== 'test') {
     // ─── Bot Watchdog ───────────────────────────────────────────────────────
     // Periodically checks running bots and auto-restarts crashed ones.
     // Also expires beta trial subscriptions whose trial_ends_at has passed.
+    let lastPruneTs = 0;
     const watchdogTimer = setInterval(async () => {
+        // Only run heavy cleanup once per hour
+        const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+        if (Date.now() - lastPruneTs > PRUNE_INTERVAL_MS) {
+            lastPruneTs = Date.now();
+
+            // ── Prune old event logs (keep 90 days) ───────────────────────
+            try {
+                const pruned = await db.run(
+                    "DELETE FROM event_logs WHERE ts < datetime('now', '-90 days')"
+                );
+                if (pruned.changes > 0) {
+                    log.watchdog.info('Pruned old event logs', { deleted: pruned.changes });
+                }
+            } catch (err) {
+                log.watchdog.error('Event log pruning failed', { error: err.message });
+            }
+
+            // ── Prune old processed_events (keep 30 days) ────────────────
+            try {
+                const prunedPe = await db.run(
+                    "DELETE FROM processed_events WHERE ts < datetime('now', '-30 days')"
+                );
+                if (prunedPe.changes > 0) {
+                    log.watchdog.info('Pruned old processed events', { deleted: prunedPe.changes });
+                }
+            } catch (_) { /* best-effort */ }
+        }
+
         try {
             // ── Expire lapsed beta trials ───────────────────────────────────
             const expiredUsers = await stmtSubs.getExpiredBetaUsers();
@@ -3294,9 +1603,7 @@ if (config.nodeEnv !== 'test') {
                 if (bot && bot.status === 'running') {
                     try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* already dead */ }
                     if (bot.bifrost_vk_id) {
-                        bifrost.deactivateVirtualKey(bot.bifrost_vk_id).catch(err => {
-                log.watchdog.error('Failed to deactivate VK', { vkId: bot.bifrost_vk_id, error: err.message });
-                        });
+                        deactivateVirtualKeyWithRetry(bot.bifrost_vk_id, user_id);
                     }
                     await stmt.updateStatus('stopped', user_id);
                     logEvent(user_id, 'bot_stopped_beta_trial_expired', {});

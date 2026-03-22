@@ -13,14 +13,85 @@
 (function () {
     'use strict';
 
+    // ─── Analytics Bootstrap ─────────────────────────────────────────────────
+    // PostHog  — FOSS product analytics  (github.com/PostHog/posthog)
+    // Umami    — FOSS page analytics     (github.com/umami-software/umami)
+    // GTM      — tag container for future ad pixels (Meta, Google Ads, etc.)
+    // Each provider loads only when its window.LIVECLAW_* var is set in config.js.
+    (function bootstrapAnalytics() {
+        // ── Umami ────────────────────────────────────────────────────────────
+        var umamiUrl = window.LIVECLAW_UMAMI_URL;
+        var umamiId  = window.LIVECLAW_UMAMI_WEBSITE_ID;
+        if (umamiUrl && umamiId) {
+            var us = document.createElement('script');
+            us.defer = true;
+            us.src = umamiUrl + '/script.js';
+            us.setAttribute('data-website-id', umamiId);
+            us.setAttribute('data-auto-track', 'true');
+            document.head.appendChild(us);
+        }
+
+        // ── PostHog ──────────────────────────────────────────────────────────
+        var phKey  = window.LIVECLAW_POSTHOG_KEY;
+        var phHost = window.LIVECLAW_POSTHOG_HOST || 'https://us.i.posthog.com';
+        if (phKey) {
+            /* PostHog JS snippet — do not modify */
+            !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split('.');2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement('script')).type='text/javascript',p.async=!0,p.src=s.api_host.replace('.i.posthog.com','-assets.i.posthog.com')+'/static/array.js';(r=t.getElementsByTagName('script')[0]).parentNode.insertBefore(p,r);var u=e;for(a!==void 0?u=e[a]=[]:a='posthog',u.people=u.people||[],u.toString=function(t){var e='posthog';return'posthog'!==a&&(e+='.'+a),t||(e+=' (stub)'),e},u.people.toString=function(){return u.toString(1)+' (stub)'},o='capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys getNextSurveyStep onSessionId setPersonPropertiesForFlags'.split(' '),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||(window.posthog={}));
+            posthog.init(phKey, {
+                api_host: phHost,
+                person_profiles: 'identified_only', // only store profiles for signed-in users
+                capture_pageview: true,
+                capture_pageleave: true,
+                autocapture: false,                  // manual events only — keeps data clean
+            });
+        }
+
+        // ── GTM ──────────────────────────────────────────────────────────────
+        var gtmId = window.LIVECLAW_GTM_ID;
+        if (gtmId) {
+            window.dataLayer = window.dataLayer || [];
+            window.dataLayer.push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+            var gj = document.createElement('script');
+            gj.async = true;
+            gj.src = 'https://www.googletagmanager.com/gtm.js?id=' + gtmId;
+            var gf = document.getElementsByTagName('script')[0];
+            gf.parentNode.insertBefore(gj, gf);
+            // noscript iframe fallback (injected once DOM is ready)
+            var gtmNs = '<iframe src="https://www.googletagmanager.com/ns.html?id=' + gtmId + '" height="0" width="0" style="display:none;visibility:hidden"></iframe>';
+            if (document.body) {
+                var ns = document.createElement('noscript');
+                ns.innerHTML = gtmNs;
+                document.body.insertBefore(ns, document.body.firstChild);
+            } else {
+                document.addEventListener('DOMContentLoaded', function () {
+                    var ns = document.createElement('noscript');
+                    ns.innerHTML = gtmNs;
+                    document.body.insertBefore(ns, document.body.firstChild);
+                });
+            }
+        }
+    })();
+
+    // ─── Shared analytics helper ─────────────────────────────────────────────
+    // Single call fires to PostHog, Umami, and GTM dataLayer simultaneously.
+    function track(event, props) {
+        try {
+            if (window.posthog && window.posthog.capture) window.posthog.capture(event, props || {});
+            if (window.umami   && window.umami.track)   window.umami.track(event, props || {});
+            if (window.dataLayer) window.dataLayer.push(Object.assign({ event: event }, props || {}));
+        } catch (_) { /* analytics must never break the app */ }
+    }
+
     // ─── Config ─────────────────────────────────────────────────────────────
     const API_BASE = window.LIVECLAW_API_BASE || '/api'; // Nginx proxies /api → :3000
     const GOOGLE_CLIENT_ID = window.LIVECLAW_GOOGLE_CLIENT_ID || '';
     const MODEL_ID_TO_LABEL = {
+        'minimax-m2.7': 'MiniMax M2.7',
         'minimax-m2.5': 'MiniMax M2.5',
         'kimi-k2.5': 'Kimi K2.5',
     };
     const MODEL_LABEL_TO_ID = {
+        'MiniMax M2.7': 'minimax-m2.7',
         'MiniMax M2.5': 'minimax-m2.5',
         'Kimi K2.5': 'kimi-k2.5',
     };
@@ -33,7 +104,7 @@
         userAvatar: null,
         idToken: null,
         telegramToken: null,
-        selectedModel: 'minimax-m2.5',
+        selectedModel: 'minimax-m2.7',
         selectedChannel: null,
         isDeployed: false,
         botPid: null,
@@ -124,6 +195,11 @@
         state.userEmail = payload.email;
         state.userAvatar = payload.picture;
         saveState();
+
+        // Identify user in PostHog so all future events are tied to this person
+        if (window.posthog && window.posthog.identify) {
+            window.posthog.identify(payload.sub, { email: payload.email, name: payload.name });
+        }
 
         // Resolve any pending silent token refresh
         if (_tokenRefreshResolve) {
@@ -386,6 +462,7 @@
                 saveState();
 
                 showToast('Your Claw agent is live on Telegram!', 'success', 'Deployed');
+                track('bot_deployed', { model: modelId });
                 showSuccessDashboard();
                 return;
             }
@@ -524,6 +601,7 @@
             if (!res.ok) throw new Error('failed');
             const data = await res.json();
             const standard = data.plans.standard;
+            const trial = data.plans.trial;
             const earlyClaw = data.plans.earlyClaw;
             const slotsLeft = earlyClaw ? Math.max(0, earlyClaw.spotsRemaining) : 0;
             const slotColor = slotsLeft < 50 ? '#f87171' : slotsLeft < 150 ? '#fb923c' : '#38bdf8';
@@ -537,7 +615,7 @@
                 el.innerHTML = `
                     <p class="text-xs text-zinc-500">
                         <span class="font-medium text-zinc-400">$${standard.price.toFixed(2)}/month.</span>
-                        $0.99 one-day trial available. Cancel anytime.${slotSpan}
+                        $${trial ? trial.price.toFixed(2) : '0.99'} two-day trial available. Cancel anytime.${slotSpan}
                     </p>
                 `;
             }
@@ -775,6 +853,7 @@
     }
 
     function showPricingModal() {
+        track('pricing_modal_opened');
         // Remove existing modal if present
         const existing = document.getElementById('liveclaw-pricing-modal');
         if (existing) existing.remove();
@@ -896,7 +975,7 @@
             const trialCardHtml = trialEligible ? `
                 <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
                     <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">Try it first</span>
-                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">24-Hour Trial</h3>
+                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">48-Hour Trial</h3>
                     <div style="display:flex;align-items:baseline;gap:0.25rem;">
                         <span style="color:#fff;font-size:1.5rem;font-weight:700;">$${trial.price.toFixed(2)}</span>
                         <span style="color:#71717a;font-size:0.8rem;">one-time</span>
@@ -905,9 +984,9 @@
                         ${makeFeaturesHtml(trial.features)}
                     </ul>
                     <button id="pricing-trial-btn"
-                        data-liveclaw-checkout-label="Start Trial — $0.99"
+                        data-liveclaw-checkout-label="Start Trial — $${trial.price.toFixed(2)}"
                         style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:transparent;border:1px solid rgba(99,102,241,0.4);color:#a5b4fc;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
-                        Start Trial — $0.99
+                        Start Trial — $${trial.price.toFixed(2)}
                     </button>
                     <p style="text-align:center;color:#52525b;font-size:0.7rem;">One-time payment. No auto-renew.</p>
                 </div>` : `
@@ -1000,6 +1079,7 @@
                 });
                 const data = await res.json();
                 if (res.ok && data.checkoutUrl) {
+                    track('checkout_started', { type: type, earlyClaw: !!earlyClaw });
                     window.location.href = data.checkoutUrl;
                 } else {
                     showToast(data.error || 'Failed to create checkout session.', 'error');
@@ -1031,6 +1111,7 @@
                 const ec = container._plans.earlyClaw;
                 if (ec && ec.spotsRemaining > 0) {
                     appliedPromo = 'EARLYCLAW';
+                    track('promo_applied', { code: 'EARLYCLAW', savings: (container._plans.standard.price - ec.price).toFixed(2) });
                     promoMsg.style.color = '#34d399';
                     promoMsg.textContent = '\u2713 Early Claw pricing applied! Save $' + (container._plans.standard.price - ec.price).toFixed(2) + '/mo';
                     promoInput.disabled = true;
@@ -1121,7 +1202,7 @@
             const img = btn.querySelector('img');
             if (img && (img.alt === 'MiniMax M2.5' || img.alt === 'Kimi K2.5')) {
                 btn.addEventListener('click', function () {
-                    const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.5';
+                    const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.7';
                     state.selectedModel = normalizeModelId(modelId);
                     saveState();
                     syncModelSelectionUI();
@@ -1133,13 +1214,13 @@
     }
 
     function normalizeModelId(model) {
-        if (typeof model !== 'string') return 'minimax-m2.5';
-        return MODEL_ID_TO_LABEL[model] ? model : (MODEL_LABEL_TO_ID[model] || 'minimax-m2.5');
+        if (typeof model !== 'string') return 'minimax-m2.7';
+        return MODEL_ID_TO_LABEL[model] ? model : (MODEL_LABEL_TO_ID[model] || 'minimax-m2.7');
     }
 
     function getModelLabel(model) {
         const modelId = normalizeModelId(model);
-        return MODEL_ID_TO_LABEL[modelId] || MODEL_ID_TO_LABEL['minimax-m2.5'];
+        return MODEL_ID_TO_LABEL[modelId] || MODEL_ID_TO_LABEL['minimax-m2.7'];
     }
 
     function syncModelSelectionUI() {
@@ -1149,7 +1230,7 @@
             const img = btn.querySelector('img');
             if (!img || (img.alt !== 'MiniMax M2.5' && img.alt !== 'Kimi K2.5')) return;
 
-            const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.5';
+            const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.7';
             const isSelected = modelId === selectedModelId;
             btn.classList.toggle('selected', isSelected);
 
@@ -1256,6 +1337,7 @@
         window.history.replaceState({}, '', cleanUrl);
 
         if (checkoutStatus === 'success' || checkoutStatus === 'trial-success') {
+            track('checkout_completed', { type: checkoutStatus === 'trial-success' ? 'trial' : 'subscription' });
             showToast('Payment confirmed! Deploying your agent now...', 'success', 'Payment successful');
 
             // Wait briefly for webhook to process, then auto-deploy
