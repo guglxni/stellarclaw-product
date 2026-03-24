@@ -49,8 +49,10 @@ const PRODUCT_ID = process.env.DODO_PRODUCT_ID || '';
 // Two-day trial: $0.99 one-time payment → 48h trialing access, then prompted to subscribe
 const TRIAL_PRODUCT_ID = process.env.DODO_TRIAL_PRODUCT_ID || '';
 
-// ─── Bifrost budget — unified $5.00/mo per subscriber ───────────────────────
-const PLAN_BUDGET = 5.00;
+// ─── Bifrost budget — per-subscriber monthly LLM spend cap ──────────────────
+// Configurable via PLAN_BUDGET_USD env var. Default $0.50 for beta launch
+// (supports ~980 messages/user on MiniMax M2.7). Raise after adding credits.
+const PLAN_BUDGET = parseFloat(process.env.PLAN_BUDGET_USD) || 0.50;
 
 // ─── Bot limit — 1 bot per subscriber ───────────────────────────────────────
 const BOT_LIMIT = 1;

@@ -813,7 +813,7 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
         });
     }
 
-    const creditLimit = 5.00;
+    const creditLimit = dodo.PLAN_BUDGET;
 
     log.deploy.info('Deploy bot', { userId, model, plan, bot: tokenCheck.bot?.username || 'unknown', budget: creditLimit, ip });
     logEvent(userId, 'deploy_requested', { model, creditLimit, plan, botUsername: tokenCheck.bot?.username || null }, ip);
