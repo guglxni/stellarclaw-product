@@ -337,6 +337,17 @@ jobs:
             cd /opt/liveclaw
             export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
 
+            # Clean up containers from old single-compose layout (one-time migration)
+            # The old docker-compose.observability.yml included bifrost, tempo, prometheus
+            # as a single project. Tear down any orphaned containers from that layout.
+            if docker ps -a --format '{{.Names}}' | grep -q 'bifrost-gateway'; then
+              OLD_PROJECT=$(docker inspect bifrost-gateway --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || echo "")
+              if [ -n "$OLD_PROJECT" ] && [ "$OLD_PROJECT" != "liveclaw-bifrost" ]; then
+                echo "  Cleaning up containers from old compose project: $OLD_PROJECT"
+                docker compose -p "$OLD_PROJECT" down --remove-orphans 2>/dev/null || true
+              fi
+            fi
+
             echo "=== Pull Bifrost image (critical) ==="
             docker compose -f docker-compose.bifrost.yml pull
 
