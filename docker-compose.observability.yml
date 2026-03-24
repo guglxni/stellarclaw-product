@@ -37,7 +37,7 @@ services:
 
   # ── OpenTelemetry Collector ───────────────────────────────────────────────
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.115.0
+    image: otel/opentelemetry-collector-contrib:0.148.0
     container_name: liveclaw-otel-collector
     restart: unless-stopped
     command: ["--config=/etc/otelcol/config.yaml"]
