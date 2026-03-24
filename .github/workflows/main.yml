@@ -378,6 +378,10 @@ jobs:
             echo "=== 3/6 Launch observability stack ==="
             cd /opt/liveclaw
             if [ -f docker-compose.observability.yml ]; then
+              # Ensure docker compose plugin is available
+              if ! docker compose version &>/dev/null; then
+                apt-get update -qq && apt-get install -y -qq docker-compose-plugin
+              fi
               export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
               export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-liveclaw-obs-2024}"
               docker compose -f docker-compose.observability.yml pull --quiet 2>/dev/null || true
