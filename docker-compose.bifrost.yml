@@ -1,0 +1,38 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LiveClaw — Bifrost AI Gateway (Critical Infrastructure)
+#
+# This is the CRITICAL-PATH compose file. Bifrost must be running for
+# bot deployments to work. It is separated from the observability stack
+# so that Bifrost never fails due to slow image pulls or config issues
+# in non-critical services.
+#
+# Network: Creates the liveclaw-obs bridge network, shared with the
+# observability stack (docker-compose.observability.yml) via external: true.
+#
+# Usage:
+#   docker compose -f docker-compose.bifrost.yml up -d
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  bifrost:
+    image: maximhq/bifrost:latest
+    container_name: bifrost-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ${BIFROST_DATA_DIR:-./bifrost-data}:/app/data
+      - ./observability/bifrost-config.json:/app/config.json:ro
+    networks:
+      - liveclaw-obs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  liveclaw-obs:
+    name: liveclaw-obs
+    driver: bridge

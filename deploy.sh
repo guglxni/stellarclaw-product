@@ -167,15 +167,33 @@ if docker ps -a --format '{{.Names}}' | grep -q '^bifrost-gateway$'; then
     fi
 fi
 
-# Launch full observability stack via Docker Compose
+# ── Step 1: Start Bifrost (critical path) ─────────────────────────────────
 cd /opt/liveclaw
 export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
 export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-liveclaw-obs-2024}"
 
-docker compose -f docker-compose.observability.yml pull
-docker compose -f docker-compose.observability.yml up -d
+docker compose -f docker-compose.bifrost.yml pull
+docker compose -f docker-compose.bifrost.yml up -d
 
-echo "  Bifrost gateway running on localhost:8080"
+# Hard gate: wait for Bifrost healthy
+echo "  Waiting for Bifrost health..."
+for i in $(seq 1 12); do
+    if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+        info "Bifrost gateway healthy (attempt $i)"
+        break
+    fi
+    if [ "$i" -eq 12 ]; then
+        error "Bifrost failed to start within 60 seconds"
+        docker compose -f docker-compose.bifrost.yml logs --tail=30
+        exit 1
+    fi
+    sleep 5
+done
+
+# ── Step 2: Start observability stack (best-effort) ───────────────────────
+docker compose -f docker-compose.observability.yml pull 2>/dev/null || warn "Some observability images failed to pull"
+docker compose -f docker-compose.observability.yml up -d 2>/dev/null || warn "Observability stack failed to start"
+
 echo "  Grafana dashboards on localhost:3001 (admin / \$GF_ADMIN_PASSWORD)"
 echo "  Prometheus on localhost:9090"
 echo "  Tempo on localhost:3200"

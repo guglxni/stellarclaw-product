@@ -1,8 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# LiveClaw — Observability Stack (Docker Compose)
+# LiveClaw — Observability Stack (Non-Critical)
+#
+# Connects to the liveclaw-obs network created by docker-compose.bifrost.yml.
+# Bifrost MUST be started first — this stack depends on its network.
 #
 # Architecture:
-#   Bifrost AI Gateway (port 8080)
+#   Bifrost (docker-compose.bifrost.yml, port 8080)
 #     ├── /metrics ────────────────→ Prometheus (port 9090)
 #     └── OTLP (traces + metrics) → OTel Collector (port 4318)
 #                                      ├── traces → Grafana Tempo (port 3200)
@@ -11,30 +14,12 @@
 #   Grafana (port 3001) ← queries Tempo + Prometheus
 #
 # Usage:
-#   docker compose -f docker-compose.observability.yml up -d
-#   Grafana: http://localhost:3001 (admin / $GF_SECURITY_ADMIN_PASSWORD)
+#   docker compose -f docker-compose.bifrost.yml up -d      # start Bifrost first
+#   docker compose -f docker-compose.observability.yml up -d # then observability
+#   Grafana: http://localhost:3001 (admin / $GF_ADMIN_PASSWORD)
 # ═══════════════════════════════════════════════════════════════════════════
 
 services:
-  # ── Bifrost AI Gateway ────────────────────────────────────────────────────
-  bifrost:
-    image: maximhq/bifrost:latest
-    container_name: bifrost-gateway
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8080:8080"
-    volumes:
-      - ${BIFROST_DATA_DIR:-./bifrost-data}:/app/data
-      - ./observability/bifrost-config.json:/app/config.json:ro
-    networks:
-      - liveclaw-obs
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
   # ── OpenTelemetry Collector ───────────────────────────────────────────────
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.148.0
@@ -52,7 +37,7 @@ services:
       tempo:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:13133 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -71,7 +56,7 @@ services:
     networks:
       - liveclaw-obs
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3200/ready || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -97,7 +82,7 @@ services:
     networks:
       - liveclaw-obs
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/healthy || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -116,7 +101,6 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-      # Performance tuning
       - GF_DATABASE_WAL=true
       - GF_UNIFIED_ALERTING_ENABLED=true
     volumes:
@@ -136,7 +120,7 @@ services:
 networks:
   liveclaw-obs:
     name: liveclaw-obs
-    driver: bridge
+    external: true
 
 volumes:
   tempo-data:
