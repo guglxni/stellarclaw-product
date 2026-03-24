@@ -145,9 +145,15 @@ ufw allow 'Nginx Full'
 # Docs: https://github.com/maximhq/bifrost
 systemctl enable --now docker
 
-# Install docker-compose plugin if not present
+# Install docker compose v2 plugin if not present
 if ! docker compose version &>/dev/null; then
-    apt-get install -y -qq docker-compose-plugin
+    DOCKER_CONFIG=${DOCKER_CONFIG:-/usr/local/lib/docker}
+    mkdir -p "$DOCKER_CONFIG/cli-plugins"
+    COMPOSE_VERSION=$(curl -sf https://api.github.com/repos/docker/compose/releases/latest | grep -o '"tag_name":\s*"[^"]*"' | head -1 | cut -d'"' -f4)
+    COMPOSE_VERSION=${COMPOSE_VERSION:-v2.32.4}
+    curl -fSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+    chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+    echo "  Installed docker compose ${COMPOSE_VERSION}"
 fi
 
 # Stop legacy standalone Bifrost container (migrated to compose)
