@@ -411,7 +411,9 @@ jobs:
             echo "=== 3/7 Start Bifrost gateway (critical) ==="
             cd /opt/liveclaw
             export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
-            docker compose -f docker-compose.bifrost.yml up -d
+            # Remove any orphan container with the same name from previous compose layout
+            docker rm -f bifrost-gateway 2>/dev/null || true
+            docker compose -f docker-compose.bifrost.yml up -d --remove-orphans
 
             # Hard gate: Bifrost must be healthy before proceeding
             echo "  Waiting for Bifrost health..."
