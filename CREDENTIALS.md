@@ -18,6 +18,9 @@ Every secret the service needs, where to get it, and exactly where to put it.
 | `TURNSTILE_SITE_KEY` | Cloudflare Dashboard | Frontend | **Critical** |
 | `GOOGLE_CLIENT_ID` | Google Cloud Console | Frontend | **Critical** |
 | MiniMax API Key | MiniMax Platform | Bifrost UI | **Critical** |
+| `OPENROUTER_API_KEY` | OpenRouter | Backend `.env` + Bifrost UI | **Critical** |
+| `VISION_DAILY_LIMIT` | Set locally | Backend `.env` | Optional (default: 20) |
+| `VISION_MODEL` | OpenRouter model ID | Backend `.env` | Optional (default: qwen/qwen2.5-vl-72b-instruct:free) |
 | `ALLOW_DEV_AUTH_BYPASS` | Local dev only | Backend `.env` (non-prod) | Optional |
 | `ALLOW_DEV_ADMIN_LOGIN_FALLBACK` | Local dev only | Backend `.env` (non-prod) | Optional |
 | `ADMIN_DEV_TOTP_CODE` | Local dev only | Backend `.env` (non-prod) | Optional |
@@ -173,24 +176,42 @@ Google OAuth lets users sign in to deploy bots. Only the Client ID is needed (no
 
 ---
 
-## 6. MiniMax — LLM Provider Key
+## 6. OpenRouter — LLM Provider Key
 
-MiniMax M2.5 is the default AI model. The key goes into **Bifrost**, not the Node.js `.env`.
+All LLM traffic (MiniMax M2.5, Kimi K2.5) routes through OpenRouter via Bifrost.
+The same key is **also** used directly by the Vision MCP server for free image analysis.
 
 ### Steps
 
-1. Go to **[https://platform.minimaxi.com/](https://platform.minimaxi.com/)**.
-2. Create account → **API Keys → Create API Key** → name it `LiveClaw`.
+1. Go to **[https://openrouter.ai/keys](https://openrouter.ai/keys)**.
+2. Create account → **Create Key** → name it `LiveClaw`.
 3. Copy the key.
 
-### Add to Bifrost
+### Add to `.env`
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+### Add to Bifrost UI
 
 ```bash
 # SSH tunnel to Bifrost UI
 ssh -L 8080:localhost:8080 root@<BACKEND_IP>
 # Open http://localhost:8080 in browser
-# Go to Provider Configuration → MiniMax → paste API key → Save
+# Go to Provider Configuration → add provider named 'openrouter':
+#   Type:     OpenAI-compatible
+#   Base URL: https://openrouter.ai/api/v1
+#   API Key:  (same OPENROUTER_API_KEY value)
+# → Save
 ```
+
+### Vision MCP Server (automatic)
+
+Once `OPENROUTER_API_KEY` is set in `.env`, every deployed bot automatically gets
+an `image_analysis` tool powered by `qwen/qwen2.5-vl-72b-instruct:free`.
+Usage is capped at `VISION_DAILY_LIMIT` (default: 20) analyses per user per UTC day.
+No extra account or key needed — it uses the same OpenRouter key above.
 
 ---
 
@@ -244,6 +265,11 @@ ALLOWED_ORIGINS=https://liveclaw.xyz,https://www.liveclaw.xyz
 
 # ─── Bifrost ─────────────────────────────────────────────────────
 BIFROST_GATEWAY_URL=http://localhost:8080
+
+# ─── Observability (Grafana + Tempo + Prometheus) ────────────────
+# Grafana UI: http://localhost:3001 (SSH tunnel to access)
+# Default admin login: admin / <GF_ADMIN_PASSWORD>
+GF_ADMIN_PASSWORD=<strong password — change from default>
 
 # ─── Paths ───────────────────────────────────────────────────────
 DB_PATH=/opt/liveclaw/backend/liveclaw.db

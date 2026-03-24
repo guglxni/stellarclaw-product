@@ -1,0 +1,481 @@
+{
+  "annotations": { "list": [] },
+  "description": "LiveClaw — Bifrost AI Gateway LLM Observability",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "Total Requests",
+      "type": "stat",
+      "targets": [{
+        "expr": "sum(bifrost_upstream_requests_total)",
+        "legendFormat": "Total"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "title": "Errors",
+      "type": "stat",
+      "targets": [{
+        "expr": "sum(bifrost_error_requests_total)",
+        "legendFormat": "Errors"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 95 },
+              { "color": "red", "value": 99 }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 2
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "title": "Success Rate",
+      "type": "stat",
+      "targets": [{
+        "expr": "sum(bifrost_success_requests_total) / sum(bifrost_upstream_requests_total)",
+        "legendFormat": "Success %"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "title": "Total Cost (USD)",
+      "type": "stat",
+      "targets": [{
+        "expr": "sum(bifrost_cost_total)",
+        "legendFormat": "Cost"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "title": "Total Input Tokens",
+      "type": "stat",
+      "targets": [{
+        "expr": "sum(bifrost_input_tokens_total)",
+        "legendFormat": "Input"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "purple", "value": null }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "id": 6,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "title": "Total Output Tokens",
+      "type": "stat",
+      "targets": [{
+        "expr": "sum(bifrost_output_tokens_total)",
+        "legendFormat": "Output"
+      }]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "title": "Request Throughput & Latency",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "spanNulls": true }, "unit": "reqps" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 10,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "title": "Request Rate by Model",
+      "type": "timeseries",
+      "targets": [{
+        "expr": "sum(rate(bifrost_upstream_requests_total[$__rate_interval])) by (model)",
+        "legendFormat": "{{ model }}"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true }, "unit": "s" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 11,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "title": "Upstream Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(bifrost_upstream_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(bifrost_upstream_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(bifrost_upstream_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "title": "Token Usage & Cost",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 80, "stacking": { "mode": "normal" } }, "unit": "short" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 20,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "title": "Token Usage Over Time (Input vs Output)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(bifrost_input_tokens_total[$__rate_interval])) by (model)",
+          "legendFormat": "Input — {{ model }}"
+        },
+        {
+          "expr": "sum(rate(bifrost_output_tokens_total[$__rate_interval])) by (model)",
+          "legendFormat": "Output — {{ model }}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 20, "spanNulls": true }, "unit": "currencyUSD" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "id": 21,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "title": "Cost Over Time by Model",
+      "type": "timeseries",
+      "targets": [{
+        "expr": "sum(rate(bifrost_cost_total[$__rate_interval])) by (model)",
+        "legendFormat": "{{ model }}"
+      }]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "title": "Per Virtual Key (Per User)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } }, "unit": "currencyUSD" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 30,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"], "sortBy": "Total", "sortDesc": true }, "tooltip": { "mode": "multi" } },
+      "title": "Cost by Virtual Key (User)",
+      "type": "timeseries",
+      "targets": [{
+        "expr": "sum(rate(bifrost_cost_total[$__rate_interval])) by (virtual_key)",
+        "legendFormat": "{{ virtual_key }}"
+      }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "reqps" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 31,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"], "sortBy": "Max", "sortDesc": true }, "tooltip": { "mode": "multi" } },
+      "title": "Request Rate by Virtual Key (User)",
+      "type": "timeseries",
+      "targets": [{
+        "expr": "sum(rate(bifrost_upstream_requests_total[$__rate_interval])) by (virtual_key)",
+        "legendFormat": "{{ virtual_key }}"
+      }]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 104,
+      "title": "Streaming Performance",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "s" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "id": 40,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "title": "Time to First Token (TTFT)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(bifrost_stream_first_token_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(bifrost_stream_first_token_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(bifrost_stream_first_token_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "s" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "id": 41,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "title": "Inter-Token Latency (ITL)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(bifrost_stream_inter_token_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(bifrost_stream_inter_token_latency_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "id": 105,
+      "title": "Cache & Errors",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 20, "spanNulls": true }, "unit": "short" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 },
+      "id": 50,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "title": "Cache Hit Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(bifrost_cache_hits_total[$__rate_interval]))",
+          "legendFormat": "Cache Hits/s"
+        },
+        {
+          "expr": "sum(rate(bifrost_upstream_requests_total[$__rate_interval]))",
+          "legendFormat": "Total Requests/s"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 80 }, "unit": "short" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 },
+      "id": 51,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"], "sortBy": "Total", "sortDesc": true }, "tooltip": { "mode": "multi" } },
+      "title": "Errors by Model & Provider",
+      "type": "timeseries",
+      "targets": [{
+        "expr": "sum(rate(bifrost_error_requests_total[$__rate_interval])) by (model, provider)",
+        "legendFormat": "{{ provider }}/{{ model }}"
+      }]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "id": 106,
+      "title": "Traces (Tempo)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
+      "id": 60,
+      "options": {
+        "search": ""
+      },
+      "title": "Recent LLM Traces",
+      "type": "traces",
+      "targets": [{
+        "queryType": "nativeSearch",
+        "serviceName": "liveclaw-bifrost",
+        "limit": 20
+      }]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["liveclaw", "bifrost", "llm", "ai-gateway"],
+  "templating": {
+    "list": [
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(bifrost_upstream_requests_total, model)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Model",
+        "multi": true,
+        "name": "model",
+        "query": "label_values(bifrost_upstream_requests_total, model)",
+        "refresh": 2,
+        "type": "query"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(bifrost_upstream_requests_total, virtual_key)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Virtual Key",
+        "multi": true,
+        "name": "virtual_key",
+        "query": "label_values(bifrost_upstream_requests_total, virtual_key)",
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "LiveClaw — Bifrost LLM Observatory",
+  "uid": "liveclaw-bifrost-llm",
+  "version": 1
+}

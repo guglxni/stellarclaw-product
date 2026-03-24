@@ -93,9 +93,46 @@ async function checkAndIncrement() {
     return { allowed: true, used: used + 1, limit: DAILY_LIMIT };
 }
 
+// ─── URL Validation (SSRF Protection) ────────────────────────────────────────
+
+function validateImageUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:') throw new Error('Only HTTPS URLs allowed');
+        if (url.includes('@')) throw new Error('URLs with credentials not allowed');
+        const host = parsed.hostname.toLowerCase();
+        if (host === 'localhost' || host === 'metadata.google.internal') throw new Error('Internal hostname blocked');
+        if (parsed.port && parsed.port !== '443') throw new Error('Non-standard port blocked');
+        // Check for private/reserved IPs
+        const parts = host.split('.').map(Number);
+        if (parts.length === 4 && parts.every(n => !isNaN(n))) {
+            if (parts[0] === 10) throw new Error('Private IP blocked');
+            if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) throw new Error('Private IP blocked');
+            if (parts[0] === 192 && parts[1] === 168) throw new Error('Private IP blocked');
+            if (parts[0] === 127) throw new Error('Loopback blocked');
+            if (parts[0] === 169 && parts[1] === 254) throw new Error('Link-local blocked');
+        }
+        // Block all IPv6 private/reserved ranges
+        if (host === '::1' || host === '::' || host.startsWith('[') ||
+            host.startsWith('fe80') || host.startsWith('fc00') || host.startsWith('fd00') ||
+            host.startsWith('2001:db8')) throw new Error('IPv6 private/reserved blocked');
+        // Block DNS rebinding hostnames that resolve to private IPs
+        if (host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') ||
+            host.includes('nip.io') || host.includes('sslip.io') || host.includes('xip.io') ||
+            host.includes('localtest.me') || host.includes('lvh.me')) throw new Error('DNS rebinding hostname blocked');
+        return parsed.href;
+    } catch (e) {
+        throw new Error(`Invalid image URL: ${e.message}`);
+    }
+}
+
 // ─── OpenRouter Vision Call ───────────────────────────────────────────────────
 
 async function callVisionModel(imageUrl, prompt) {
+    // Allow base64 data URIs to pass through; validate all other URLs for SSRF
+    if (!imageUrl.startsWith('data:')) {
+        imageUrl = validateImageUrl(imageUrl);
+    }
     const userPrompt = prompt || 'Describe this image in detail.';
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {

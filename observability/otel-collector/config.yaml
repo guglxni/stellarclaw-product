@@ -1,0 +1,79 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# OpenTelemetry Collector — LiveClaw Observability Pipeline
+#
+# Receives OTLP traces + metrics from Bifrost AI Gateway,
+# exports traces to Grafana Tempo and metrics to Prometheus.
+# ═══════════════════════════════════════════════════════════════════════════
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4318"
+      grpc:
+        endpoint: "0.0.0.0:4317"
+
+processors:
+  # Batch traces/metrics to reduce export overhead
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Enrich all telemetry with deployment context
+  resource:
+    attributes:
+      - key: service.namespace
+        value: liveclaw
+        action: upsert
+      - key: deployment.environment
+        value: production
+        action: upsert
+
+  # Filter out health-check noise from traces
+  filter/traces:
+    traces:
+      span:
+        - 'attributes["http.route"] == "/health"'
+        - 'attributes["http.route"] == "/metrics"'
+
+exporters:
+  # Traces → Grafana Tempo
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus (collector exposes /metrics for Prometheus to scrape)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: bifrost
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Debug logging (disable in production by setting verbosity to none)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource, filter/traces]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [prometheus]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: "0.0.0.0:8888"

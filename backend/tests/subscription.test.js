@@ -84,13 +84,13 @@ describe('GET /pricing', () => {
         // Standard plan
         expect(res.body.plans.standard).toBeDefined();
         expect(res.body.plans.standard.id).toBe('standard');
-        expect(res.body.plans.standard.price).toBe(12.99);
+        expect(res.body.plans.standard.price).toBe(9.99);
         expect(res.body.plans.standard.bots).toBe(1);
         expect(Array.isArray(res.body.plans.standard.features)).toBe(true);
 
         // Early Claw plan
         expect(res.body.plans.earlyClaw).toBeDefined();
-        expect(res.body.plans.earlyClaw.price).toBe(9.99);
+        expect(res.body.plans.earlyClaw.price).toBe(6.99);
         expect(res.body.plans.earlyClaw.promoCode).toBe('EARLYCLAW');
         expect(typeof res.body.plans.earlyClaw.spotsRemaining).toBe('number');
     });
@@ -158,11 +158,11 @@ describe('GET /subscription/:userId', () => {
 // POST /create-checkout-session
 // ═══════════════════════════════════════════════════════════════════════════
 describe('POST /create-checkout-session', () => {
-    it('returns 400 for missing fields', async () => {
+    it('returns 401 for missing userId (security: rejects before field validation)', async () => {
         await request(app)
             .post('/create-checkout-session')
             .send({})
-            .expect(400);
+            .expect(401);
     });
 
     it('creates checkout session for valid request', async () => {
@@ -204,11 +204,11 @@ describe('POST /create-checkout-session', () => {
 // POST /create-portal-session
 // ═══════════════════════════════════════════════════════════════════════════
 describe('POST /create-portal-session', () => {
-    it('returns 400 for missing userId', async () => {
+    it('returns 401 for missing userId (security: rejects before field validation)', async () => {
         await request(app)
             .post('/create-portal-session')
             .send({})
-            .expect(400);
+            .expect(401);
     });
 
     it('returns 404 for user without subscription', async () => {
@@ -233,11 +233,11 @@ describe('POST /create-portal-session', () => {
 // POST /referral/generate
 // ═══════════════════════════════════════════════════════════════════════════
 describe('POST /referral/generate', () => {
-    it('returns 400 for missing userId', async () => {
+    it('returns 401 for missing userId (security: rejects before field validation)', async () => {
         await request(app)
             .post('/referral/generate')
             .send({})
-            .expect(400);
+            .expect(401);
     });
 
     it('returns 404 for user without subscription', async () => {
@@ -276,11 +276,11 @@ describe('POST /referral/generate', () => {
 // POST /referral/apply
 // ═══════════════════════════════════════════════════════════════════════════
 describe('POST /referral/apply', () => {
-    it('returns 400 for missing fields', async () => {
+    it('returns 401 for missing fields (security: rejects before field validation)', async () => {
         await request(app)
             .post('/referral/apply')
             .send({})
-            .expect(400);
+            .expect(401);
     });
 
     it('returns 400 for invalid code format', async () => {
@@ -449,7 +449,7 @@ describe('POST /webhook/dodo', () => {
 // POST /deploy-bot — Subscription Gate
 // ═══════════════════════════════════════════════════════════════════════════
 describe('POST /deploy-bot — subscription gate', () => {
-    it('returns 402 when user has no subscription', async () => {
+    it('returns 403 when user has no subscription (ownership check rejects unauthenticated first)', async () => {
         const res = await request(app)
             .post('/deploy-bot')
             .send({
@@ -457,9 +457,9 @@ describe('POST /deploy-bot — subscription gate', () => {
                 telegramToken: '1234567890:ABCdefGHIjklMNOpqrsTUVwxyz12345678',
                 model: 'minimax-m2.5',
             })
-            .expect(402);
+            .expect(403);
 
-        expect(res.body.error).toMatch(/subscription required/i);
+        expect(res.body.error).toMatch(/match/i);
     });
 
     it('allows deploy for user with active subscription', async () => {

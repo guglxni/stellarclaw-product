@@ -38,6 +38,16 @@ const { execFileSync } = require('child_process');
 const { TOTP } = require('otpauth');
 const jwt = require('jsonwebtoken');
 
+// In-memory admin JWT blocklist (survives until process restart)
+const revokedAdminTokens = new Set();
+
+// Cleanup expired tokens every hour
+setInterval(() => {
+    // JWTs expire in 8h, so clean entries older than 9h
+    // For simplicity, just clear periodically since the set won't grow large
+    if (revokedAdminTokens.size > 1000) revokedAdminTokens.clear();
+}, 60 * 60 * 1000).unref();
+
 /**
  * Creates the admin router with all dependencies injected.
  *
@@ -112,9 +122,22 @@ function createAdminRouter(deps) {
             }
         }
 
-        const token = jwt.sign({ role: 'admin' }, jwtSecret, { expiresIn: '8h' });
+        const jti = crypto.randomUUID();
+        const token = jwt.sign({ role: 'admin', jti }, jwtSecret, { expiresIn: '8h' });
         return res.json({ token });
     }));
+
+    // ─── POST /admin/logout — Revoke current admin JWT ───────────────────
+    router.post('/logout', (req, res) => {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            try {
+                const decoded = jwt.verify(authHeader.slice(7), config.adminJwtSecret);
+                if (decoded.jti) revokedAdminTokens.add(decoded.jti);
+            } catch (_) { /* expired or invalid — already unusable */ }
+        }
+        res.json({ ok: true });
+    });
 
     // ─── GET /admin/health — Detailed Health (admin only) ───────────────
     router.get('/health', adminAuth, async (_req, res) => {
@@ -1097,4 +1120,4 @@ function createAdminRouter(deps) {
     return router;
 }
 
-module.exports = { createAdminRouter };
+module.exports = { createAdminRouter, revokedAdminTokens };

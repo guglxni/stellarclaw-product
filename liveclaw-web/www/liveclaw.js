@@ -48,7 +48,7 @@
 
         // ── GTM ──────────────────────────────────────────────────────────────
         var gtmId = window.LIVECLAW_GTM_ID;
-        if (gtmId) {
+        if (gtmId && /^[A-Z0-9_-]+$/i.test(gtmId)) {
             window.dataLayer = window.dataLayer || [];
             window.dataLayer.push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
             var gj = document.createElement('script');
@@ -150,11 +150,21 @@
 
         // Load Google Identity Services library
         if (GOOGLE_CLIENT_ID) {
+            // Generate OAuth nonce for CSRF protection
+            function generateNonce() {
+                var array = new Uint8Array(16);
+                crypto.getRandomValues(array);
+                return Array.from(array, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+            }
+            var oauthNonce = generateNonce();
+            sessionStorage.setItem('liveclaw_oauth_nonce', oauthNonce);
+
             loadScript('https://accounts.google.com/gsi/client', function () {
                 window.google.accounts.id.initialize({
                     client_id: GOOGLE_CLIENT_ID,
                     callback: handleGoogleCredential,
                     auto_select: true,
+                    nonce: oauthNonce,
                 });
             });
         }
@@ -190,11 +200,28 @@
         state.idToken = response.credential;
         // Decode the JWT credential to get user info
         const payload = decodeJwt(response.credential);
+
+        // Validate OAuth nonce to prevent CSRF attacks
+        const storedNonce = sessionStorage.getItem('liveclaw_oauth_nonce');
+        if (storedNonce && payload.nonce !== storedNonce) {
+            console.error('OAuth nonce mismatch — possible CSRF');
+            return;
+        }
+        sessionStorage.removeItem('liveclaw_oauth_nonce');
+
         state.userId = payload.sub; // Google user ID
         state.userName = payload.name;
         state.userEmail = payload.email;
         state.userAvatar = payload.picture;
         saveState();
+
+        // Set HttpOnly session cookie via backend (defense-in-depth against XSS)
+        fetch(API_BASE + '/auth/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ idToken: response.credential })
+        }).catch(function () { /* session cookie is best-effort; Bearer token still works */ });
 
         // Identify user in PostHog so all future events are tied to this person
         if (window.posthog && window.posthog.identify) {
@@ -258,6 +285,9 @@
     }
 
     function signOut() {
+        // Clear HttpOnly session cookie on the server
+        fetch(API_BASE + '/auth/logout', { method: 'POST', credentials: 'include' }).catch(function () {});
+
         state.userId = null;
         state.userName = null;
         state.userEmail = null;
@@ -343,6 +373,7 @@
                 const verifyRes = await fetch(API_BASE + '/verify-telegram-token', {
                     method: 'POST',
                     headers,
+                    credentials: 'include',
                     body: JSON.stringify({
                         userId: state.userId,
                         telegramToken: token,
@@ -408,7 +439,7 @@
             const headers = { 'Content-Type': 'application/json' };
             if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
-            const subRes = await fetch(API_BASE + '/subscription/' + encodeURIComponent(state.userId), { headers });
+            const subRes = await fetch(API_BASE + '/subscription/' + encodeURIComponent(state.userId), { headers, credentials: 'include' });
             const subData = await subRes.json();
 
             const hasActiveSub = subData.hasSubscription && ['active', 'trialing', 'past_due'].includes(subData.status);
@@ -446,6 +477,7 @@
             const res = await fetch(API_BASE + '/deploy-bot', {
                 method: 'POST',
                 headers,
+                credentials: 'include',
                 body: JSON.stringify({
                     userId: state.userId,
                     telegramToken: state.telegramToken,
@@ -597,7 +629,7 @@
         const el = document.getElementById('liveclaw-pricing-line');
         if (!el) return;
         try {
-            const res = await fetch(API_BASE + '/pricing');
+            const res = await fetch(API_BASE + '/pricing', { credentials: 'include' });
             if (!res.ok) throw new Error('failed');
             const data = await res.json();
             const standard = data.plans.standard;
@@ -738,7 +770,7 @@
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', async () => {
                     try {
-                        const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId));
+                        const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId), { credentials: 'include' });
                         const data = await res.json();
                         if (res.ok) {
                             const statusEl = refreshBtn.closest('.flex.flex-col.gap-4');
@@ -776,6 +808,7 @@
                         const res = await fetch(API_BASE + '/stop-bot', {
                             method: 'POST',
                             headers,
+                            credentials: 'include',
                             body: JSON.stringify({ userId: state.userId }),
                         });
                         if (res.ok) {
@@ -809,7 +842,7 @@
             const headers = {};
             if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
-            const res = await fetch(API_BASE + '/subscription/' + encodeURIComponent(state.userId), { headers });
+            const res = await fetch(API_BASE + '/subscription/' + encodeURIComponent(state.userId), { headers, credentials: 'include' });
             if (res.ok) {
                 const data = await res.json();
                 if (data.hasSubscription) {
@@ -839,6 +872,7 @@
             const res = await fetch(API_BASE + '/create-portal-session', {
                 method: 'POST',
                 headers,
+                credentials: 'include',
                 body: JSON.stringify({ userId: state.userId }),
             });
             const data = await res.json();
@@ -929,7 +963,7 @@
                 const url = state.userId
                     ? API_BASE + '/pricing?userId=' + encodeURIComponent(state.userId)
                     : API_BASE + '/pricing';
-                const res = await fetch(url);
+                const res = await fetch(url, { credentials: 'include' });
                 if (!res.ok) throw new Error('Failed to load pricing');
                 const data = await res.json();
                 renderPlans(data.plans, data.trialEligible !== false);
@@ -1075,6 +1109,7 @@
                 const res = await fetch(API_BASE + endpoint, {
                     method: 'POST',
                     headers,
+                    credentials: 'include',
                     body: JSON.stringify(body),
                 });
                 const data = await res.json();
@@ -1200,7 +1235,7 @@
         const allBtns = document.querySelectorAll('button.options-card');
         allBtns.forEach(function (btn) {
             const img = btn.querySelector('img');
-            if (img && (img.alt === 'MiniMax M2.5' || img.alt === 'Kimi K2.5')) {
+            if (img && (img.alt === 'MiniMax M2.7' || img.alt === 'MiniMax M2.5' || img.alt === 'Kimi K2.5')) {
                 btn.addEventListener('click', function () {
                     const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.7';
                     state.selectedModel = normalizeModelId(modelId);
@@ -1228,7 +1263,7 @@
         const allBtns = document.querySelectorAll('button.options-card');
         allBtns.forEach(function (btn) {
             const img = btn.querySelector('img');
-            if (!img || (img.alt !== 'MiniMax M2.5' && img.alt !== 'Kimi K2.5')) return;
+            if (!img || (img.alt !== 'MiniMax M2.7' && img.alt !== 'MiniMax M2.5' && img.alt !== 'Kimi K2.5')) return;
 
             const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.7';
             const isSelected = modelId === selectedModelId;

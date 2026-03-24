@@ -18,6 +18,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 
 /**
  * Creates the subscription router with all dependencies injected.
@@ -48,10 +49,16 @@ function createSubscriptionRouter(deps) {
     router.post('/create-checkout-session', deployLimiter, asyncHandler(authMiddleware), checkoutPerUser, asyncHandler(async (req, res) => {
         const { referralCode, promoCode } = req.body;
         const plan = 'standard'; // unified plan
-        const userId = req.verifiedUserId || req.body.userId;
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
+        }
         const email = req.verifiedEmail || req.body.email;
 
-        if (!userId || typeof userId !== 'string') {
+        if (typeof userId !== 'string') {
             return res.status(400).json({ error: 'userId is required' });
         }
 
@@ -138,9 +145,15 @@ function createSubscriptionRouter(deps) {
 
     // ─── POST /create-portal-session — Dodo Customer Portal ────────────────────
     router.post('/create-portal-session', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-        const userId = req.verifiedUserId || req.body.userId;
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
+        }
 
-        if (!userId || typeof userId !== 'string') {
+        if (typeof userId !== 'string') {
             return res.status(400).json({ error: 'userId is required' });
         }
 
@@ -192,10 +205,16 @@ function createSubscriptionRouter(deps) {
     // Creates a Dodo one-time payment for the trial product ($0.99).
     // On payment.succeeded the webhook activates a 48h trialing subscription.
     router.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), checkoutPerUser, asyncHandler(async (req, res) => {
-        const userId = req.verifiedUserId || req.body.userId;
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
+        }
         const email = req.verifiedEmail || req.body.email;
 
-        if (!userId || typeof userId !== 'string') {
+        if (typeof userId !== 'string') {
             return res.status(400).json({ error: 'userId is required' });
         }
 
@@ -307,10 +326,16 @@ function createSubscriptionRouter(deps) {
     // then fires payment.succeeded → webhook activates 48h trial.
     router.post('/redeem-beta', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
         const { betaCode } = req.body;
-        const userId = req.verifiedUserId || req.body.userId;
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
+        }
         const email = req.verifiedEmail || req.body.email;
 
-        if (!userId || typeof userId !== 'string') {
+        if (typeof userId !== 'string') {
             return res.status(400).json({ error: 'userId is required' });
         }
         if (!betaCode || typeof betaCode !== 'string') {
@@ -386,9 +411,15 @@ function createSubscriptionRouter(deps) {
 
     // ─── POST /referral/generate — Generate Referral Code ───────────────────────
     router.post('/referral/generate', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-        const userId = req.verifiedUserId || req.body.userId;
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
+        }
 
-        if (!userId || typeof userId !== 'string') {
+        if (typeof userId !== 'string') {
             return res.status(400).json({ error: 'userId is required' });
         }
 
@@ -423,11 +454,26 @@ function createSubscriptionRouter(deps) {
     }));
 
     // ─── POST /referral/apply — Apply Referral Code ────────────────────────────
-    router.post('/referral/apply', asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
-        const userId = req.verifiedUserId || req.body.userId;
+    // Rate limiter for referral code attempts (prevents enumeration)
+    const referralLimiter = rateLimit({
+        windowMs: 15 * 60 * 1000, // 15 minutes
+        max: 10, // 10 attempts per 15 min per IP
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: { error: 'Too many referral attempts, try again later' },
+    });
+
+    router.post('/referral/apply', referralLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
+        }
         const { referralCode } = req.body;
 
-        if (!userId || typeof userId !== 'string') {
+        if (typeof userId !== 'string') {
             return res.status(400).json({ error: 'userId is required' });
         }
         if (!referralCode || typeof referralCode !== 'string') {

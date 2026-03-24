@@ -75,7 +75,7 @@ describe('bifrost.js', () => {
 
             await bifrost.createVirtualKey('user1');
             const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-            expect(body.provider_configs[0].allowed_models).toContain('minimax/minimax-m2.5');
+            expect(body.provider_configs[0].allowed_models).toContain('minimax/minimax-m2.7');
         });
     });
 
@@ -193,7 +193,7 @@ describe('bifrost.js', () => {
         it('falls back to minimax for unknown model', () => {
             const cfg = bifrost.getProviderConfig('unknown-model');
             expect(cfg.provider).toBe('openrouter');
-            expect(cfg.allowed_models).toContain('minimax/minimax-m2.5');
+            expect(cfg.allowed_models).toContain('minimax/minimax-m2.7');
         });
     });
 });

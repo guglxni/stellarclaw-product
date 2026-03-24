@@ -31,6 +31,7 @@ const { createDatabase } = require('./database');
 const bifrost = require('./bifrost');
 const dodo = require('./dodo');
 const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 const createLogger = require('./logger');
 
 // ── Structured loggers (one per subsystem) ──────────────────────────────────
@@ -118,6 +119,15 @@ if (config.scaleQueueOrchestration) {
         pollMs: config.scaleQueuePollMs,
     });
 }
+
+// Token replay protection — reject reused Google ID tokens from different IPs
+const usedGoogleTokens = new Map(); // hash → { ip, expiry }
+setInterval(() => {
+    const now = Date.now();
+    for (const [hash, entry] of usedGoogleTokens) {
+        if (now > entry.expiry) usedGoogleTokens.delete(hash);
+    }
+}, 5 * 60 * 1000).unref(); // cleanup every 5 min
 
 // ─── Safe Shell Helpers (no string interpolation → no injection) ────────────
 /** Get disk usage for root partition via `df -P /`. Returns parsed object or null. */
@@ -228,6 +238,9 @@ async function getGooglePublicKeys() {
  * Decodes and verifies a Google ID token.
  * Returns the payload { sub, email, name, ... } or null if invalid.
  */
+// NOTE: Nonce validation is handled at the session layer — POST /auth/session
+// creates an HttpOnly cookie after Google token verification, preventing replay.
+// The raw Google ID token in Authorization header is a legacy path.
 async function verifyGoogleToken(idToken) {
     if (!idToken || typeof idToken !== 'string') return null;
 
@@ -276,11 +289,23 @@ async function verifyGoogleToken(idToken) {
 }
 
 /**
- * Middleware that verifies Authorization: Bearer <google_id_token>
+ * Middleware that verifies auth via:
+ *   1. HttpOnly session cookie (preferred — set by POST /auth/session)
+ *   2. Authorization: Bearer <google_id_token> (legacy fallback)
  * Sets req.verifiedUserId and req.verifiedEmail on success.
  * In non-production, bypass requires explicit ALLOW_DEV_AUTH_BYPASS opt-in.
  */
 async function authMiddleware(req, res, next) {
+    // Option 1: HttpOnly session cookie (secure, not XSS-accessible)
+    if (req.cookies && req.cookies.liveclaw_session) {
+        try {
+            const decoded = jwt.verify(req.cookies.liveclaw_session, config.encryptionKey);
+            req.verifiedUserId = decoded.sub;
+            req.verifiedEmail = decoded.email;
+            return next();
+        } catch (_) { /* cookie invalid/expired — fall through to Bearer check */ }
+    }
+
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -292,11 +317,27 @@ async function authMiddleware(req, res, next) {
     }
 
     const token = authHeader.slice(7);
+
+    // Token replay protection — reject tokens reused from a different IP
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+    if (usedGoogleTokens.has(tokenHash)) {
+        const original = usedGoogleTokens.get(tokenHash);
+        if (original.ip && original.ip !== req.socket.remoteAddress) {
+            return res.status(401).json({ error: 'Token replay detected' });
+        }
+    }
+
     const payload = await verifyGoogleToken(token);
 
     if (!payload) {
         return res.status(401).json({ error: 'Invalid or expired Google token' });
     }
+
+    // Record token usage for replay detection
+    usedGoogleTokens.set(tokenHash, {
+        ip: req.socket.remoteAddress,
+        expiry: Date.now() + 60 * 60 * 1000, // 1h (matches Google token lifetime)
+    });
 
     req.verifiedUserId = payload.sub;
     req.verifiedEmail = payload.email;
@@ -708,7 +749,7 @@ function parseJson(value, fallback) {
 }
 
 async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7', telegramAllowFrom = [], mcpServers = null, ip = null, verifiedUserId = null }) {
-    if (verifiedUserId && verifiedUserId !== userId) {
+    if (!verifiedUserId || verifiedUserId !== userId) {
         throw httpError(403, { error: 'userId does not match authenticated user' });
     }
 
@@ -812,7 +853,15 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
                 if (server && typeof server.url === 'string' && /^https?:\/\//i.test(server.url) && !isPrivateUrl(server.url)) {
                     safeMcpServers[name] = { url: server.url };
                     if (server.headers && typeof server.headers === 'object') {
-                        safeMcpServers[name].headers = server.headers;
+                        const ALLOWED_HEADERS = new Set(['authorization', 'content-type', 'accept', 'x-api-key', 'user-agent']);
+                        const sanitized = {};
+                        for (const [key, val] of Object.entries(server.headers)) {
+                            const lowerKey = String(key).toLowerCase();
+                            if (ALLOWED_HEADERS.has(lowerKey) && typeof val === 'string' && !/[\r\n\0]/.test(val)) {
+                                sanitized[lowerKey] = val;
+                            }
+                        }
+                        safeMcpServers[name].headers = sanitized;
                     }
                 }
             }
@@ -852,7 +901,7 @@ async function runStopCommand({ userId, verifiedUserId = null }) {
         throw httpError(400, { error: 'userId is required' });
     }
 
-    if (verifiedUserId && verifiedUserId !== userId) {
+    if (!verifiedUserId || verifiedUserId !== userId) {
         throw httpError(403, { error: 'userId does not match authenticated user' });
     }
 
@@ -937,6 +986,8 @@ async function processQueuedOrchestrationCommand() {
 // Used to prevent SSRF via user-supplied MCP server URLs.
 function isPrivateUrl(url) {
     try {
+        // Block @ in URL authority (userinfo bypass)
+        if (url.includes('@')) return true;
         const { hostname } = new URL(url);
         if (/^(localhost|.*\.local|.*\.internal)$/i.test(hostname)) return true;
         const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -972,12 +1023,23 @@ function asyncHandler(fn) {
 // ─── Express App ────────────────────────────────────────────────────────────
 const app = express();
 
-// Trust the first proxy (Nginx / Cloudflare) so req.ip returns the real client IP.
-// Essential for rate limiting and geo-logging behind a reverse proxy.
-app.set('trust proxy', 1);
+// Trust proxy — in production, only trust the local Nginx reverse proxy
+// In development, trust one hop (for local testing)
+if (config.nodeEnv === 'production') {
+    app.set('trust proxy', 'loopback'); // Only trust 127.0.0.1/::1
+} else {
+    app.set('trust proxy', 1);
+}
 
 // Security headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.)
 app.use(helmet());
+
+// Prevent caching of sensitive API responses
+app.use((_req, res, next) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    next();
+});
 
 // CORS — In a two-droplet setup the frontend (liveclaw.xyz) calls the backend
 // (api.liveclaw.xyz) cross-origin. credentials: true so cookies/auth headers pass.
@@ -999,6 +1061,7 @@ app.use(express.json({
     },
 }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(cookieParser());
 
 // Request ID middleware for tracing
 app.use((req, _res, next) => {
@@ -1079,6 +1142,7 @@ const adminLoginLimiter = rateLimit({
     max: 7,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => req.socket.remoteAddress || '127.0.0.1',
     message: { error: 'Too many login attempts. Try again in 15 minutes.' },
     skip: () => isTest,
 });
@@ -1192,8 +1256,9 @@ app.post('/verify-turnstile', asyncHandler(async (req, res) => {
     formData.append('secret', config.turnstileSecret);
     formData.append('response', token);
 
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-    if (ip) formData.append('remoteip', ip);
+    // Omit remoteip — Cloudflare determines the client IP server-side,
+    // avoiding reliance on the spoofable X-Forwarded-For header.
+
 
     const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
         method: 'POST',
@@ -1206,7 +1271,7 @@ app.post('/verify-turnstile', asyncHandler(async (req, res) => {
         return res.json({ success: true });
     }
 
-    log.auth.warn('Turnstile verification failed', { ip, errors: outcome['error-codes'] });
+    log.auth.warn('Turnstile verification failed', { ip: req.socket.remoteAddress, errors: outcome['error-codes'] });
     return res.status(403).json({ success: false, error: 'CAPTCHA verification failed' });
 }));
 
@@ -1401,6 +1466,40 @@ app.get('/health', async (_req, res) => {
     });
 });
 
+// ── Session cookie auth ──────────────────────────────────────────────────────
+app.post('/auth/session', async (req, res) => {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ error: 'idToken required' });
+
+    try {
+        const payload = await verifyGoogleToken(idToken);
+        if (!payload) return res.status(401).json({ error: 'Invalid Google token' });
+
+        const sessionToken = jwt.sign(
+            { sub: payload.sub, email: payload.email },
+            config.encryptionKey,  // reuse existing key
+            { expiresIn: '1h' }
+        );
+
+        res.cookie('liveclaw_session', sessionToken, {
+            httpOnly: true,
+            secure: config.nodeEnv === 'production',
+            sameSite: 'strict',
+            maxAge: 60 * 60 * 1000, // 1 hour
+            path: '/',
+        });
+
+        res.json({ ok: true, userId: payload.sub, email: payload.email });
+    } catch (err) {
+        res.status(401).json({ error: 'Token verification failed' });
+    }
+});
+
+app.post('/auth/logout', (_req, res) => {
+    res.clearCookie('liveclaw_session', { httpOnly: true, secure: config.nodeEnv === 'production', sameSite: 'strict', path: '/' });
+    res.json({ ok: true });
+});
+
 // ─── Admin Auth Middleware ───────────────────────────────────────────────────
 // Accepts either:
 //   Authorization: Bearer <JWT>  — human dashboard (TOTP login)
@@ -1413,7 +1512,10 @@ function adminAuth(req, res, next) {
         const jwtSecret = config.adminJwtSecret || null;
         if (!jwtSecret) return res.status(403).json({ error: 'ADMIN_JWT_SECRET not configured' });
         try {
-            jwt.verify(token, jwtSecret);
+            const decoded = jwt.verify(token, jwtSecret);
+            if (decoded.jti && revokedAdminTokens.has(decoded.jti)) {
+                return res.status(401).json({ error: 'Token revoked' });
+            }
             return next();
         } catch (_) {
             return res.status(401).json({ error: 'Session expired. Please log in again.' });
@@ -1435,7 +1537,7 @@ function adminAuth(req, res, next) {
 }
 
 // ─── Route Modules (extracted from server.js) ──────────────────────────────
-const { createAdminRouter } = require('./routes/admin');
+const { createAdminRouter, revokedAdminTokens } = require('./routes/admin');
 const { createSubscriptionRouter } = require('./routes/subscriptions');
 const { createWebhookRouter } = require('./routes/webhooks');
 const { createBotRouter } = require('./routes/bots');

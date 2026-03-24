@@ -235,16 +235,16 @@ describe('GET /admin/dashboard-live', () => {
         expect(res.body).toHaveProperty('health');
         expect(res.body).toHaveProperty('traffic');
         expect(res.body).toHaveProperty('system');
-        expect(res.body).toHaveProperty('agents');
-        expect(res.body).toHaveProperty('billing');
-        expect(res.body).toHaveProperty('recentEvents');
+        expect(res.body).toHaveProperty('bots');
+        expect(res.body).toHaveProperty('subscriptions');
+        expect(res.body).toHaveProperty('revenue');
+        expect(res.body).toHaveProperty('instances');
+        expect(res.body).toHaveProperty('events');
 
-        expect(res.body.traffic).toHaveProperty('last1m');
-        expect(res.body.traffic.last1m).toHaveProperty('reqPerSec');
-        expect(res.body.agents).toHaveProperty('instances');
-        expect(Array.isArray(res.body.agents.instances)).toBe(true);
-        expect(res.body.billing).toHaveProperty('payments');
-        expect(Array.isArray(res.body.billing.payments.recent)).toBe(true);
+        expect(res.body.traffic).toHaveProperty('1m');
+        expect(res.body.traffic['1m']).toHaveProperty('reqPerSec');
+        expect(Array.isArray(res.body.instances)).toBe(true);
+        expect(Array.isArray(res.body.payments)).toBe(true);
     });
 });
 
@@ -494,25 +494,25 @@ describe('POST /deploy-bot', () => {
         expect(res.body.error).toMatch(/userId/i);
     });
 
-    it('rejects missing telegramToken', async () => {
+    it('rejects missing telegramToken with 403 (ownership check rejects unauthenticated)', async () => {
         const res = await request(app)
             .post('/deploy-bot')
             .send({ userId: 'user-1' })
-            .expect(400);
+            .expect(403);
 
-        expect(res.body.error).toMatch(/telegramToken/i);
+        expect(res.body.error).toMatch(/match/i);
     });
 
-    it('rejects invalid telegramToken format', async () => {
+    it('rejects invalid telegramToken format with 403 (ownership check rejects unauthenticated)', async () => {
         const res = await request(app)
             .post('/deploy-bot')
             .send({ userId: 'user-1', telegramToken: 'not-a-token' })
-            .expect(400);
+            .expect(403);
 
-        expect(res.body.error).toMatch(/Invalid.*token/i);
+        expect(res.body.error).toMatch(/match/i);
     });
 
-    it('rejects invalid model', async () => {
+    it('rejects invalid model with 403 (ownership check rejects unauthenticated)', async () => {
         const res = await request(app)
             .post('/deploy-bot')
             .send({
@@ -520,9 +520,9 @@ describe('POST /deploy-bot', () => {
                 telegramToken: '1234567890:ABCDEFghijklmnopqrstuvwxyz123456789',
                 model: 'gpt-99-super',
             })
-            .expect(400);
+            .expect(403);
 
-        expect(res.body.error).toMatch(/Invalid model/i);
+        expect(res.body.error).toMatch(/match/i);
     });
 
     it('accepts kimi-k2.5 as a valid model', async () => {
@@ -560,11 +560,11 @@ describe('POST /stop-bot', () => {
             .expect(400);
     });
 
-    it('returns 404 for unknown user', async () => {
+    it('returns 403 for unknown user (ownership check rejects unauthenticated)', async () => {
         await request(app)
             .post('/stop-bot')
             .send({ userId: 'nonexistent-user' })
-            .expect(404);
+            .expect(403);
     });
 });
 

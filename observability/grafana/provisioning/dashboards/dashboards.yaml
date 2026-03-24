@@ -1,0 +1,14 @@
+# Auto-provision dashboards from JSON files
+apiVersion: 1
+
+providers:
+  - name: "LiveClaw"
+    orgId: 1
+    folder: "LiveClaw"
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

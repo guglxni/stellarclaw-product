@@ -33,6 +33,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^12.6.2",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dodo-sync": "^0.4.0",
     "dodopayments": "^2.23.1",

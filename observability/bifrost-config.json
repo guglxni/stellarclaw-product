@@ -1,0 +1,38 @@
+{
+  "plugins": {
+    "logging": {
+      "enabled": true,
+      "storage": {
+        "type": "sqlite",
+        "path": "/app/data/logs.db"
+      },
+      "retention_days": 30,
+      "log_request_content": true,
+      "log_response_content": true
+    },
+    "telemetry": {
+      "enabled": true,
+      "metrics_path": "/metrics",
+      "custom_labels": {
+        "service": "liveclaw",
+        "environment": "production"
+      }
+    },
+    "otel": {
+      "enabled": true,
+      "trace_type": "genai_extension",
+      "endpoint": "http://otel-collector:4318",
+      "protocol": "http",
+      "export_content": true,
+      "resource_attributes": {
+        "service.name": "liveclaw-bifrost",
+        "service.version": "1.0.0",
+        "deployment.environment": "production"
+      },
+      "metrics": {
+        "enabled": true,
+        "push_interval_seconds": 15
+      }
+    }
+  }
+}

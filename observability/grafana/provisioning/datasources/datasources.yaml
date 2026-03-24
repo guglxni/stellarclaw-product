@@ -1,0 +1,34 @@
+# Auto-provisioned datasources for Grafana
+apiVersion: 1
+
+datasources:
+  # Tempo — distributed traces from Bifrost LLM calls
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: true
+    uid: tempo
+    jsonData:
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: ""
+
+  # Prometheus — Bifrost native metrics + OTel-derived metrics
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    uid: prometheus
+    jsonData:
+      timeInterval: "10s"
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo

@@ -66,6 +66,8 @@ jobs:
             backend:
               - 'backend/**'
               - 'scripts/**'
+              - 'observability/**'
+              - 'docker-compose.observability.yml'
               - '.github/workflows/main.yml'
             frontend:
               - 'liveclaw-web/**'
@@ -269,21 +271,19 @@ jobs:
             ufw allow 'Nginx Full'
 
             systemctl enable --now docker
-            if ! docker ps --format '{{.Names}}' | grep -q bifrost-gateway; then
-              docker rm -f bifrost-gateway 2>/dev/null || true
-              docker pull maximhq/bifrost:latest
-              docker run -d \
-                --name bifrost-gateway \
-                --restart unless-stopped \
-                -p 127.0.0.1:8080:8080 \
-                -v /opt/liveclaw/bifrost-data:/app/data \
-                maximhq/bifrost:latest
-              echo "  Bifrost gateway started on localhost:8080"
-            else
-              echo "  Bifrost gateway already running"
+            # Install docker compose plugin if missing
+            docker compose version &>/dev/null || apt-get install -y -qq docker-compose-plugin
+
+            # Migrate standalone Bifrost container to compose stack
+            if docker ps -a --format '{{.Names}}' | grep -q '^bifrost-gateway$'; then
+              if ! docker inspect bifrost-gateway --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null | grep -q .; then
+                echo "  Migrating standalone Bifrost to compose stack..."
+                docker stop bifrost-gateway 2>/dev/null || true
+                docker rm bifrost-gateway 2>/dev/null || true
+              fi
             fi
 
-            mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data,releases}
+            mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data,releases,observability}
 
             cd /opt/liveclaw/backend
             CURRENT_VER=""
@@ -309,13 +309,13 @@ jobs:
 
             echo "=== Bootstrap complete! ==="
 
-      - name: Upload backend code
+      - name: Upload backend code + observability stack
         uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
-          source: "backend/,scripts/"
+          source: "backend/,scripts/,observability/,docker-compose.observability.yml"
           target: ${{ env.REMOTE_BASE }}
           overwrite: true
           strip_components: 0
@@ -375,7 +375,17 @@ jobs:
               echo "  Created .env with placeholders — SSH in and edit!"
             fi
 
-            echo "=== 3/5 Reload orchestrator (zero-downtime) ==="
+            echo "=== 3/6 Launch observability stack ==="
+            cd /opt/liveclaw
+            if [ -f docker-compose.observability.yml ]; then
+              export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
+              export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-liveclaw-obs-2024}"
+              docker compose -f docker-compose.observability.yml pull --quiet 2>/dev/null || true
+              docker compose -f docker-compose.observability.yml up -d
+              echo "  Observability stack running (Bifrost + Prometheus + Tempo + Grafana)"
+            fi
+
+            echo "=== 4/6 Reload orchestrator (zero-downtime) ==="
             if pm2 describe liveclaw-orchestrator &>/dev/null; then
               pm2 reload liveclaw-orchestrator --update-env
             else
@@ -384,10 +394,10 @@ jobs:
             pm2 save
             pm2 startup 2>/dev/null | tail -n 1 | bash 2>/dev/null || true
 
-            echo "=== 4/5 Nginx ==="
+            echo "=== 5/6 Nginx ==="
             nginx -t && systemctl reload nginx || echo "Nginx config unchanged"
 
-            echo "=== 5/5 Health check with retry ==="
+            echo "=== 6/6 Health check with retry ==="
             HEALTHY=false
             sleep 5  # initial grace period for DB connection + migrations
             for i in 1 2 3 4 5 6 7 8; do

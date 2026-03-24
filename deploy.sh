@@ -139,30 +139,41 @@ ufw --force enable
 ufw allow ssh
 ufw allow 'Nginx Full'
 
-# ── Self-Hosted Bifrost AI Gateway (Docker) ──────────────────────────────
+# ── Bifrost AI Gateway + Observability Stack (Docker Compose) ─────────────
 # Bifrost: high-performance Go AI gateway with native Virtual Key management
+# Observability: OTel Collector → Grafana Tempo (traces) + Prometheus (metrics) + Grafana (dashboards)
 # Docs: https://github.com/maximhq/bifrost
 systemctl enable --now docker
 
-if ! docker ps --format '{{.Names}}' | grep -q bifrost-gateway; then
-    echo "  Starting Bifrost gateway container..."
-    # Stop old Portkey container if exists
-    docker stop portkey-gateway 2>/dev/null || true
-    docker rm portkey-gateway 2>/dev/null || true
-    
-    docker pull maximhq/bifrost:latest
-    docker run -d \
-        --name bifrost-gateway \
-        --restart unless-stopped \
-        -p 127.0.0.1:8080:8080 \
-        -v /opt/liveclaw/bifrost-data:/app/data \
-        maximhq/bifrost:latest
-    echo "  Bifrost gateway running on localhost:8080"
-else
-    echo "  Bifrost gateway already running"
-    # Update to latest
-    docker pull maximhq/bifrost:latest 2>/dev/null || true
+# Install docker-compose plugin if not present
+if ! docker compose version &>/dev/null; then
+    apt-get install -y -qq docker-compose-plugin
 fi
+
+# Stop legacy standalone Bifrost container (migrated to compose)
+docker stop portkey-gateway 2>/dev/null || true
+docker rm portkey-gateway 2>/dev/null || true
+if docker ps -a --format '{{.Names}}' | grep -q '^bifrost-gateway$'; then
+    if ! docker inspect bifrost-gateway --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null | grep -q .; then
+        echo "  Migrating standalone Bifrost container to compose stack..."
+        docker stop bifrost-gateway 2>/dev/null || true
+        docker rm bifrost-gateway 2>/dev/null || true
+    fi
+fi
+
+# Launch full observability stack via Docker Compose
+cd /opt/liveclaw
+export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
+export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-liveclaw-obs-2024}"
+
+docker compose -f docker-compose.observability.yml pull
+docker compose -f docker-compose.observability.yml up -d
+
+echo "  Bifrost gateway running on localhost:8080"
+echo "  Grafana dashboards on localhost:3001 (admin / \$GF_ADMIN_PASSWORD)"
+echo "  Prometheus on localhost:9090"
+echo "  Tempo on localhost:3200"
+cd -
 
 # Directories
 mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data}
@@ -249,6 +260,12 @@ rsync -az --delete -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/liveclaw_deploy
     --exclude 'liveclaw.db' \
     --exclude 'picobot' \
     "$BACKEND_DIR/" root@"$DROPLET_IP":${REMOTE_BASE}/backend/
+
+info "Uploading observability stack..."
+rsync -az -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/liveclaw_deploy" \
+    ./docker-compose.observability.yml root@"$DROPLET_IP":${REMOTE_BASE}/
+rsync -az --delete -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/liveclaw_deploy" \
+    ./observability/ root@"$DROPLET_IP":${REMOTE_BASE}/observability/
 
 if [ -d "$FRONTEND_DIR" ]; then
     info "Uploading frontend..."
@@ -484,6 +501,7 @@ echo "  2. Edit .env:  ssh root@${DROPLET_IP} 'nano /opt/liveclaw/backend/.env'"
 echo "  3. Restart:    ssh root@${DROPLET_IP} 'pm2 restart liveclaw-orchestrator'"
 echo "  4. SSL (if skipped): ssh root@${DROPLET_IP} 'certbot --nginx -d ${DOMAIN} -d www.${DOMAIN}'"
 echo "  5. Webhook:    ssh root@${DROPLET_IP} 'cd /opt/liveclaw && node scripts/set-webhook.js'"
+echo "  6. Grafana:    ssh -L 3001:localhost:3001 root@${DROPLET_IP}  →  http://localhost:3001"
 echo ""
 echo "  Monthly cost: ~\$12/mo (s-2vcpu-2gb)"
 echo "  Runway at \$200 credit: ~16 months"
