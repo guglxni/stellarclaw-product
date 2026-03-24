@@ -289,6 +289,8 @@ jobs:
             fi
 
             mkdir -p /opt/liveclaw/{backend,frontend,scripts,bots,bifrost-data,releases,observability}
+            # Bifrost container runs as UID 1000 — ensure data directory is writable
+            chown -R 1000:1000 /opt/liveclaw/bifrost-data 2>/dev/null || true
 
             cd /opt/liveclaw/backend
             CURRENT_VER=""
@@ -411,7 +413,9 @@ jobs:
             echo "=== 3/7 Start Bifrost gateway (critical) ==="
             cd /opt/liveclaw
             export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
-            # Remove any orphan container with the same name from previous compose layout
+            # Bifrost runs as UID 1000 — ensure data dir is writable
+            chown -R 1000:1000 /opt/liveclaw/bifrost-data 2>/dev/null || true
+            # Remove any orphan container from previous compose layout
             docker rm -f bifrost-gateway 2>/dev/null || true
             docker compose -f docker-compose.bifrost.yml up -d --remove-orphans
 
