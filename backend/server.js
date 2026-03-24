@@ -1490,7 +1490,7 @@ app.post('/auth/session', async (req, res) => {
         });
 
         res.json({ ok: true, userId: payload.sub, email: payload.email });
-    } catch (err) {
+    } catch (_err) {
         res.status(401).json({ error: 'Token verification failed' });
     }
 });
