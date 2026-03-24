@@ -46,7 +46,7 @@ function getClient() {
 // Standard plan: $9.99/mo
 // Apply EARLYCLAW promo code → Dodo applies ~30.1% off → ~$6.99/mo (locked in, first 500)
 const PRODUCT_ID = process.env.DODO_PRODUCT_ID || '';
-// Two-day trial: $0.99 one-time payment → 48h trialing access, then prompted to subscribe
+// Two-day trial: $0.75 one-time payment → 48h trialing access, then prompted to subscribe
 const TRIAL_PRODUCT_ID = process.env.DODO_TRIAL_PRODUCT_ID || '';
 
 // ─── Bifrost budget — per-subscriber monthly LLM spend cap ──────────────────
@@ -100,7 +100,7 @@ async function createCheckoutSession(plan, userId, email, returnUrl, discountCod
 }
 
 /**
- * Create a $0.99 two-day trial checkout session.
+ * Create a $0.75 two-day trial checkout session.
  * On payment.succeeded the webhook activates a 48-hour trialing subscription.
  *
  * @param {string} userId          - Google sub

@@ -77,7 +77,7 @@ describe('GET /pricing', () => {
         // Trial plan
         expect(res.body.plans.trial).toBeDefined();
         expect(res.body.plans.trial.id).toBe('trial');
-        expect(res.body.plans.trial.price).toBe(0.99);
+        expect(res.body.plans.trial.price).toBe(0.75);
         expect(res.body.plans.trial.interval).toBe('one-time');
         expect(Array.isArray(res.body.plans.trial.features)).toBe(true);
 

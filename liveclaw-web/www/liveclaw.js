@@ -647,7 +647,7 @@
                 el.innerHTML = `
                     <p class="text-xs text-zinc-500">
                         <span class="font-medium text-zinc-400">$${standard.price.toFixed(2)}/month.</span>
-                        $${trial ? trial.price.toFixed(2) : '0.99'} two-day trial available. Cancel anytime.${slotSpan}
+                        $${trial ? trial.price.toFixed(2) : '0.75'} two-day trial available. Cancel anytime.${slotSpan}
                     </p>
                 `;
             }

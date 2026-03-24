@@ -9,7 +9,7 @@
  *  5. Manages Dodo Payments subscription lifecycle (checkout, portal, webhooks)
  *  6. Gracefully shuts down on SIGTERM/SIGINT
  *
- * Monetisation: Dodo Payments — $9.99/mo standard ($6.99 Early Claw offer w/ EARLYCLAW code) with 2-day trial at $0.99.
+ * Monetisation: Dodo Payments — $9.99/mo standard ($6.99 Early Claw offer w/ EARLYCLAW code) with 2-day trial at $0.75.
  * MoR model: Dodo handles global taxes, invoicing, and checkout.
  */
 

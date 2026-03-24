@@ -201,8 +201,8 @@ function createSubscriptionRouter(deps) {
         });
     }));
 
-    // ─── POST /create-trial-checkout — $0.99 Two-Day Trial Checkout ─────────────
-    // Creates a Dodo one-time payment for the trial product ($0.99).
+    // ─── POST /create-trial-checkout — $0.75 Two-Day Trial Checkout ─────────────
+    // Creates a Dodo one-time payment for the trial product ($0.75).
     // On payment.succeeded the webhook activates a 48h trialing subscription.
     router.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), checkoutPerUser, asyncHandler(async (req, res) => {
         const userId = req.verifiedUserId || req.body?.userId;
@@ -273,7 +273,7 @@ function createSubscriptionRouter(deps) {
                 trial: {
                     id: 'trial',
                     name: 'LiveClaw Trial',
-                    price: 0.99,
+                    price: 0.75,
                     currency: 'usd',
                     interval: 'one-time',
                     duration: '48 hours',
@@ -322,7 +322,7 @@ function createSubscriptionRouter(deps) {
 
     // ─── POST /redeem-beta — Redeem a Beta Access Code via Dodo Checkout ────────
     // Validates the beta code in our DB, then creates a Dodo trial checkout with
-    // the code as a 100% discount coupon. Dodo handles billing ($0.99 - 100% = $0.00),
+    // the code as a 100% discount coupon. Dodo handles billing ($0.75 - 100% = $0.00),
     // then fires payment.succeeded → webhook activates 48h trial.
     router.post('/redeem-beta', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
         const { betaCode } = req.body;
