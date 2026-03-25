@@ -1,0 +1,12 @@
+# Default placeholder in .env.example (not a real secret)
+a4291294666ab8f893a01ef8ea62d2a38c8a26fe:backend/.env.example:generic-api-key:95
+
+# Legacy admin-server.js secret (file removed from deploy, secret rotated)
+1077ff0552604fb179d276528fdd39a21571d12d:admin-server.js:generic-api-key:83
+
+# Test fixture fake Telegram token (not a real token)
+f1f599c6fdc23c272e11bcc28ae2bd135f331c44:backend/tests/setup.js:telegram-bot-api-token:16
+
+# Firebase/Google public client-side API keys (designed to be embedded in frontend)
+c3fd427716e94fa0cf99ad9c1cba66b7a7a6d892:liveclaw-web/www/_next/static/chunks/e9428ab9772be205.js:gcp-api-key:23
+31c69a1a8b3e1cdcb26a4208647cfefc1470a4b4:liveclaw-web/www.simpleclaw.com/_next/static/chunks/e9428ab9772be205.js:gcp-api-key:23
