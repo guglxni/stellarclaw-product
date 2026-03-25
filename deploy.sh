@@ -170,7 +170,7 @@ fi
 # ── Step 1: Start Bifrost (critical path) ─────────────────────────────────
 cd /opt/liveclaw
 export BIFROST_DATA_DIR=/opt/liveclaw/bifrost-data
-export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-liveclaw-obs-2024}"
+export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-changeme-generate-a-real-password}"
 
 # Bifrost runs as UID 1000 — ensure data dir is writable
 chown -R 1000:1000 /opt/liveclaw/bifrost-data 2>/dev/null || true
