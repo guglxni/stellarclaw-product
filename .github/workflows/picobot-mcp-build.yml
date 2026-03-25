@@ -98,16 +98,25 @@ jobs:
             exit 0
           fi
 
-          # Check if MCP.md exists in the release tag (canonical marker from PR #9)
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          # Detect MCP in official release via two signals (either is sufficient):
+          # 1. MCP.md exists in the release tag tree (canonical marker from PR #9)
+          # 2. Release notes body mentions MCP server support
+          RELEASE_BODY=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq '.body // ""')
+          MCP_MD_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             "https://raw.githubusercontent.com/${{ env.UPSTREAM_REPO }}/${TAG}/MCP.md")
-          echo "MCP.md HTTP status: ${HTTP_CODE}"
+          echo "MCP.md HTTP status: ${MCP_MD_CODE}"
 
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ MCP.md found in ${TAG} — MCP has landed!"
+          MCP_IN_NOTES=false
+          if echo "$RELEASE_BODY" | grep -qi "mcp"; then
+            MCP_IN_NOTES=true
+          fi
+          echo "MCP in release notes: ${MCP_IN_NOTES}"
+
+          if [ "$MCP_MD_CODE" = "200" ] || [ "$MCP_IN_NOTES" = "true" ]; then
+            echo "✅ MCP support confirmed in ${TAG} — transitioning to official release!"
             echo "mcp_landed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "MCP.md not found — still building from fork"
+            echo "MCP not found in release — still building from fork"
             echo "mcp_landed=false" >> "$GITHUB_OUTPUT"
           fi
 
