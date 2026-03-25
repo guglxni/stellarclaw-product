@@ -36,11 +36,10 @@ services:
     depends_on:
       tempo:
         condition: service_started
+    # otel-collector-contrib uses a distroless base image (no wget/curl/sh).
+    # Health check disabled — container startup/crash handling via restart: unless-stopped.
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:13133 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
+      test: ["NONE"]
 
   # ── Grafana Tempo (Trace Storage) ────────────────────────────────────────
   tempo:
