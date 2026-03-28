@@ -1,5 +1,5 @@
 /**
- * LiveClaw Frontend Integration — liveclaw.js
+ * LiveClaw Frontend Integration - liveclaw.js
  *
  * Wires the cloned static UI to the LiveClaw Node.js backend orchestrator.
  *
@@ -14,9 +14,9 @@
     'use strict';
 
     // ─── Analytics Bootstrap ─────────────────────────────────────────────────
-    // PostHog  — FOSS product analytics  (github.com/PostHog/posthog)
-    // Umami    — FOSS page analytics     (github.com/umami-software/umami)
-    // GTM      — tag container for future ad pixels (Meta, Google Ads, etc.)
+    // PostHog  - FOSS product analytics  (github.com/PostHog/posthog)
+    // Umami    - FOSS page analytics     (github.com/umami-software/umami)
+    // GTM      - tag container for future ad pixels (Meta, Google Ads, etc.)
     // Each provider loads only when its window.LIVECLAW_* var is set in config.js.
     (function bootstrapAnalytics() {
         // ── Umami ────────────────────────────────────────────────────────────
@@ -35,14 +35,14 @@
         var phKey  = window.LIVECLAW_POSTHOG_KEY;
         var phHost = window.LIVECLAW_POSTHOG_HOST || 'https://us.i.posthog.com';
         if (phKey) {
-            /* PostHog JS snippet — do not modify */
+            /* PostHog JS snippet - do not modify */
             !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split('.');2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement('script')).type='text/javascript',p.async=!0,p.src=s.api_host.replace('.i.posthog.com','-assets.i.posthog.com')+'/static/array.js';(r=t.getElementsByTagName('script')[0]).parentNode.insertBefore(p,r);var u=e;for(a!==void 0?u=e[a]=[]:a='posthog',u.people=u.people||[],u.toString=function(t){var e='posthog';return'posthog'!==a&&(e+='.'+a),t||(e+=' (stub)'),e},u.people.toString=function(){return u.toString(1)+' (stub)'},o='capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys getNextSurveyStep onSessionId setPersonPropertiesForFlags'.split(' '),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||(window.posthog={}));
             posthog.init(phKey, {
                 api_host: phHost,
                 person_profiles: 'identified_only', // only store profiles for signed-in users
                 capture_pageview: true,
                 capture_pageleave: true,
-                autocapture: false,                  // manual events only — keeps data clean
+                autocapture: false,                  // manual events only - keeps data clean
             });
         }
 
@@ -159,7 +159,7 @@
 
         // Replace the custom "Sign in with Google" button with Google's native
         // renderButton. This works on all browsers including Safari (no ITP issues)
-        // and provides a direct sign-in click — no popups, no overlays, no redirects.
+        // and provides a direct sign-in click - no popups, no overlays, no redirects.
         if (GOOGLE_CLIENT_ID) {
             function generateNonce() {
                 var array = new Uint8Array(16);
@@ -216,7 +216,7 @@
         // Validate OAuth nonce to prevent CSRF attacks
         const storedNonce = sessionStorage.getItem('liveclaw_oauth_nonce');
         if (storedNonce && payload.nonce !== storedNonce) {
-            console.error('OAuth nonce mismatch — possible CSRF');
+            console.error('OAuth nonce mismatch - possible CSRF');
             return;
         }
         sessionStorage.removeItem('liveclaw_oauth_nonce');
@@ -265,7 +265,7 @@
             } catch (_) { /* fall through to refresh */ }
         }
 
-        // Token expired — try silent refresh via Google One Tap
+        // Token expired - try silent refresh via Google One Tap
         if (window.google && GOOGLE_CLIENT_ID) {
             const refreshed = await new Promise((resolve) => {
                 _tokenRefreshResolve = resolve;
@@ -291,7 +291,7 @@
             if (refreshed) return true;
         }
 
-        // Silent refresh failed — ask user to sign in again
+        // Silent refresh failed - ask user to sign in again
         showToast('Your session has expired. Please sign in again.', 'error', 'Session expired');
         return false;
     }
@@ -462,14 +462,14 @@
             const hasActiveSub = subData.hasSubscription && ['active', 'trialing', 'past_due'].includes(subData.status);
 
             if (!hasActiveSub) {
-                // No subscription — show pricing modal to choose a plan
+                // No subscription - show pricing modal to choose a plan
                 buttonEl.disabled = false;
                 buttonEl.innerHTML = origHTML;
                 showPricingModal();
                 return;
             }
 
-            // Step 2: Has subscription — proceed with deploy
+            // Step 2: Has subscription - proceed with deploy
             buttonEl.innerHTML = `
                 <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -592,7 +592,7 @@
         // Try to find existing auth flow container first (re-render after Telegram connect)
         let authSection = document.getElementById('liveclaw-auth-flow');
         if (!authSection) {
-            // First render — find the Google button and replace its parent
+            // First render - find the Google button and replace its parent
             const googleBtn = findGoogleButton();
             if (!googleBtn) return;
             authSection = googleBtn.closest('div.w-full.flex.flex-col.gap-3.min-w-0') || googleBtn.parentElement;
@@ -734,7 +734,7 @@
             </div>
         `;
 
-        const planLabel = state.subscription ? escapeHtml(state.subscription.plan || 'starter') : '—';
+        const planLabel = state.subscription ? escapeHtml(state.subscription.plan || 'starter') : '-';
         const planUpper = planLabel.charAt(0).toUpperCase() + planLabel.slice(1);
 
         // Replace the options/card area with a status dashboard
@@ -765,7 +765,7 @@
                             </div>
                             <div class="flex items-center justify-between">
                                 <span class="text-zinc-400 text-sm">Process ID</span>
-                                <span class="text-zinc-500 text-sm font-mono">${escapeHtml(String(state.botPid || '—'))}</span>
+                                <span class="text-zinc-500 text-sm font-mono">${escapeHtml(String(state.botPid || '-'))}</span>
                             </div>
                         </div>
 
@@ -865,7 +865,7 @@
                 });
             }
 
-            // Manage Subscription — open Dodo portal
+            // Manage Subscription - open Dodo portal
             const manageSubBtn = document.getElementById('liveclaw-manage-sub-btn');
             if (manageSubBtn) {
                 manageSubBtn.addEventListener('click', async () => {
@@ -900,7 +900,7 @@
                 }
                 saveState();
             }
-        } catch (_) { /* network error — ignore */ }
+        } catch (_) { /* network error - ignore */ }
     }
 
     async function openPortal() {
@@ -1059,9 +1059,9 @@
                         ${makeFeaturesHtml(trial.features)}
                     </ul>
                     <button id="pricing-trial-btn"
-                        data-liveclaw-checkout-label="Start Trial — $${trial.price.toFixed(2)}"
+                        data-liveclaw-checkout-label="Start Trial - $${trial.price.toFixed(2)}"
                         style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:transparent;border:1px solid rgba(99,102,241,0.4);color:#a5b4fc;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
-                        Start Trial — $${trial.price.toFixed(2)}
+                        Start Trial - $${trial.price.toFixed(2)}
                     </button>
                     <p style="text-align:center;color:#52525b;font-size:0.7rem;">One-time payment. No auto-renew.</p>
                 </div>` : `
@@ -1087,9 +1087,9 @@
                         ${makeFeaturesHtml(subPlan.features)}
                     </ul>
                     <button id="pricing-sub-btn"
-                        data-liveclaw-checkout-label="Subscribe — $${subPlan.price.toFixed(2)}/mo"
+                        data-liveclaw-checkout-label="Subscribe - $${subPlan.price.toFixed(2)}/mo"
                         style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:${subCtaBg};color:#fff;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
-                        Subscribe — $${subPlan.price.toFixed(2)}/mo
+                        Subscribe - $${subPlan.price.toFixed(2)}/mo
                     </button>
                     <p style="text-align:center;color:#52525b;font-size:0.7rem;">Cancel anytime. Billed monthly.</p>
                 </div>`;
