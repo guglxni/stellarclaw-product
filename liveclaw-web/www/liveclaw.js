@@ -170,6 +170,10 @@
             sessionStorage.setItem('liveclaw_oauth_nonce', oauthNonce);
 
             loadScript('https://accounts.google.com/gsi/client', function () {
+                // Re-find the button in case DOM changed during async load
+                var btn = findGoogleButton();
+                if (!btn || state.userId) return; // already signed in
+
                 window.google.accounts.id.initialize({
                     client_id: GOOGLE_CLIENT_ID,
                     callback: handleGoogleCredential,
@@ -177,11 +181,10 @@
                     nonce: oauthNonce,
                 });
 
-                // Create a container and render Google's native button into it
+                // Render Google's native button directly into the custom button's spot
                 var gsiContainer = document.createElement('div');
                 gsiContainer.id = 'liveclaw-gsi-btn';
-                googleBtn.parentNode.insertBefore(gsiContainer, googleBtn);
-                googleBtn.style.display = 'none'; // hide the custom button
+                btn.parentNode.replaceChild(gsiContainer, btn);
 
                 window.google.accounts.id.renderButton(gsiContainer, {
                     type: 'standard',
@@ -190,15 +193,9 @@
                     text: 'signin_with',
                     shape: 'pill',
                     logo_alignment: 'left',
-                    width: Math.min(googleBtn.offsetWidth || 280, 400),
+                    width: 280,
                 });
             });
-        }
-
-        // Old custom button is fully retired — GSI renderButton handles everything.
-        // Remove it from the DOM to prevent any conflicts.
-        if (googleBtn.parentNode) {
-            googleBtn.remove();
         }
     }
 
