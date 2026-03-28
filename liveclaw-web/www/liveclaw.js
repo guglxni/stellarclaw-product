@@ -193,20 +193,29 @@
             }
 
             if (GOOGLE_CLIENT_ID && window.google) {
-                // prompt() opens One Tap — works in Chrome but Safari's ITP blocks it.
-                // Use prompt() with a notification callback; if dismissed/skipped, fall back
-                // to the full OAuth redirect flow which works in all browsers.
+                // prompt() opens One Tap — works in Chrome.
+                // On Safari, ITP blocks One Tap silently. When prompt is blocked,
+                // fall back to rendering Google's iframe-based popup button which
+                // bypasses ITP without needing redirect URIs.
                 window.google.accounts.id.prompt(function (notification) {
                     if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-                        // One Tap blocked (Safari ITP / user dismissed) — use redirect
-                        var nonce = sessionStorage.getItem('liveclaw_oauth_nonce') || '';
-                        window.google.accounts.oauth2.initCodeClient({
-                            client_id: GOOGLE_CLIENT_ID,
-                            scope: 'openid email profile',
-                            ux_mode: 'redirect',
-                            redirect_uri: window.location.origin,
-                            nonce: nonce,
-                        }).requestCode();
+                        // One Tap blocked — show Google's built-in popup button
+                        var container = document.createElement('div');
+                        container.id = 'liveclaw-gsi-fallback';
+                        container.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:rgba(0,0,0,0.7);padding:2rem;border-radius:1rem;';
+                        document.body.appendChild(container);
+                        window.google.accounts.id.renderButton(container, {
+                            type: 'standard',
+                            theme: 'filled_black',
+                            size: 'large',
+                            text: 'signin_with',
+                            shape: 'pill',
+                            width: 300,
+                        });
+                        // Close overlay on click outside
+                        container.addEventListener('click', function(ev) {
+                            if (ev.target === container) container.remove();
+                        });
                     }
                 });
             } else if (GOOGLE_CLIENT_ID && !window.google) {
@@ -230,6 +239,10 @@
     let checkoutResetLifecycleBound = false;
 
     function handleGoogleCredential(response) {
+        // Remove fallback overlay if present
+        var fallback = document.getElementById('liveclaw-gsi-fallback');
+        if (fallback) fallback.remove();
+
         // Store the raw JWT for Authorization header
         state.idToken = response.credential;
         // Decode the JWT credential to get user info
