@@ -532,7 +532,23 @@ jobs:
             -e "s|{{LIVECLAW_API_BASE}}||g" \
             -e "s|{{LIVECLAW_GOOGLE_CLIENT_ID}}|${{ secrets.GOOGLE_CLIENT_ID }}|g" \
             -e "s|{{LIVECLAW_TURNSTILE_SITE_KEY}}|${{ secrets.LIVECLAW_TURNSTILE_SITE_KEY }}|g" \
+            -e "s|{{LIVECLAW_POSTHOG_KEY}}|${{ secrets.LIVECLAW_POSTHOG_KEY }}|g" \
+            -e "s|{{LIVECLAW_POSTHOG_HOST}}|${{ secrets.LIVECLAW_POSTHOG_HOST }}|g" \
+            -e "s|{{LIVECLAW_UMAMI_URL}}|${{ secrets.LIVECLAW_UMAMI_URL }}|g" \
+            -e "s|{{LIVECLAW_UMAMI_WEBSITE_ID}}|${{ secrets.LIVECLAW_UMAMI_WEBSITE_ID }}|g" \
+            -e "s|{{LIVECLAW_GTM_ID}}|${{ secrets.LIVECLAW_GTM_ID }}|g" \
+            -e "s|{{LIVECLAW_APPLIXIR_ZONE_ID}}|${{ secrets.LIVECLAW_APPLIXIR_ZONE_ID }}|g" \
             liveclaw-web/config.js.template > liveclaw-web/www/config.js
+
+          # Safety net: replace any remaining unreplaced template vars with empty strings
+          sed -i "s|'{{[A-Z_]*}}'|''|g" liveclaw-web/www/config.js
+
+          # Verify no template vars remain
+          if grep -q '{{' liveclaw-web/www/config.js; then
+            echo "::error::config.js still contains unreplaced template variables"
+            grep '{{' liveclaw-web/www/config.js
+            exit 1
+          fi
 
       - name: Upload frontend
         uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7

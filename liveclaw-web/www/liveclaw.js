@@ -193,7 +193,32 @@
             }
 
             if (GOOGLE_CLIENT_ID && window.google) {
-                window.google.accounts.id.prompt();
+                // prompt() opens One Tap — works in Chrome but Safari's ITP blocks it.
+                // Use prompt() with a notification callback; if dismissed/skipped, fall back
+                // to the full OAuth redirect flow which works in all browsers.
+                window.google.accounts.id.prompt(function (notification) {
+                    if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+                        // One Tap blocked (Safari ITP / user dismissed) — use redirect
+                        var nonce = sessionStorage.getItem('liveclaw_oauth_nonce') || '';
+                        window.google.accounts.oauth2.initCodeClient({
+                            client_id: GOOGLE_CLIENT_ID,
+                            scope: 'openid email profile',
+                            ux_mode: 'redirect',
+                            redirect_uri: window.location.origin,
+                            nonce: nonce,
+                        }).requestCode();
+                    }
+                });
+            } else if (GOOGLE_CLIENT_ID && !window.google) {
+                // GSI library not loaded yet — load it and retry
+                loadScript('https://accounts.google.com/gsi/client', function () {
+                    window.google.accounts.id.initialize({
+                        client_id: GOOGLE_CLIENT_ID,
+                        callback: handleGoogleCredential,
+                        auto_select: false,
+                    });
+                    window.google.accounts.id.prompt();
+                });
             } else {
                 showToast('Google sign-in is not configured yet. Please contact support.', 'error');
             }
