@@ -157,9 +157,10 @@
             return;
         }
 
-        // Load Google Identity Services library
+        // Replace the custom "Sign in with Google" button with Google's native
+        // renderButton. This works on all browsers including Safari (no ITP issues)
+        // and provides a direct sign-in click — no popups, no overlays, no redirects.
         if (GOOGLE_CLIENT_ID) {
-            // Generate OAuth nonce for CSRF protection
             function generateNonce() {
                 var array = new Uint8Array(16);
                 crypto.getRandomValues(array);
@@ -175,59 +176,39 @@
                     auto_select: true,
                     nonce: oauthNonce,
                 });
+
+                // Create a container and render Google's native button into it
+                var gsiContainer = document.createElement('div');
+                gsiContainer.id = 'liveclaw-gsi-btn';
+                googleBtn.parentNode.insertBefore(gsiContainer, googleBtn);
+                googleBtn.style.display = 'none'; // hide the custom button
+
+                window.google.accounts.id.renderButton(gsiContainer, {
+                    type: 'standard',
+                    theme: 'outline',
+                    size: 'large',
+                    text: 'signin_with',
+                    shape: 'pill',
+                    logo_alignment: 'left',
+                    width: Math.min(googleBtn.offsetWidth || 280, 400),
+                });
             });
         }
 
-        // Wire the existing button for click
+        // Keep the custom button as fallback if GSI doesn't load
         if (googleBtn.dataset.liveclawAuthBound === '1') return;
         googleBtn.dataset.liveclawAuthBound = '1';
 
         googleBtn.addEventListener('click', function (e) {
             e.preventDefault();
             if (state.userId) {
-                // Already signed in — show sign out option
                 if (confirm('Sign out of ' + state.userEmail + '?')) {
                     signOut();
                 }
                 return;
             }
-
             if (GOOGLE_CLIENT_ID && window.google) {
-                // prompt() opens One Tap — works in Chrome.
-                // On Safari, ITP blocks One Tap silently. When prompt is blocked,
-                // fall back to rendering Google's iframe-based popup button which
-                // bypasses ITP without needing redirect URIs.
-                window.google.accounts.id.prompt(function (notification) {
-                    if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-                        // One Tap blocked — show Google's built-in popup button
-                        var container = document.createElement('div');
-                        container.id = 'liveclaw-gsi-fallback';
-                        container.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:rgba(0,0,0,0.7);padding:2rem;border-radius:1rem;';
-                        document.body.appendChild(container);
-                        window.google.accounts.id.renderButton(container, {
-                            type: 'standard',
-                            theme: 'filled_black',
-                            size: 'large',
-                            text: 'signin_with',
-                            shape: 'pill',
-                            width: 300,
-                        });
-                        // Close overlay on click outside
-                        container.addEventListener('click', function(ev) {
-                            if (ev.target === container) container.remove();
-                        });
-                    }
-                });
-            } else if (GOOGLE_CLIENT_ID && !window.google) {
-                // GSI library not loaded yet — load it and retry
-                loadScript('https://accounts.google.com/gsi/client', function () {
-                    window.google.accounts.id.initialize({
-                        client_id: GOOGLE_CLIENT_ID,
-                        callback: handleGoogleCredential,
-                        auto_select: false,
-                    });
-                    window.google.accounts.id.prompt();
-                });
+                window.google.accounts.id.prompt();
             } else {
                 showToast('Google sign-in is not configured yet. Please contact support.', 'error');
             }
