@@ -58,12 +58,8 @@
       var img = btn.querySelector('img');
       if (!img || CHANNEL_NAMES.indexOf(img.alt) === -1) return;
       btn.addEventListener('click', function() {
-        // Deselect all channel buttons
-        allBtns.forEach(function(b) {
-          var i2 = b.querySelector('img');
-          if (i2 && CHANNEL_NAMES.indexOf(i2.alt) !== -1) b.classList.remove('selected');
-        });
-        btn.classList.add('selected');
+        // Use liveclaw.js markChannelSelected for consistent checkmark behavior
+        if (window.markChannelSelected) window.markChannelSelected(img.alt);
         // Open the appropriate modal
         if (img.alt === 'Telegram') openChannelModal('telegram');
         else if (img.alt === 'Discord') openChannelModal('discord');

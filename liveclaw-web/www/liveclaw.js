@@ -533,33 +533,49 @@
         }
     }
 
-    function findTelegramOptionButton() {
+    var CHANNEL_ALTS = ['Telegram', 'Discord', 'WhatsApp', 'Slack'];
+
+    function findChannelButton(channelName) {
         const allBtns = document.querySelectorAll('button.options-card');
         for (const btn of allBtns) {
             const img = btn.querySelector('img');
-            if (img && img.alt === 'Telegram') return btn;
+            if (img && img.alt === channelName) return btn;
         }
         return null;
     }
 
-    function markTelegramConnected() {
-        const tgBtn = findTelegramOptionButton();
-        if (!tgBtn || tgBtn.classList.contains('selected')) return;
-        tgBtn.classList.add('selected');
-        // Add checkmark SVG like model buttons have
-        const existing = tgBtn.querySelector('.liveclaw-check');
-        if (!existing) {
+    function findTelegramOptionButton() {
+        return findChannelButton('Telegram');
+    }
+
+    function markChannelSelected(channelName) {
+        const allBtns = document.querySelectorAll('button.options-card');
+        // Deselect all channel buttons
+        allBtns.forEach(function(btn) {
+            const img = btn.querySelector('img');
+            if (!img || CHANNEL_ALTS.indexOf(img.alt) === -1) return;
+            btn.classList.remove('selected');
+            const chk = btn.querySelector('.liveclaw-check');
+            if (chk) chk.remove();
+            const h2 = btn.querySelector('h2');
+            if (h2) { h2.classList.remove('text-white'); h2.classList.add('text-zinc-400'); }
+        });
+        // Select the target channel
+        const targetBtn = findChannelButton(channelName);
+        if (!targetBtn) return;
+        targetBtn.classList.add('selected');
+        if (!targetBtn.querySelector('.liveclaw-check')) {
             const check = document.createElement('span');
             check.className = 'shrink-0 ml-auto flex items-center liveclaw-check';
             check.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 text-zinc-400"><path d="M5 12l5 5l10 -10"></path></svg>';
-            tgBtn.appendChild(check);
+            targetBtn.appendChild(check);
         }
-        // Update the label text to white (matches model selected state)
-        const label = tgBtn.querySelector('h2');
-        if (label) {
-            label.classList.remove('text-zinc-400');
-            label.classList.add('text-white');
-        }
+        const label = targetBtn.querySelector('h2');
+        if (label) { label.classList.remove('text-zinc-400'); label.classList.add('text-white'); }
+    }
+
+    function markTelegramConnected() {
+        markChannelSelected('Telegram');
     }
 
     function renderAuthenticatedFlow() {
@@ -1356,6 +1372,7 @@
             saveState();
             const modal = document.getElementById('discord-modal');
             if (modal) modal.style.cssText = 'display: none !important;';
+            markChannelSelected('Discord');
             showToast('Discord bot token saved. Ready to deploy!', 'success', 'Discord connected');
             renderAuthenticatedFlow();
         });
@@ -1386,6 +1403,7 @@
             saveState();
             const modal = document.getElementById('slack-modal');
             if (modal) modal.style.cssText = 'display: none !important;';
+            markChannelSelected('Slack');
             showToast('Slack tokens saved. Ready to deploy!', 'success', 'Slack connected');
             renderAuthenticatedFlow();
         });
@@ -1481,6 +1499,8 @@
         wireDiscordConnect();
         wireSlackConnect();
         wireModelTracking();
+        // Expose for inline init script
+        window.markChannelSelected = markChannelSelected;
         handleCheckoutReturn();
         resetCheckoutButtons();
         if (!checkoutResetLifecycleBound) {
