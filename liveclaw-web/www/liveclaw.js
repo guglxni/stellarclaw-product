@@ -143,11 +143,10 @@
     }
 
     // ─── Google Sign-In ─────────────────────────────────────────────────────
-    function initGoogleAuth() {
-        const googleBtn = findGoogleButton();
-        if (!googleBtn) return;
+    var _gsiInitDone = false;
 
-        // If already signed in, update button immediately
+    function initGoogleAuth() {
+        // If already signed in, just render the authenticated flow
         if (state.userId) {
             if (state.isDeployed) {
                 showSuccessDashboard();
@@ -157,46 +156,56 @@
             return;
         }
 
-        // Replace the custom "Sign in with Google" button with Google's native
-        // renderButton. This works on all browsers including Safari (no ITP issues)
-        // and provides a direct sign-in click - no popups, no overlays, no redirects.
-        if (GOOGLE_CLIENT_ID) {
-            function generateNonce() {
-                var array = new Uint8Array(16);
-                crypto.getRandomValues(array);
-                return Array.from(array, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-            }
-            var oauthNonce = generateNonce();
-            sessionStorage.setItem('liveclaw_oauth_nonce', oauthNonce);
+        // Only init GSI once - prevent duplicate renders from repeated init() calls
+        if (_gsiInitDone) return;
 
-            loadScript('https://accounts.google.com/gsi/client', function () {
-                // Re-find the button in case DOM changed during async load
-                var btn = findGoogleButton();
-                if (!btn || state.userId) return; // already signed in
+        // Find the custom button - if it's already been replaced, skip
+        var googleBtn = findGoogleButton();
+        if (!googleBtn) return;
 
-                window.google.accounts.id.initialize({
-                    client_id: GOOGLE_CLIENT_ID,
-                    callback: handleGoogleCredential,
-                    auto_select: true,
-                    nonce: oauthNonce,
-                });
+        if (!GOOGLE_CLIENT_ID) return;
 
-                // Render Google's native button directly into the custom button's spot
-                var gsiContainer = document.createElement('div');
-                gsiContainer.id = 'liveclaw-gsi-btn';
-                btn.parentNode.replaceChild(gsiContainer, btn);
+        _gsiInitDone = true;
 
-                window.google.accounts.id.renderButton(gsiContainer, {
-                    type: 'standard',
-                    theme: 'outline',
-                    size: 'large',
-                    text: 'signin_with',
-                    shape: 'pill',
-                    logo_alignment: 'left',
-                    width: 280,
-                });
+        // Generate OAuth nonce
+        var oauthNonce = (function() {
+            var array = new Uint8Array(16);
+            crypto.getRandomValues(array);
+            return Array.from(array, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+        })();
+        sessionStorage.setItem('liveclaw_oauth_nonce', oauthNonce);
+
+        // Create the GSI container immediately (before async load) so it holds
+        // the spot in the DOM even if init() is called again
+        var gsiContainer = document.createElement('div');
+        gsiContainer.id = 'liveclaw-gsi-btn';
+        googleBtn.parentNode.replaceChild(gsiContainer, googleBtn);
+
+        // Show a loading state while GSI loads
+        gsiContainer.innerHTML = '<button type="button" disabled style="opacity:0.5;cursor:wait;" class="bg-white text-black font-medium text-sm px-5 py-2.5 rounded-xl flex items-center gap-2"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" class="w-5 h-5">Sign in with Google...</button>';
+
+        loadScript('https://accounts.google.com/gsi/client', function () {
+            if (state.userId) return; // signed in while loading
+
+            window.google.accounts.id.initialize({
+                client_id: GOOGLE_CLIENT_ID,
+                callback: handleGoogleCredential,
+                auto_select: false, // don't auto-sign-in (causes stuck states)
+                nonce: oauthNonce,
             });
-        }
+
+            // Clear loading state and render the real GSI button
+            gsiContainer.innerHTML = '';
+            window.google.accounts.id.renderButton(gsiContainer, {
+                type: 'standard',
+                theme: 'outline',
+                size: 'large',
+                text: 'signin_with',
+                shape: 'pill',
+                logo_alignment: 'left',
+                width: 280,
+            });
+        });
     }
 
     // ─── Token Refresh ────────────────────────────────────────────────────
