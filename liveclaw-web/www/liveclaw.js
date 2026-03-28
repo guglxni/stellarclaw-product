@@ -322,6 +322,10 @@
         state.userAvatar = null;
         state.idToken = null;
         state.telegramToken = null;
+        state.discordToken = null;
+        state.slackAppToken = null;
+        state.slackBotToken = null;
+        state.selectedChannel = null;
         state.isDeployed = false;
         state.botPid = null;
         state.botCreditLimit = null;
@@ -438,8 +442,9 @@
             showToast('Please sign in with Google first', 'error');
             return;
         }
-        if (!state.telegramToken) {
-            showToast('Connect Telegram first to continue.', 'error');
+        const hasChannel = state.telegramToken || state.discordToken || (state.slackAppToken && state.slackBotToken);
+        if (!hasChannel) {
+            showToast('Connect a channel first (Telegram, Discord, or Slack).', 'error');
             const telegramBtn = findTelegramOptionButton();
             if (telegramBtn) telegramBtn.click();
             return;
@@ -612,7 +617,8 @@
 
         const displayName = escapeHtml(state.userName || 'Signed In');
         const displayEmail = escapeHtml(state.userEmail || '');
-        const deployDisabled = !state.telegramToken;
+        const hasAnyChannel = state.telegramToken || state.discordToken || (state.slackAppToken && state.slackBotToken);
+        const deployDisabled = !hasAnyChannel;
         const deployBtnClasses = deployDisabled
             ? 'bg-zinc-700/90 border border-zinc-600/40 text-zinc-400 cursor-not-allowed'
             : 'bg-white cursor-pointer hover:opacity-90';
@@ -635,12 +641,13 @@
                         <div class="flex items-center gap-1.5">
                             <p class="text-sm text-white font-medium truncate">${displayName}</p>
                             <button id="liveclaw-signout-btn" type="button" title="Sign out"
-                                class="shrink-0 flex items-center justify-center size-5 rounded-md text-zinc-500 hover:text-red-400 transition-colors">
+                                class="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-md text-zinc-500 hover:text-red-400 transition-colors text-xs">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
                                     <polyline points="16 17 21 12 16 7"></polyline>
                                     <line x1="21" y1="12" x2="9" y2="12"></line>
                                 </svg>
+                                Sign out
                             </button>
                         </div>
                         <p class="text-xs text-zinc-500 truncate">${displayEmail}</p>
@@ -666,10 +673,10 @@
             });
         }
 
-        // If token is persisted, also mark the Telegram chip as selected visually
-        if (state.telegramToken) {
-            markTelegramConnected();
-        }
+        // Mark the connected channel as selected visually
+        if (state.telegramToken) markChannelSelected('Telegram');
+        else if (state.discordToken) markChannelSelected('Discord');
+        else if (state.slackAppToken && state.slackBotToken) markChannelSelected('Slack');
 
         fetchAndRenderPricingLine();
     }
@@ -690,8 +697,9 @@
                 ? ` <span style="color:${slotColor}; font-weight:500;">🦞 Early Claw $${earlyClaw.price.toFixed(2)}/mo with code EARLYCLAW \u2014 only ${slotsLeft} slots left</span>`
                 : '';
 
-            if (!state.telegramToken) {
-                el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect Telegram to continue.</p>';
+            var hasChannelForPricing = state.telegramToken || state.discordToken || (state.slackAppToken && state.slackBotToken);
+            if (!hasChannelForPricing) {
+                el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect a channel to continue.</p>';
             } else {
                 el.innerHTML = `
                     <p class="text-xs text-zinc-500">
@@ -701,7 +709,7 @@
                 `;
             }
         } catch (_) {
-            if (el) el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect Telegram to continue.</p>';
+            if (el) el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect a channel to continue.</p>';
         }
     }
 
@@ -1485,8 +1493,9 @@
 
             // Wait briefly for webhook to process, then auto-deploy
             setTimeout(async () => {
-                if (!state.userId || !state.telegramToken) {
-                    showToast('Sign in and connect Telegram to finish deployment.', 'info');
+                var hasChannelForDeploy = state.telegramToken || state.discordToken || (state.slackAppToken && state.slackBotToken);
+                if (!state.userId || !hasChannelForDeploy) {
+                    showToast('Sign in and connect a channel to finish deployment.', 'info');
                     return;
                 }
 
