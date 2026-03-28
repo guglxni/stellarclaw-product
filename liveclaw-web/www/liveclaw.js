@@ -195,24 +195,11 @@
             });
         }
 
-        // Keep the custom button as fallback if GSI doesn't load
-        if (googleBtn.dataset.liveclawAuthBound === '1') return;
-        googleBtn.dataset.liveclawAuthBound = '1';
-
-        googleBtn.addEventListener('click', function (e) {
-            e.preventDefault();
-            if (state.userId) {
-                if (confirm('Sign out of ' + state.userEmail + '?')) {
-                    signOut();
-                }
-                return;
-            }
-            if (GOOGLE_CLIENT_ID && window.google) {
-                window.google.accounts.id.prompt();
-            } else {
-                showToast('Google sign-in is not configured yet. Please contact support.', 'error');
-            }
-        });
+        // Old custom button is fully retired — GSI renderButton handles everything.
+        // Remove it from the DOM to prevent any conflicts.
+        if (googleBtn.parentNode) {
+            googleBtn.remove();
+        }
     }
 
     // ─── Token Refresh ────────────────────────────────────────────────────
