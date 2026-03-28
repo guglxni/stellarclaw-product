@@ -226,6 +226,21 @@ function getProviderConfig(model) {
             weight: 1.0,
             allowed_models: ['moonshotai/kimi-k2.5'],
         },
+        'mimo-v2-pro': {
+            provider: 'openrouter',
+            weight: 1.0,
+            allowed_models: ['xiaomi/mimo-v2-pro'],
+        },
+        'glm-5': {
+            provider: 'openrouter',
+            weight: 1.0,
+            allowed_models: ['z-ai/glm-5'],
+        },
+        'deepseek-v3.2': {
+            provider: 'openrouter',
+            weight: 1.0,
+            allowed_models: ['deepseek/deepseek-chat-v3-0324'],
+        },
     };
 
     return providers[model] || providers['minimax-m2.7'];

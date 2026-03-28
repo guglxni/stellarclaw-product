@@ -539,12 +539,17 @@ try { await db.exec("ALTER TABLE bots ADD COLUMN telegram_chat_id TEXT"); } catc
 try { await db.exec("ALTER TABLE subscriptions ADD COLUMN beta_code_used TEXT"); } catch (_) { /* already exists */ }
 try { await db.exec("ALTER TABLE beta_codes ADD COLUMN redeemed_ip TEXT"); } catch (_) { /* already exists */ }
 try { await db.exec("ALTER TABLE beta_codes ADD COLUMN user_agent TEXT"); } catch (_) { /* already exists */ }
+// Multi-channel support (picobot v0.2.0)
+try { await db.exec("ALTER TABLE bots ADD COLUMN discord_token TEXT"); } catch (_) { /* already exists */ }
+try { await db.exec("ALTER TABLE bots ADD COLUMN slack_app_token TEXT"); } catch (_) { /* already exists */ }
+try { await db.exec("ALTER TABLE bots ADD COLUMN slack_bot_token TEXT"); } catch (_) { /* already exists */ }
+try { await db.exec("ALTER TABLE bots ADD COLUMN active_channels TEXT DEFAULT '[]'"); } catch (_) { /* already exists */ }
 
 // Statement functions (async equivalents of prepared statements)
 stmt = {
     upsertBot: (params) => db.run(`
-        INSERT INTO bots (user_id, pid, model, telegram_token, bifrost_vk_id, bifrost_vk, credit_limit, status)
-        VALUES (@user_id, @pid, @model, @telegram_token, @bifrost_vk_id, @bifrost_vk, @credit_limit, 'running')
+        INSERT INTO bots (user_id, pid, model, telegram_token, bifrost_vk_id, bifrost_vk, credit_limit, status, discord_token, slack_app_token, slack_bot_token, active_channels)
+        VALUES (@user_id, @pid, @model, @telegram_token, @bifrost_vk_id, @bifrost_vk, @credit_limit, 'running', @discord_token, @slack_app_token, @slack_bot_token, @active_channels)
         ON CONFLICT(user_id) DO UPDATE SET
             pid            = excluded.pid,
             model          = excluded.model,
@@ -552,6 +557,10 @@ stmt = {
             bifrost_vk_id  = excluded.bifrost_vk_id,
             bifrost_vk     = excluded.bifrost_vk,
             credit_limit   = excluded.credit_limit,
+            discord_token  = excluded.discord_token,
+            slack_app_token = excluded.slack_app_token,
+            slack_bot_token = excluded.slack_bot_token,
+            active_channels = excluded.active_channels,
             status         = 'running',
             updated_at     = CURRENT_TIMESTAMP
     `, params),
@@ -748,7 +757,7 @@ function parseJson(value, fallback) {
     }
 }
 
-async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7', telegramAllowFrom = [], mcpServers = null, ip = null, verifiedUserId = null }) {
+async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7', telegramAllowFrom = [], mcpServers = null, ip = null, verifiedUserId = null, discordToken = null, slackAppToken = null, slackBotToken = null }) {
     if (!verifiedUserId || verifiedUserId !== userId) {
         throw httpError(403, { error: 'userId does not match authenticated user' });
     }
@@ -756,14 +765,41 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
     if (!userId || typeof userId !== 'string' || userId.length > 128) {
         throw httpError(400, { error: 'userId is required (string, max 128 chars)' });
     }
-    if (!telegramToken || typeof telegramToken !== 'string') {
-        throw httpError(400, { error: 'telegramToken is required' });
-    }
-    if (!/^\d+:[A-Za-z0-9_-]{30,50}$/.test(telegramToken)) {
-        throw httpError(400, { error: 'Invalid Telegram bot token format' });
+
+    // At least one channel must be provided
+    const hasChannel = telegramToken || discordToken || (slackAppToken && slackBotToken);
+    if (!hasChannel) {
+        throw httpError(400, { error: 'At least one channel token is required (Telegram, Discord, or Slack)' });
     }
 
-    const ALLOWED_MODELS = ['minimax-m2.7', 'minimax-m2.5', 'kimi-k2.5'];
+    // Validate Telegram token format (if provided)
+    if (telegramToken) {
+        if (typeof telegramToken !== 'string' || !/^\d+:[A-Za-z0-9_-]{30,50}$/.test(telegramToken)) {
+            throw httpError(400, { error: 'Invalid Telegram bot token format' });
+        }
+    }
+
+    // Validate Discord token format (if provided)
+    if (discordToken) {
+        if (typeof discordToken !== 'string' || discordToken.length < 50 || discordToken.length > 100) {
+            throw httpError(400, { error: 'Invalid Discord bot token format' });
+        }
+    }
+
+    // Validate Slack tokens (if provided, both are required)
+    if (slackAppToken || slackBotToken) {
+        if (!slackAppToken || !slackBotToken) {
+            throw httpError(400, { error: 'Both Slack App Token (xapp-) and Bot Token (xoxb-) are required' });
+        }
+        if (typeof slackAppToken !== 'string' || !slackAppToken.startsWith('xapp-')) {
+            throw httpError(400, { error: 'Invalid Slack App Token format (must start with xapp-)' });
+        }
+        if (typeof slackBotToken !== 'string' || !slackBotToken.startsWith('xoxb-')) {
+            throw httpError(400, { error: 'Invalid Slack Bot Token format (must start with xoxb-)' });
+        }
+    }
+
+    const ALLOWED_MODELS = ['minimax-m2.7', 'minimax-m2.5', 'kimi-k2.5', 'mimo-v2-pro', 'glm-5', 'deepseek-v3.2'];
     if (!ALLOWED_MODELS.includes(model)) {
         throw httpError(400, { error: `Invalid model. Allowed: ${ALLOWED_MODELS.join(', ')}` });
     }
@@ -804,14 +840,24 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
         });
     }
 
-    const tokenCheck = await verifyTelegramBotToken(telegramToken);
-    if (!tokenCheck.ok) {
-        logEvent(userId, 'deploy_blocked_invalid_telegram_token', { error: tokenCheck.error }, ip);
-        throw httpError(tokenCheck.status, {
-            error: tokenCheck.error,
-            message: 'Please connect a valid Telegram bot token from @BotFather.',
-        });
+    // Verify Telegram token if provided
+    let tokenCheck = { ok: true, bot: {} };
+    if (telegramToken) {
+        tokenCheck = await verifyTelegramBotToken(telegramToken);
+        if (!tokenCheck.ok) {
+            logEvent(userId, 'deploy_blocked_invalid_telegram_token', { error: tokenCheck.error }, ip);
+            throw httpError(tokenCheck.status, {
+                error: tokenCheck.error,
+                message: 'Please connect a valid Telegram bot token from @BotFather.',
+            });
+        }
     }
+
+    // Track active channels
+    const activeChannels = [];
+    if (telegramToken) activeChannels.push('telegram');
+    if (discordToken) activeChannels.push('discord');
+    if (slackAppToken && slackBotToken) activeChannels.push('slack');
 
     const creditLimit = dodo.PLAN_BUDGET;
 
@@ -868,8 +914,15 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
             if (Object.keys(safeMcpServers).length === 0) safeMcpServers = null;
         }
 
-        pid = spawnPicobot(userId, telegramToken, virtualKey.key, model, allowFrom, safeMcpServers);
-        logEvent(userId, 'picobot_spawned', { pid, model, allowFrom: allowFrom.length });
+        pid = spawnPicobot(userId, virtualKey.key, model, {
+            telegramToken,
+            telegramAllowFrom: allowFrom,
+            discordToken,
+            slackAppToken,
+            slackBotToken,
+            mcpServers: safeMcpServers,
+        });
+        logEvent(userId, 'picobot_spawned', { pid, model, channels: activeChannels });
     } catch (err) {
         log.deploy.error('picobot spawn error', { error: err.message });
         logEvent(userId, 'picobot_error', err.message);
@@ -881,18 +934,24 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
         user_id: userId,
         pid,
         model,
-        telegram_token: encryptToken(telegramToken),
+        telegram_token: telegramToken ? encryptToken(telegramToken) : '',
         bifrost_vk_id: virtualKey.id,
         bifrost_vk: encryptToken(virtualKey.key),
         credit_limit: creditLimit,
+        discord_token: discordToken ? encryptToken(discordToken) : null,
+        slack_app_token: slackAppToken ? encryptToken(slackAppToken) : null,
+        slack_bot_token: slackBotToken ? encryptToken(slackBotToken) : null,
+        active_channels: JSON.stringify(activeChannels),
     });
 
+    const channelNames = activeChannels.map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(', ');
     return {
         success: true,
         pid,
         model,
         creditLimit,
-        message: 'Your Claw agent is live on Telegram!',
+        channels: activeChannels,
+        message: `Your Claw agent is live on ${channelNames}!`,
     };
 }
 
@@ -1304,7 +1363,9 @@ app.post('/verify-telegram-token', deployLimiter, asyncHandler(authMiddleware), 
 // ─── Spawn picobot ──────────────────────────────────────────────────────────
 // picobot reads ~/.picobot/config.json — env vars only work in Docker.
 // We generate a per-user config.json in an isolated HOME directory.
-function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax-m2.7', telegramAllowFrom = [], userMcpServers = null) {
+function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', channelOpts = {}) {
+    const { telegramToken, telegramAllowFrom = [], discordToken, slackAppToken, slackBotToken, mcpServers: userMcpServers } = channelOpts;
+
     // Sanitize userId to prevent path traversal (defense-in-depth)
     if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
         throw new Error(`Invalid userId for picobot spawn: ${userId}`);
@@ -1315,6 +1376,39 @@ function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax
     const workspaceDir = path.join(configDir, 'workspace');
 
     fs.mkdirSync(workspaceDir, { recursive: true });
+
+    // Build channels config — only enable channels with valid tokens
+    const channels = {};
+    if (telegramToken) {
+        channels.telegram = {
+            enabled: true,
+            token: telegramToken,
+            allowFrom: telegramAllowFrom || [],
+        };
+    }
+    if (discordToken) {
+        channels.discord = {
+            enabled: true,
+            token: discordToken,
+            allowFrom: [],
+        };
+    }
+    if (slackAppToken && slackBotToken) {
+        channels.slack = {
+            enabled: true,
+            appToken: slackAppToken,
+            botToken: slackBotToken,
+            allowUsers: [],
+            allowChannels: [],
+        };
+    }
+    // WhatsApp uses QR code pairing — always enable with per-user dbPath
+    const whatsappDbPath = path.join(configDir, 'whatsapp.db');
+    channels.whatsapp = {
+        enabled: false, // Users enable via QR pairing flow
+        dbPath: whatsappDbPath,
+        allowFrom: [],
+    };
 
     // Write per-user config.json
     const picobotConfig = {
@@ -1333,13 +1427,7 @@ function spawnPicobot(userId, telegramToken, bifrostVirtualKey, model = 'minimax
                 apiBase: `${config.bifrostBase}/v1`,
             },
         },
-        channels: {
-            telegram: {
-                enabled: true,
-                token: telegramToken,
-                allowFrom: telegramAllowFrom || [], // restrict to specific Telegram user IDs
-            },
-        },
+        channels,
     };
 
     // ── MCP servers — vision built-in + global defaults + per-user overrides ─

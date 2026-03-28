@@ -51,10 +51,13 @@ function createBotRouter(deps) {
     router.post('/deploy-bot', deployLimiter, asyncHandler(authMiddleware), deployPerUser, asyncHandler(async (req, res) => {
         const payload = {
             userId: req.body.userId,
-            telegramToken: req.body.telegramToken,
+            telegramToken: req.body.telegramToken || null,
             model: req.body.model || 'minimax-m2.7',
             telegramAllowFrom: req.body.telegramAllowFrom || [],
             mcpServers: req.body.mcpServers || null,
+            discordToken: req.body.discordToken || null,
+            slackAppToken: req.body.slackAppToken || null,
+            slackBotToken: req.body.slackBotToken || null,
             ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress,
             verifiedUserId: req.verifiedUserId || null,
         };

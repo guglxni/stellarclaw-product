@@ -50,9 +50,10 @@ const PRODUCT_ID = process.env.DODO_PRODUCT_ID || '';
 const TRIAL_PRODUCT_ID = process.env.DODO_TRIAL_PRODUCT_ID || '';
 
 // ─── Bifrost budget — per-subscriber monthly LLM spend cap ──────────────────
-// Configurable via PLAN_BUDGET_USD env var. Default $0.50 for beta launch
-// (supports ~980 messages/user on MiniMax M2.7). Raise after adding credits.
-const PLAN_BUDGET = parseFloat(process.env.PLAN_BUDGET_USD) || 0.50;
+// Configurable via PLAN_BUDGET_USD env var. Default $3.00 per user.
+// MiniMax M2.7: ~$0.00051/msg → $3.00 ≈ 5,800 messages/month.
+// MIMO v2 Pro: ~$0.004/msg → $3.00 ≈ 750 messages/month.
+const PLAN_BUDGET = parseFloat(process.env.PLAN_BUDGET_USD) || 3.00;
 
 // ─── Bot limit — 1 bot per subscriber ───────────────────────────────────────
 const BOT_LIMIT = 1;

@@ -267,8 +267,19 @@ function createSubscriptionRouter(deps) {
             if (usedTrial) trialEligible = false;
         }
 
+        const allChannels = ['telegram', 'discord', 'slack', 'whatsapp'];
+        const allModels = [
+            { id: 'minimax-m2.7', name: 'MiniMax M2.7', context: '200K' },
+            { id: 'minimax-m2.5', name: 'MiniMax M2.5', context: '196K' },
+            { id: 'kimi-k2.5', name: 'Kimi K2.5', context: '128K' },
+            { id: 'mimo-v2-pro', name: 'MiMo v2 Pro', context: '1M' },
+            { id: 'glm-5', name: 'GLM-5', context: '80K' },
+            { id: 'deepseek-v3.2', name: 'DeepSeek v3.2', context: '128K' },
+        ];
+
         return res.json({
             trialEligible,
+            models: allModels,
             plans: {
                 trial: {
                     id: 'trial',
@@ -278,7 +289,7 @@ function createSubscriptionRouter(deps) {
                     interval: 'one-time',
                     duration: '48 hours',
                     features: [
-                        '24/7 AI agent on Telegram',
+                        '24/7 AI agent on Telegram, Discord, Slack & WhatsApp',
                         'Custom personality (SOUL.md)',
                         'Full access for 48 hours',
                     ],
@@ -290,9 +301,10 @@ function createSubscriptionRouter(deps) {
                     currency: 'usd',
                     interval: 'month',
                     bots: 1,
-                    channels: ['telegram'],
+                    channels: allChannels,
                     features: [
-                        '24/7 AI agent on Telegram',
+                        '24/7 AI agent on Telegram, Discord, Slack & WhatsApp',
+                        '6 AI models — MiniMax, MiMo, GLM-5, DeepSeek & more',
                         'Custom personality (SOUL.md)',
                         'Unlimited messages within budget',
                         'Email support',
@@ -305,15 +317,16 @@ function createSubscriptionRouter(deps) {
                     currency: 'usd',
                     interval: 'month',
                     bots: 1,
-                    channels: ['telegram'],
+                    channels: allChannels,
                     promoCode: 'EARLYCLAW',
                     spotsRemaining: Math.max(0, 500 - earlyBirdUsed),
                     features: [
-                        '24/7 AI agent on Telegram',
+                        '24/7 AI agent on Telegram, Discord, Slack & WhatsApp',
+                        '6 AI models — MiniMax, MiMo, GLM-5, DeepSeek & more',
                         'Custom personality (SOUL.md)',
                         'Unlimited messages within budget',
                         'Email support',
-                        'Locked-in Early Claw pricing',
+                        'Locked-in Early Claw pricing (first month only)',
                     ],
                 },
             },

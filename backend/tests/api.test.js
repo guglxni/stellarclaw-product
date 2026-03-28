@@ -597,6 +597,10 @@ describe('POST /register-chat', () => {
             bifrost_vk_id: 'vk-test',
             bifrost_vk: 'enc:vk',
             credit_limit: 1.0,
+            discord_token: null,
+            slack_app_token: null,
+            slack_bot_token: null,
+            active_channels: '["telegram"]',
         });
     });
 
@@ -672,6 +676,10 @@ describe('POST /notify-low-credits', () => {
             bifrost_vk_id: 'vk-test',
             bifrost_vk: 'enc:vk',
             credit_limit: 0.001,
+            discord_token: null,
+            slack_app_token: null,
+            slack_bot_token: null,
+            active_channels: '["telegram"]',
         });
         await stmt.updateChatId('12345678', SEED_USER);
 
@@ -683,6 +691,10 @@ describe('POST /notify-low-credits', () => {
             bifrost_vk_id: 'vk-test',
             bifrost_vk: 'enc:vk',
             credit_limit: 0.001,
+            discord_token: null,
+            slack_app_token: null,
+            slack_bot_token: null,
+            active_channels: '["telegram"]',
         });
     });
 

@@ -73,6 +73,8 @@ describe('GET /pricing', () => {
 
         expect(res.body.plans).toBeDefined();
         expect(res.body.trialEligible).toBe(true);
+        expect(Array.isArray(res.body.models)).toBe(true);
+        expect(res.body.models.length).toBeGreaterThanOrEqual(6);
 
         // Trial plan
         expect(res.body.plans.trial).toBeDefined();

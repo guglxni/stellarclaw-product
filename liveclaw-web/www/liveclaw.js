@@ -89,11 +89,17 @@
         'minimax-m2.7': 'MiniMax M2.7',
         'minimax-m2.5': 'MiniMax M2.5',
         'kimi-k2.5': 'Kimi K2.5',
+        'mimo-v2-pro': 'MiMo v2 Pro',
+        'glm-5': 'GLM-5',
+        'deepseek-v3.2': 'DeepSeek v3.2',
     };
     const MODEL_LABEL_TO_ID = {
         'MiniMax M2.7': 'minimax-m2.7',
         'MiniMax M2.5': 'minimax-m2.5',
         'Kimi K2.5': 'kimi-k2.5',
+        'MiMo v2 Pro': 'mimo-v2-pro',
+        'GLM-5': 'glm-5',
+        'DeepSeek v3.2': 'deepseek-v3.2',
     };
 
     // ─── State ──────────────────────────────────────────────────────────────
@@ -104,6 +110,9 @@
         userAvatar: null,
         idToken: null,
         telegramToken: null,
+        discordToken: null,
+        slackAppToken: null,
+        slackBotToken: null,
         selectedModel: 'minimax-m2.7',
         selectedChannel: null,
         isDeployed: false,
@@ -118,7 +127,7 @@
         const saved = JSON.parse(localStorage.getItem('liveclaw_state'));
         if (saved && typeof saved.userId === 'string' && saved.userId.length < 256) {
             // Only restore known safe keys
-            const safeKeys = ['userId', 'userName', 'userEmail', 'userAvatar', 'idToken', 'telegramToken', 'selectedModel', 'selectedChannel', 'isDeployed', 'botPid', 'botCreditLimit', 'subscription'];
+            const safeKeys = ['userId', 'userName', 'userEmail', 'userAvatar', 'idToken', 'telegramToken', 'discordToken', 'slackAppToken', 'slackBotToken', 'selectedModel', 'selectedChannel', 'isDeployed', 'botPid', 'botCreditLimit', 'subscription'];
             for (const key of safeKeys) {
                 if (key in saved) state[key] = saved[key];
             }
@@ -480,7 +489,10 @@
                 credentials: 'include',
                 body: JSON.stringify({
                     userId: state.userId,
-                    telegramToken: state.telegramToken,
+                    telegramToken: state.telegramToken || null,
+                    discordToken: state.discordToken || null,
+                    slackAppToken: state.slackAppToken || null,
+                    slackBotToken: state.slackBotToken || null,
                     model: modelId,
                 }),
             });
@@ -493,7 +505,9 @@
                 state.botCreditLimit = data.creditLimit;
                 saveState();
 
-                showToast('Your Claw agent is live on Telegram!', 'success', 'Deployed');
+                const channels = data.channels || ['telegram'];
+                const channelNames = channels.map(function(c) { return c.charAt(0).toUpperCase() + c.slice(1); }).join(', ');
+                showToast('Your Claw agent is live on ' + channelNames + '!', 'success', 'Deployed');
                 track('bot_deployed', { model: modelId });
                 showSuccessDashboard();
                 return;
@@ -1235,7 +1249,7 @@
         const allBtns = document.querySelectorAll('button.options-card');
         allBtns.forEach(function (btn) {
             const img = btn.querySelector('img');
-            if (img && (img.alt === 'MiniMax M2.7' || img.alt === 'MiniMax M2.5' || img.alt === 'Kimi K2.5')) {
+            if (img && MODEL_LABEL_TO_ID[img.alt]) {
                 btn.addEventListener('click', function () {
                     const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.7';
                     state.selectedModel = normalizeModelId(modelId);
@@ -1263,7 +1277,7 @@
         const allBtns = document.querySelectorAll('button.options-card');
         allBtns.forEach(function (btn) {
             const img = btn.querySelector('img');
-            if (!img || (img.alt !== 'MiniMax M2.7' && img.alt !== 'MiniMax M2.5' && img.alt !== 'Kimi K2.5')) return;
+            if (!img || !MODEL_LABEL_TO_ID[img.alt]) return;
 
             const modelId = btn.getAttribute('data-model') || MODEL_LABEL_TO_ID[img.alt] || 'minimax-m2.7';
             const isSelected = modelId === selectedModelId;
@@ -1318,6 +1332,63 @@
                 video.currentTime = 0;
             }
         }
+    }
+
+    // ─── Discord Connect Handler ─────────────────────────────────────────────
+    function wireDiscordConnect() {
+        const connectBtn = document.getElementById('discord-connect-btn');
+        if (!connectBtn || connectBtn.dataset.liveclawBound === '1') return;
+        connectBtn.dataset.liveclawBound = '1';
+
+        window.updateDiscordBtn = function(val) {
+            connectBtn.disabled = !val || val.trim().length < 50;
+        };
+
+        connectBtn.addEventListener('click', function() {
+            const input = document.getElementById('discord-token');
+            const token = input ? input.value.trim() : '';
+            if (!token || token.length < 50) {
+                showToast('Invalid Discord bot token.', 'error');
+                return;
+            }
+            state.discordToken = token;
+            state.selectedChannel = 'discord';
+            saveState();
+            const modal = document.getElementById('discord-modal');
+            if (modal) modal.style.cssText = 'display: none !important;';
+            showToast('Discord bot token saved. Ready to deploy!', 'success', 'Discord connected');
+            renderAuthenticatedFlow();
+        });
+    }
+
+    // ─── Slack Connect Handler ───────────────────────────────────────────────
+    function wireSlackConnect() {
+        const connectBtn = document.getElementById('slack-connect-btn');
+        if (!connectBtn || connectBtn.dataset.liveclawBound === '1') return;
+        connectBtn.dataset.liveclawBound = '1';
+
+        window.updateSlackBtn = function() {
+            const appToken = (document.getElementById('slack-app-token') || {}).value || '';
+            const botToken = (document.getElementById('slack-bot-token') || {}).value || '';
+            connectBtn.disabled = !appToken.startsWith('xapp-') || !botToken.startsWith('xoxb-');
+        };
+
+        connectBtn.addEventListener('click', function() {
+            const appToken = (document.getElementById('slack-app-token') || {}).value.trim();
+            const botToken = (document.getElementById('slack-bot-token') || {}).value.trim();
+            if (!appToken.startsWith('xapp-') || !botToken.startsWith('xoxb-')) {
+                showToast('Invalid Slack tokens. App Token must start with xapp-, Bot Token with xoxb-.', 'error');
+                return;
+            }
+            state.slackAppToken = appToken;
+            state.slackBotToken = botToken;
+            state.selectedChannel = 'slack';
+            saveState();
+            const modal = document.getElementById('slack-modal');
+            if (modal) modal.style.cssText = 'display: none !important;';
+            showToast('Slack tokens saved. Ready to deploy!', 'success', 'Slack connected');
+            renderAuthenticatedFlow();
+        });
     }
 
     function resetCheckoutButtons() {
@@ -1407,6 +1478,8 @@
         injectStyles();
         initGoogleAuth();
         wireConnectButton();
+        wireDiscordConnect();
+        wireSlackConnect();
         wireModelTracking();
         handleCheckoutReturn();
         resetCheckoutButtons();
