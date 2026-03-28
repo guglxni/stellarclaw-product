@@ -156,48 +156,115 @@
 </script>
 
 <!-- Discord Connect Modal -->
-<div id="discord-modal" style="display:none !important;" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-  <div id="discord-backdrop" class="absolute inset-0"></div>
-  <div class="relative bg-zinc-900 rounded-2xl p-6 max-w-md w-full border border-zinc-700/50 shadow-2xl">
-    <button id="discord-close-btn" class="absolute top-4 right-4 text-zinc-400 hover:text-white"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
-    <h2 class="text-lg font-semibold text-white mb-1">Connect Discord</h2>
-    <p class="text-sm text-zinc-400 mb-4">Paste your Discord bot token from the <a href="https://discord.com/developers/applications" target="_blank" class="text-indigo-400 hover:underline">Developer Portal</a>. Enable "Message Content Intent" in your bot settings.</p>
-    <input id="discord-token" type="password" placeholder="MTIzNDU2Nzg5MDEyMzQ1Njc4OQ..." class="w-full bg-zinc-800 border border-zinc-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4" oninput="window.updateDiscordBtn && window.updateDiscordBtn(this.value)"/>
-    <button id="discord-connect-btn" disabled class="w-full bg-[#5865F2] text-white font-medium rounded-lg px-4 py-2.5 text-sm hover:bg-[#4752C4] disabled:opacity-50 disabled:cursor-not-allowed">Save & Connect</button>
-  </div>
-</div>
+
 
 <!-- Slack Connect Modal -->
-<div id="slack-modal" style="display:none !important;" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-  <div id="slack-backdrop" class="absolute inset-0"></div>
-  <div class="relative bg-zinc-900 rounded-2xl p-6 max-w-md w-full border border-zinc-700/50 shadow-2xl">
-    <button id="slack-close-btn" class="absolute top-4 right-4 text-zinc-400 hover:text-white"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
-    <h2 class="text-lg font-semibold text-white mb-1">Connect Slack</h2>
-    <p class="text-sm text-zinc-400 mb-4">Enable <strong>Socket Mode</strong> in your Slack app, then paste both tokens. <a href="https://api.slack.com/apps" target="_blank" class="text-indigo-400 hover:underline">Slack Apps</a></p>
-    <label class="text-xs text-zinc-500 mb-1 block">App Token (xapp-...)</label>
-    <input id="slack-app-token" type="password" placeholder="xapp-1-..." class="w-full bg-zinc-800 border border-zinc-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3" oninput="window.updateSlackBtn && window.updateSlackBtn()"/>
-    <label class="text-xs text-zinc-500 mb-1 block">Bot Token (xoxb-...)</label>
-    <input id="slack-bot-token" type="password" placeholder="xoxb-..." class="w-full bg-zinc-800 border border-zinc-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4" oninput="window.updateSlackBtn && window.updateSlackBtn()"/>
-    <button id="slack-connect-btn" disabled class="w-full bg-[#4A154B] text-white font-medium rounded-lg px-4 py-2.5 text-sm hover:bg-[#611f64] disabled:opacity-50 disabled:cursor-not-allowed">Save & Connect</button>
-  </div>
-</div>
+
 
 <!-- WhatsApp Connect Modal -->
-<div id="whatsapp-modal" style="display:none !important;" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-  <div id="whatsapp-backdrop" class="absolute inset-0"></div>
-  <div class="relative bg-zinc-900 rounded-2xl p-6 max-w-md w-full border border-zinc-700/50 shadow-2xl">
-    <button id="whatsapp-close-btn" class="absolute top-4 right-4 text-zinc-400 hover:text-white"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
-    <h2 class="text-lg font-semibold text-white mb-1">Connect WhatsApp</h2>
-    <p class="text-sm text-zinc-400 mb-4">WhatsApp connects via QR code pairing. Deploy your bot first with at least one other channel (Telegram, Discord, or Slack), then pair your WhatsApp from the bot's terminal output.</p>
-    <div class="bg-zinc-800/50 rounded-lg p-4 text-sm text-zinc-300">
-      <p class="font-medium mb-2">Setup steps:</p>
-      <ol class="list-decimal list-inside space-y-1 text-zinc-400">
-        <li>Deploy your bot with Telegram, Discord, or Slack</li>
-        <li>WhatsApp pairing will be available in your dashboard</li>
-        <li>Scan the QR code with your WhatsApp mobile app</li>
-      </ol>
-    </div>
-    <button onclick="document.getElementById('whatsapp-modal').style.cssText='display:none !important;'" class="w-full mt-4 bg-zinc-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm hover:bg-zinc-600">Got it</button>
+
+<div id="discord-modal" class="fixed inset-0 z-100 flex items-center justify-center p-4" style="display:none!important; padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));">
+  <div class="absolute inset-0 bg-black/60" aria-hidden="true" id="discord-backdrop"></div>
+  <div class="relative z-10 w-full max-w-xl max-h-[90dvh] overflow-y-auto flex flex-col rounded-2xl sm:rounded-3xl border border-white/8 bg-zinc-950 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden">
+    <section class="flex flex-1 flex-col justify-start gap-5 sm:gap-8 min-w-0 p-4 sm:p-6 md:p-9">
+      <header class="flex items-center gap-3">
+        <img alt="Discord" class="w-6 h-6 object-contain shrink-0" src="discord-logo.svg">
+        <h2 class="text-white font-medium text-lg flex-1">Connect Discord</h2>
+        <button id="discord-close-btn" type="button" aria-label="Close Discord modal" class="size-8 rounded-lg border border-white/12 text-zinc-400 hover:text-white hover:border-white/30 transition-colors duration-200 flex items-center justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>
+        </button>
+      </header>
+      <div class="w-full flex flex-col gap-3">
+        <h3 class="text-white font-medium text-base">How to get your bot token?</h3>
+        <ol class="list-decimal list-inside space-y-3.5 text-zinc-400 text-sm leading-relaxed marker:text-white/30 marker:font-medium">
+          <li><span class="ml-2 inline">Go to the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener noreferrer" class="text-white/90 underline hover:text-[#5865F2] transition-colors duration-300">Discord Developer Portal</a>.</span></li>
+          <li><span class="ml-2 inline">Click <strong class="text-white/90">New Application</strong>, name it, then go to the <strong class="text-white/90">Bot</strong> tab.</span></li>
+          <li><span class="ml-2 inline">Click <strong class="text-white/90">Reset Token</strong> and copy the token.</span></li>
+          <li><span class="ml-2 inline">Under <strong class="text-white/90">Privileged Gateway Intents</strong>, enable <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">Message Content Intent</code>.</span></li>
+          <li><span class="ml-2 inline">Invite the bot to your server using the OAuth2 URL Generator (Bot scope + Send Messages permission).</span></li>
+          <li><span class="ml-2 inline">Paste the token below and click Save &amp; Connect.</span></li>
+        </ol>
+      </div>
+      <div class="w-full">
+        <label for="discord-token" class="flex flex-col gap-2 text-zinc-400 text-sm font-medium">
+          Enter bot token
+          <input id="discord-token" placeholder="MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.XXXXXX.XXXX..." class="w-full rounded-xl bg-white/5 border border-white/8 px-4 py-3 text-base text-white placeholder:text-zinc-600 outline-none focus:border-white/30 transition-colors" type="password" value="" oninput="window.updateDiscordBtn && window.updateDiscordBtn(this.value)">
+        </label>
+      </div>
+      <button id="discord-connect-btn" disabled class="w-full rounded-xl main-btn-shadow bg-white text-black font-medium text-sm py-2.5 cursor-pointer transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+        Save &amp; Connect
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tabler-icon tabler-icon-check w-4 h-4 shrink-0"><path d="M5 12l5 5l10 -10"></path></svg>
+      </button>
+    </section>
+  </div>
+</div>
+<div id="slack-modal" class="fixed inset-0 z-100 flex items-center justify-center p-4" style="display:none!important; padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));">
+  <div class="absolute inset-0 bg-black/60" aria-hidden="true" id="slack-backdrop"></div>
+  <div class="relative z-10 w-full max-w-xl max-h-[90dvh] overflow-y-auto flex flex-col rounded-2xl sm:rounded-3xl border border-white/8 bg-zinc-950 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden">
+    <section class="flex flex-1 flex-col justify-start gap-5 sm:gap-8 min-w-0 p-4 sm:p-6 md:p-9">
+      <header class="flex items-center gap-3">
+        <img alt="Slack" class="w-6 h-6 object-contain shrink-0" src="slack-logo.png">
+        <h2 class="text-white font-medium text-lg flex-1">Connect Slack</h2>
+        <button id="slack-close-btn" type="button" aria-label="Close Slack modal" class="size-8 rounded-lg border border-white/12 text-zinc-400 hover:text-white hover:border-white/30 transition-colors duration-200 flex items-center justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>
+        </button>
+      </header>
+      <div class="w-full flex flex-col gap-3">
+        <h3 class="text-white font-medium text-base">How to get your Slack tokens?</h3>
+        <ol class="list-decimal list-inside space-y-3.5 text-zinc-400 text-sm leading-relaxed marker:text-white/30 marker:font-medium">
+          <li><span class="ml-2 inline">Go to <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" class="text-white/90 underline hover:text-[#4A154B] transition-colors duration-300">Slack Apps</a> and click <strong class="text-white/90">Create New App</strong>.</span></li>
+          <li><span class="ml-2 inline">Under <strong class="text-white/90">Settings → Socket Mode</strong>, enable it and generate an <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">App Token</code> (starts with <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">xapp-</code>).</span></li>
+          <li><span class="ml-2 inline">Under <strong class="text-white/90">Features → Event Subscriptions</strong>, enable and subscribe to <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">app_mention</code> and <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">message.im</code>.</span></li>
+          <li><span class="ml-2 inline">Under <strong class="text-white/90">OAuth &amp; Permissions</strong>, install to your workspace and copy the <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">Bot Token</code> (starts with <code class="rounded bg-white/10 px-1.5 py-0.5 text-white/90 font-mono text-xs">xoxb-</code>).</span></li>
+          <li><span class="ml-2 inline">Paste both tokens below and click Save &amp; Connect.</span></li>
+        </ol>
+      </div>
+      <div class="w-full flex flex-col gap-4">
+        <label for="slack-app-token" class="flex flex-col gap-2 text-zinc-400 text-sm font-medium">
+          App Token
+          <input id="slack-app-token" placeholder="xapp-1-..." class="w-full rounded-xl bg-white/5 border border-white/8 px-4 py-3 text-base text-white placeholder:text-zinc-600 outline-none focus:border-white/30 transition-colors" type="password" value="" oninput="window.updateSlackBtn && window.updateSlackBtn()">
+        </label>
+        <label for="slack-bot-token" class="flex flex-col gap-2 text-zinc-400 text-sm font-medium">
+          Bot Token
+          <input id="slack-bot-token" placeholder="xoxb-..." class="w-full rounded-xl bg-white/5 border border-white/8 px-4 py-3 text-base text-white placeholder:text-zinc-600 outline-none focus:border-white/30 transition-colors" type="password" value="" oninput="window.updateSlackBtn && window.updateSlackBtn()">
+        </label>
+      </div>
+      <button id="slack-connect-btn" disabled class="w-full rounded-xl main-btn-shadow bg-white text-black font-medium text-sm py-2.5 cursor-pointer transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+        Save &amp; Connect
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tabler-icon tabler-icon-check w-4 h-4 shrink-0"><path d="M5 12l5 5l10 -10"></path></svg>
+      </button>
+    </section>
+  </div>
+</div>
+<div id="whatsapp-modal" class="fixed inset-0 z-100 flex items-center justify-center p-4" style="display:none!important; padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));">
+  <div class="absolute inset-0 bg-black/60" aria-hidden="true" id="whatsapp-backdrop"></div>
+  <div class="relative z-10 w-full max-w-xl max-h-[90dvh] overflow-y-auto flex flex-col rounded-2xl sm:rounded-3xl border border-white/8 bg-zinc-950 shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden">
+    <section class="flex flex-1 flex-col justify-start gap-5 sm:gap-8 min-w-0 p-4 sm:p-6 md:p-9">
+      <header class="flex items-center gap-3">
+        <img alt="WhatsApp" class="w-6 h-6 object-contain shrink-0" src="whatsapp-logo.png">
+        <h2 class="text-white font-medium text-lg flex-1">Connect WhatsApp</h2>
+        <button id="whatsapp-close-btn" type="button" aria-label="Close WhatsApp modal" class="size-8 rounded-lg border border-white/12 text-zinc-400 hover:text-white hover:border-white/30 transition-colors duration-200 flex items-center justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>
+        </button>
+      </header>
+      <div class="w-full flex flex-col gap-3">
+        <h3 class="text-white font-medium text-base">How does WhatsApp connect?</h3>
+        <p class="text-zinc-400 text-sm leading-relaxed">WhatsApp uses <strong class="text-white/90">QR code pairing</strong> through your phone’s Linked Devices feature. No API token needed.</p>
+        <ol class="list-decimal list-inside space-y-3.5 text-zinc-400 text-sm leading-relaxed marker:text-white/30 marker:font-medium">
+          <li><span class="ml-2 inline">First, deploy your bot with at least one other channel (Telegram, Discord, or Slack).</span></li>
+          <li><span class="ml-2 inline">Once deployed, go to your <strong class="text-white/90">Dashboard</strong> and click <strong class="text-white/90">Pair WhatsApp</strong>.</span></li>
+          <li><span class="ml-2 inline">Open WhatsApp on your phone → <strong class="text-white/90">Settings → Linked Devices → Link a Device</strong>.</span></li>
+          <li><span class="ml-2 inline">Scan the QR code shown on screen. Your bot will be linked automatically.</span></li>
+        </ol>
+      </div>
+      <div class="w-full rounded-xl bg-white/5 border border-white/8 p-4">
+        <p class="text-zinc-500 text-sm text-center"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 inline-block mr-1.5 -mt-0.5 text-zinc-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>QR pairing will be available after you deploy your bot.</p>
+      </div>
+      <button onclick="document.getElementById('whatsapp-modal').style.cssText='display:none!important;'" class="w-full rounded-xl main-btn-shadow bg-white text-black font-medium text-sm py-2.5 cursor-pointer transition-all hover:opacity-90 flex items-center justify-center gap-2">
+        Got it
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tabler-icon tabler-icon-check w-4 h-4 shrink-0"><path d="M5 12l5 5l10 -10"></path></svg>
+      </button>
+    </section>
   </div>
 </div>
 </body></html>
