@@ -1540,8 +1540,8 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
     // Verify process is actually alive
     try {
         process.kill(child.pid, 0);
-    } catch (_) {
-        throw new Error(`Picobot process exited immediately after spawn (pid ${child.pid})`);
+    } catch (err) {
+        throw new Error(`Picobot process exited immediately after spawn (pid ${child.pid})`, { cause: err });
     }
 
     return child.pid;
@@ -1773,13 +1773,13 @@ if (config.nodeEnv !== 'test') {
     initDatabase().then(() => {
     server = app.listen(config.port, () => {
         // Detect picobot version: try version file, then binary --version, then mark missing
-        let pbVer = 'unknown';
+        let pbVer;
         try {
             pbVer = fs.readFileSync(path.join(path.dirname(config.picobotPath), '.picobot-version'), 'utf8').trim();
         } catch (_) {
             try {
                 pbVer = execFileSync(config.picobotPath, ['--version'], { timeout: 3000 }).toString().trim() || 'installed';
-            } catch (e) {
+            } catch (_e) {
                 if (!fs.existsSync(config.picobotPath)) {
                     pbVer = 'MISSING';
                     log.startup.error('Picobot binary not found', { path: config.picobotPath });
@@ -1788,6 +1788,7 @@ if (config.nodeEnv !== 'test') {
                 }
             }
         }
+        pbVer = pbVer ?? 'unknown';
 
         log.startup.info('LiveClaw Orchestrator v2.0.0 started', {
             env: config.nodeEnv,
