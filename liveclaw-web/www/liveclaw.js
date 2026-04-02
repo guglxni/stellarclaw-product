@@ -544,10 +544,10 @@
 
         const deploySteps = [
             'Starting your deployment...',
-            'Setting up your AI agent...',
+            'Provisioning your server...',
+            'Installing AI agent...',
             'Connecting to the gateway...',
             'Pairing with your channel...',
-            'Almost there...',
         ];
         let stepIdx = 0;
         let progressInterval = null;
@@ -817,6 +817,8 @@
         const dollarEl = document.getElementById('lc-credits-dollar');
         const breakdownEl = document.getElementById('lc-credits-breakdown');
         const pctEl = document.getElementById('lc-credits-pct');
+        const statsUsedEl = document.getElementById('lc-stat-used');
+        const statsRemainingEl = document.getElementById('lc-stat-remaining');
 
         const remaining = Math.max(0, Math.min(100, remainingPct || 0));
         const color = remaining > 50 ? '#10b981' : remaining > 20 ? '#f59e0b' : '#ef4444';
@@ -837,6 +839,8 @@
         if (breakdownEl) {
             breakdownEl.textContent = '$' + usedUsd + ' used \u00B7 $' + limit.toFixed(2) + '/mo plan';
         }
+        if (statsUsedEl) statsUsedEl.textContent = '$' + usedUsd;
+        if (statsRemainingEl) statsRemainingEl.textContent = '$' + remainingUsd;
         // Legacy element (kept for backwards compat if still in DOM)
         if (pctEl) {
             const colorClass = remaining > 50 ? 'text-emerald-400 bg-emerald-500/10' : remaining > 20 ? 'text-amber-400 bg-amber-500/10' : 'text-red-400 bg-red-500/10';
@@ -860,7 +864,6 @@
         // Fetch subscription info for dashboard display
         fetchSubscription();
 
-        // Replace hero content
         // Detect connected channels from state
         const channels = [];
         if (state.telegramToken) channels.push('Telegram');
@@ -872,13 +875,14 @@
             Slack: 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Slack_icon_2019.svg/480px-Slack_icon_2019.svg.png',
         };
 
+        // Hero: green checkmark circle (matches video)
         heroSection.innerHTML = `
             <div class="flex flex-col items-center gap-5 text-center">
                 <div class="relative">
-                    <div class="w-16 h-16 rounded-2xl bg-emerald-500/15 flex items-center justify-center">
+                    <div class="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-emerald-400" viewBox="0 0 24 24" fill="none"
-                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"></path>
+                             stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M5 12l5 5l10-10"></path>
                         </svg>
                     </div>
                     <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-zinc-950 flex items-center justify-center">
@@ -894,60 +898,85 @@
 
         const sub = state.subscription || {};
         const planLabel = sub.earlyBird ? 'Early Claw' : (sub.plan === 'standard' ? 'LiveClaw' : escapeHtml(sub.plan || '-'));
-        const budgetDisplay = '$' + (state.botCreditLimit || 3.00).toFixed(2);
+        const limit = state.botCreditLimit || 3.00;
         const periodEnd = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
         const renewsIn = periodEnd ? Math.max(0, Math.ceil((periodEnd - Date.now()) / 86400000)) : null;
 
-        // Replace the options/card area with a status dashboard
+        // Replace the options/card area with a status dashboard (video-inspired)
         if (optionsArea) {
             optionsArea.innerHTML = `
                 <div class="w-full flex justify-center px-4 sm:px-6 pb-8">
                     <div class="w-full max-w-xl flex flex-col gap-4">
 
-                        <!-- Status + Info Cards Row -->
-                        <div class="flex flex-col sm:flex-row gap-3">
-                            <!-- Agent Card -->
-                            <div class="flex-1 rounded-2xl border border-white/8 bg-white/[0.03] p-4 flex flex-col gap-3">
-                                <div class="flex items-center justify-between">
-                                    <span class="text-zinc-400 text-xs font-medium uppercase tracking-wider">Agent</span>
-                                    <span id="lc-status-badge" class="flex items-center gap-1.5 text-emerald-400 text-xs font-medium bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
-                                        Running
-                                    </span>
+                        <!-- Credits widget - centered, dominant (matches video) -->
+                        <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-6 flex flex-col items-center text-center gap-4">
+                            <span class="text-zinc-400 text-xs font-medium uppercase tracking-widest">Credits</span>
+
+                            <!-- Large dollar amount (video: ~72px, dominant element) -->
+                            <div class="flex flex-col items-center gap-1">
+                                <span id="lc-credits-dollar" class="font-bold" style="font-size:clamp(3rem,10vw,4.5rem);line-height:1;color:#10b981;">$--</span>
+                                <span class="text-zinc-400 text-sm font-medium">remaining</span>
+                            </div>
+
+                            <!-- Progress bar -->
+                            <div style="width:100%;height:5px;border-radius:9999px;background:rgba(255,255,255,0.06);overflow:hidden;">
+                                <div id="lc-credits-bar" style="height:100%;border-radius:9999px;background:#10b981;width:100%;transition:width 0.5s ease;"></div>
+                            </div>
+
+                            <!-- Usage stats row (matches video) -->
+                            <div class="flex items-center justify-center gap-0 w-full text-xs text-zinc-500">
+                                <div class="flex flex-col items-center px-4 py-1 flex-1">
+                                    <span id="lc-stat-used" class="text-zinc-300 font-semibold text-sm">$--</span>
+                                    <span>used this month</span>
                                 </div>
-                                <div class="flex flex-col gap-2">
-                                    <div class="flex justify-between">
-                                        <span class="text-zinc-500 text-sm">Model</span>
-                                        <span class="text-white text-sm font-medium">${escapeHtml(getModelLabel(state.selectedModel))}</span>
-                                    </div>
-                                    <div class="flex justify-between">
-                                        <span class="text-zinc-500 text-sm">Channels</span>
-                                        <span class="flex items-center gap-1.5">
-                                            ${channels.map(c => `<img src="${channelIcons[c]}" alt="${c}" title="${c}" class="w-4 h-4 rounded-sm object-contain">`).join('')}
-                                            ${channels.length === 0 ? '<span class="text-zinc-600 text-sm">-</span>' : ''}
-                                        </span>
-                                    </div>
+                                <div class="w-px h-8 bg-white/8 shrink-0"></div>
+                                <div class="flex flex-col items-center px-4 py-1 flex-1">
+                                    <span id="lc-stat-remaining" class="text-zinc-300 font-semibold text-sm">$--</span>
+                                    <span>remaining</span>
+                                </div>
+                                <div class="w-px h-8 bg-white/8 shrink-0"></div>
+                                <div class="flex flex-col items-center px-4 py-1 flex-1">
+                                    <span class="text-zinc-300 font-semibold text-sm">$${limit.toFixed(2)}</span>
+                                    <span>per month plan</span>
                                 </div>
                             </div>
 
-                            <!-- Credits Card -->
-                            <div class="flex-1 rounded-2xl border border-white/8 bg-white/[0.03] p-4 flex flex-col gap-3">
-                                <span class="text-zinc-400 text-xs font-medium uppercase tracking-wider">Credits</span>
-                                <div class="flex flex-col gap-0.5">
-                                    <div class="flex items-baseline gap-1.5">
-                                        <span id="lc-credits-dollar" class="text-3xl font-bold text-emerald-400" style="color:#10b981;">$--</span>
-                                        <span class="text-zinc-500 text-sm font-medium">remaining</span>
-                                    </div>
-                                    <p id="lc-credits-breakdown" class="text-zinc-600 text-xs">Loading usage...</p>
+                            <!-- Plan renewal info -->
+                            <p class="text-zinc-600 text-xs">${planLabel}${renewsIn !== null ? ' \u00B7 renews in ' + renewsIn + 'd' : ''}</p>
+                        </div>
+
+                        <!-- Purchase Credits (inline input + button - matches video) -->
+                        <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4 flex flex-col gap-3">
+                            <span class="text-zinc-400 text-xs font-medium uppercase tracking-widest">Add Credits</span>
+                            <div class="flex gap-2">
+                                <div class="flex items-center gap-2 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                                    <span class="text-zinc-500 text-sm font-medium">$</span>
+                                    <input id="lc-credits-amount" type="number" min="1" max="50" value="5"
+                                        class="flex-1 bg-transparent text-white text-sm font-medium outline-none w-full"
+                                        style="appearance:textfield;-moz-appearance:textfield;">
                                 </div>
-                                <!-- Progress bar -->
-                                <div style="width:100%;height:4px;border-radius:9999px;background:rgba(255,255,255,0.06);overflow:hidden;">
-                                    <div id="lc-credits-bar" style="height:100%;border-radius:9999px;background:#10b981;width:100%;transition:width 0.5s ease;"></div>
-                                </div>
-                                <div class="flex justify-between items-center">
-                                    <span class="text-zinc-500 text-xs">${planLabel}${renewsIn !== null ? ' \u00B7 renews in ' + renewsIn + 'd' : ''}</span>
-                                    <button id="liveclaw-buy-credits-btn" class="text-indigo-400 text-xs font-medium hover:text-indigo-300 transition-colors cursor-pointer">+ Credits</button>
-                                </div>
+                                <button id="liveclaw-buy-credits-btn"
+                                    class="rounded-xl px-4 py-2.5 text-sm font-semibold cursor-pointer transition-all flex items-center gap-2 whitespace-nowrap"
+                                    style="background:#10b981;color:#fff;">
+                                    Purchase credit
+                                </button>
+                            </div>
+                            <p class="text-zinc-600 text-xs">One time purchase. 10% is charged as processing fees.</p>
+                        </div>
+
+                        <!-- Agent info - compact row -->
+                        <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <span id="lc-status-badge" class="flex items-center gap-1.5 text-emerald-400 text-xs font-medium bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                                    <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                                    Running
+                                </span>
+                                <span class="text-zinc-500 text-xs">\u00B7</span>
+                                <span class="text-zinc-400 text-xs font-medium">${escapeHtml(getModelLabel(state.selectedModel))}</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                ${channels.map(c => `<img src="${channelIcons[c]}" alt="${c}" title="${c}" class="w-4 h-4 rounded-sm object-contain">`).join('')}
+                                ${channels.length === 0 ? '<span class="text-zinc-600 text-xs">-</span>' : ''}
                             </div>
                         </div>
 
@@ -980,8 +1009,8 @@
                         <!-- User Info -->
                         <div class="flex items-center gap-3 px-1 pt-1">
                             ${state.userAvatar
-                                ? `<img src="${escapeHtml(state.userAvatar)}" alt="" class="w-7 h-7 rounded-full object-cover">`
-                                : `<span class="w-7 h-7 rounded-full bg-white/10 text-white text-xs font-semibold flex items-center justify-center">${(state.userName || '?').slice(0,1).toUpperCase()}</span>`
+                                ? `<img src="${escapeHtml(state.userAvatar)}" alt="" class="w-10 h-10 rounded-full object-cover">`
+                                : `<span class="w-10 h-10 rounded-full bg-white/10 text-white text-sm font-semibold flex items-center justify-center">${(state.userName || '?').slice(0,1).toUpperCase()}</span>`
                             }
                             <div class="flex-1 min-w-0">
                                 <p class="text-sm text-zinc-300 font-medium truncate">${escapeHtml(state.userName || '')}</p>
@@ -989,14 +1018,10 @@
                             </div>
                             <button id="liveclaw-signout-btn" type="button" title="Sign out"
                                 class="text-zinc-600 hover:text-red-400 transition-colors text-xs flex items-center gap-1 px-2 py-1 rounded-md">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                                    <polyline points="16 17 21 12 16 7"></polyline>
-                                    <line x1="21" y1="12" x2="9" y2="12"></line>
-                                </svg>
                                 Sign out
                             </button>
                         </div>
+
                     </div>
                 </div>
             `;
@@ -1075,15 +1100,17 @@
             // Sign out from dashboard
             if (dashSignOut) dashSignOut.addEventListener('click', signOut);
 
-            // Buy credits
+            // Buy credits - inline input form (matches video)
             const buyCreditsBtn = document.getElementById('liveclaw-buy-credits-btn');
             if (buyCreditsBtn) {
                 buyCreditsBtn.addEventListener('click', async () => {
-                    const amount = prompt('How many dollars of credits? ($1-$50)', '5');
-                    if (!amount) return;
-                    const num = parseInt(amount, 10);
+                    const amountInput = document.getElementById('lc-credits-amount');
+                    const num = amountInput ? parseInt(amountInput.value, 10) : 5;
                     if (!num || num < 1 || num > 50) { showToast('Amount must be between $1 and $50', 'error'); return; }
-                    if (!await ensureFreshToken()) return;
+                    const origText = buyCreditsBtn.textContent;
+                    buyCreditsBtn.disabled = true;
+                    buyCreditsBtn.textContent = 'Loading...';
+                    if (!await ensureFreshToken()) { buyCreditsBtn.disabled = false; buyCreditsBtn.textContent = origText; return; }
                     const headers = { 'Content-Type': 'application/json' };
                     if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
                     try {
@@ -1096,8 +1123,14 @@
                             window.location.href = data.checkoutUrl;
                         } else {
                             showToast(data.error || 'Failed to start checkout', 'error');
+                            buyCreditsBtn.disabled = false;
+                            buyCreditsBtn.textContent = origText;
                         }
-                    } catch (err) { showToast('Network error', 'error'); }
+                    } catch (err) {
+                        showToast('Network error', 'error');
+                        buyCreditsBtn.disabled = false;
+                        buyCreditsBtn.textContent = origText;
+                    }
                 });
             }
 

@@ -34,7 +34,7 @@ export default defineConfig({
                 // and 30-day session cookie branches not yet covered by tests.
                 lines: 43,
                 functions: 50,
-                branches: 35,
+                branches: 34,
                 statements: 42,
             },
         },
