@@ -283,7 +283,7 @@
      *
      * Returns true if credentials are available, false only when user must sign in.
      */
-    async function ensureFreshToken() {
+    async function ensureFreshToken(silent = false) {
         if (state.idToken) {
             try {
                 const payload = decodeJwt(state.idToken);
@@ -339,7 +339,7 @@
         }
 
         // Both the Google token and the session cookie are gone — must sign in
-        showToast('Your session has expired. Please sign in again.', 'error', 'Session expired');
+        if (!silent) showToast('Your session has expired. Please sign in again.', 'error', 'Session expired');
         return false;
     }
 
@@ -877,16 +877,16 @@
 
         // Hero: green checkmark circle (matches video)
         heroSection.innerHTML = `
-            <div class="flex flex-col items-center gap-5 text-center">
-                <div class="relative">
-                    <div class="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-emerald-400" viewBox="0 0 24 24" fill="none"
+            <div style="display:flex;flex-direction:column;align-items:center;gap:1.25rem;text-align:center;">
+                <div style="position:relative;display:inline-flex;">
+                    <div style="width:64px;height:64px;border-radius:50%;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.25);display:flex;align-items:center;justify-content:center;">
+                        <svg xmlns="http://www.w3.org/2000/svg" style="width:32px;height:32px;color:#34d399;" viewBox="0 0 24 24" fill="none"
                              stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M5 12l5 5l10-10"></path>
                         </svg>
                     </div>
-                    <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-zinc-950 flex items-center justify-center">
-                        <span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
+                    <span style="position:absolute;bottom:-4px;right:-4px;width:18px;height:18px;background:#10b981;border-radius:50%;border:2px solid #09090b;display:flex;align-items:center;justify-content:center;">
+                        <span class="animate-pulse" style="width:7px;height:7px;background:#fff;border-radius:50%;display:block;"></span>
                     </span>
                 </div>
                 <div>
@@ -1134,10 +1134,10 @@
                 });
             }
 
-            // Auto-fetch usage on load
+            // Auto-fetch usage on load (silent=true suppresses the session-expired toast)
             (async function fetchInitialUsage() {
                 try {
-                    if (!await ensureFreshToken()) return;
+                    if (!await ensureFreshToken(true)) return;
                     const headers = {};
                     if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
                     const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId), { headers, credentials: 'include' });
