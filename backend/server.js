@@ -957,13 +957,19 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
         throw httpError(500, { error: 'Failed to spawn agent', detail });
     }
 
+    // Use the existing DB key if the returned key looks like a UUID fallback
+    // (Bifrost VK keys start with 'sk-'; UUIDs are 36 hex chars with dashes).
+    // This prevents overwriting a valid key with a stale fallback value.
+    const isFallbackId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(virtualKey.key);
+    const vkKeyToStore = (isFallbackId && existingVkKey) ? existingVkKey : virtualKey.key;
+
     await stmt.upsertBot({
         user_id: userId,
         pid,
         model,
         telegram_token: telegramToken ? encryptToken(telegramToken) : '',
         bifrost_vk_id: virtualKey.id,
-        bifrost_vk: encryptToken(virtualKey.key),
+        bifrost_vk: encryptToken(vkKeyToStore),
         credit_limit: creditLimit,
         discord_token: discordToken ? encryptToken(discordToken) : null,
         slack_app_token: slackAppToken ? encryptToken(slackAppToken) : null,
