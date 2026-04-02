@@ -267,9 +267,21 @@
     }
 
     /**
-     * Ensures state.idToken is fresh (not expired).
-     * Tries Google One Tap silent refresh first, falls back to asking user to re-sign-in.
-     * Returns true if token is valid, false if user needs to sign in again.
+     * Ensures auth credentials are fresh before making an API call.
+     *
+     * Auth has two layers:
+     *   1. Google ID token (Bearer header) — expires after 1 hour
+     *   2. HttpOnly session cookie — 30-day TTL, set at sign-in via /auth/session
+     *
+     * When the Google token expires we try a silent One Tap refresh first. If that
+     * fails (common — One Tap has cooldowns and browser restrictions), we clear the
+     * stale token and fall back to the session cookie. The backend accepts both, so
+     * most requests will succeed without the user ever seeing an error.
+     *
+     * We only surface "Session expired" when there is no userId at all (never signed
+     * in, or signed out). For actual 401s from the backend, callers handle that.
+     *
+     * Returns true if credentials are available, false only when user must sign in.
      */
     async function ensureFreshToken() {
         if (state.idToken) {
@@ -282,7 +294,7 @@
             } catch (_) { /* fall through to refresh */ }
         }
 
-        // Token expired - try silent refresh via Google One Tap
+        // Token expired or missing — try silent refresh via Google One Tap
         if (window.google && GOOGLE_CLIENT_ID) {
             const refreshed = await new Promise((resolve) => {
                 _tokenRefreshResolve = resolve;
@@ -297,7 +309,7 @@
                             _tokenRefreshResolve = null;
                             resolve(false);
                         }
-                        // If displayed + auto-selected, handleGoogleCredential will resolve(true)
+                        // If auto-selected, handleGoogleCredential will resolve(true)
                     });
                 } catch (_) {
                     clearTimeout(timeout);
@@ -308,7 +320,25 @@
             if (refreshed) return true;
         }
 
-        // Silent refresh failed - ask user to sign in again
+        // Silent refresh failed.
+        // Try to silently extend the session via the session cookie (30-day TTL).
+        // This covers the common case: Google token expires after 1h but the
+        // HttpOnly session cookie is still valid — no user action needed.
+        if (state.userId) {
+            try {
+                const refreshRes = await fetch(API_BASE + '/auth/refresh', {
+                    method: 'POST',
+                    credentials: 'include',
+                });
+                if (refreshRes.ok) {
+                    state.idToken = null; // clear stale token; cookie handles auth
+                    saveState();
+                    return true;
+                }
+            } catch (_) { /* network issue — fall through */ }
+        }
+
+        // Both the Google token and the session cookie are gone — must sign in
         showToast('Your session has expired. Please sign in again.', 'error', 'Session expired');
         return false;
     }
@@ -986,7 +1016,10 @@
                         if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
                         const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId), { headers, credentials: 'include' });
                         const data = await res.json();
-                        if (res.ok) {
+                        if (res.status === 401) {
+                            showToast('Your session has expired. Please sign in again.', 'error', 'Session expired');
+                            state.userId = null; state.idToken = null; saveState();
+                        } else if (res.ok) {
                             // Update status badge
                             const badge = document.getElementById('lc-status-badge');
                             if (badge) {

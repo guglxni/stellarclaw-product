@@ -1617,15 +1617,15 @@ app.post('/auth/session', async (req, res) => {
 
         const sessionToken = jwt.sign(
             { sub: payload.sub, email: payload.email },
-            config.encryptionKey,  // reuse existing key
-            { expiresIn: '1h' }
+            config.encryptionKey,
+            { expiresIn: '30d' }
         );
 
         res.cookie('liveclaw_session', sessionToken, {
             httpOnly: true,
             secure: config.nodeEnv === 'production',
             sameSite: 'strict',
-            maxAge: 60 * 60 * 1000, // 1 hour
+            maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
             path: '/',
         });
 
@@ -1634,6 +1634,33 @@ app.post('/auth/session', async (req, res) => {
         res.status(401).json({ error: 'Token verification failed' });
     }
 });
+
+// Silently extend a still-valid session. Called by the frontend when the
+// Google ID token expires but the session cookie is still alive. Re-issues
+// a fresh 30-day cookie so long-lived users don't see spurious expirations.
+app.post('/auth/refresh', asyncHandler(async (req, res) => {
+    if (!req.cookies || !req.cookies.liveclaw_session) {
+        return res.status(401).json({ error: 'No session' });
+    }
+    try {
+        const decoded = jwt.verify(req.cookies.liveclaw_session, config.encryptionKey);
+        const sessionToken = jwt.sign(
+            { sub: decoded.sub, email: decoded.email },
+            config.encryptionKey,
+            { expiresIn: '30d' }
+        );
+        res.cookie('liveclaw_session', sessionToken, {
+            httpOnly: true,
+            secure: config.nodeEnv === 'production',
+            sameSite: 'strict',
+            maxAge: 30 * 24 * 60 * 60 * 1000,
+            path: '/',
+        });
+        res.json({ ok: true, userId: decoded.sub });
+    } catch (_err) {
+        res.status(401).json({ error: 'Session expired' });
+    }
+}));
 
 app.post('/auth/logout', (_req, res) => {
     res.clearCookie('liveclaw_session', { httpOnly: true, secure: config.nodeEnv === 'production', sameSite: 'strict', path: '/' });
