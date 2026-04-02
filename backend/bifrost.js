@@ -79,7 +79,7 @@ async function bifrostRequest(path, options = {}, retries = 2) {
  * @param  {number} creditLimit - Starting budget in USD (default $0.05)
  * @returns {Promise<{id: string, key: string}>}
  */
-async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.05) {
+async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.05, existingVkKey = null) {
     if (!userId || typeof userId !== 'string') {
         throw new TypeError('userId must be a non-empty string');
     }
@@ -106,6 +106,17 @@ async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.
     } catch (_) { /* fall through to create */ }
 
     if (existingId) {
+        // Bifrost PUT responses may not include the key value (sk-bf-*) for security.
+        // Try GET first to retrieve it; fall back to the key passed in from the DB.
+        let currentKey = existingVkKey;
+        if (!currentKey) {
+            try {
+                const getResp = await bifrostRequest(`/api/governance/virtual-keys/${encodeURIComponent(existingId)}`);
+                const getVk = getResp.virtual_key || getResp;
+                currentKey = getVk.value || getVk.key || getResp.key || null;
+            } catch (_) { /* fall through */ }
+        }
+
         // Reactivate and update provider config + budget for the new deploy
         const data = await bifrostRequest(`/api/governance/virtual-keys/${encodeURIComponent(existingId)}`, {
             method: 'PUT',
@@ -118,7 +129,7 @@ async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.
         const vk = data.virtual_key || data;
         return {
             id: existingId,
-            key: vk.value || vk.key || data.key || existingId,
+            key: currentKey || vk.value || vk.key || data.key || existingId,
         };
     }
 

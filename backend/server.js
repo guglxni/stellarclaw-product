@@ -890,9 +890,13 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
         logEvent(userId, 'existing_bot_stopped', { pid: existing.pid });
     }
 
+    // Pass the existing DB key so createVirtualKey can use it when Bifrost's PUT
+    // response omits the key value (which it may, for security reasons).
+    const existingVkKey = existing?.bifrost_vk ? decryptToken(existing.bifrost_vk) : null;
+
     let virtualKey;
     try {
-        virtualKey = await bifrost.createVirtualKey(userId, model, creditLimit);
+        virtualKey = await bifrost.createVirtualKey(userId, model, creditLimit, existingVkKey);
         logEvent(userId, 'bifrost_vk_created', { id: virtualKey.id });
     } catch (err) {
         log.deploy.error('Bifrost error', { error: err.message });
