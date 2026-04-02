@@ -828,19 +828,17 @@
             barEl.style.background = color;
         }
 
-        const limit = state.botCreditLimit || 3.00;
-        const remainingUsd = (limit * remaining / 100).toFixed(2);
-        const usedUsd = (limit * Math.max(0, Math.min(100, usedPct || 0)) / 100).toFixed(2);
+        const used = Math.max(0, Math.min(100, usedPct || 0));
 
         if (dollarEl) {
-            dollarEl.textContent = '$' + remainingUsd;
+            dollarEl.textContent = Math.round(remaining) + '%';
             dollarEl.style.color = color;
         }
         if (breakdownEl) {
-            breakdownEl.textContent = '$' + usedUsd + ' used \u00B7 $' + limit.toFixed(2) + '/mo plan';
+            breakdownEl.textContent = Math.round(used) + '% used \u00B7 100% at plan start';
         }
-        if (statsUsedEl) statsUsedEl.textContent = '$' + usedUsd;
-        if (statsRemainingEl) statsRemainingEl.textContent = '$' + remainingUsd;
+        if (statsUsedEl) statsUsedEl.textContent = Math.round(used) + '%';
+        if (statsRemainingEl) statsRemainingEl.textContent = Math.round(remaining) + '%';
         // Legacy element (kept for backwards compat if still in DOM)
         if (pctEl) {
             const colorClass = remaining > 50 ? 'text-emerald-400 bg-emerald-500/10' : remaining > 20 ? 'text-amber-400 bg-amber-500/10' : 'text-red-400 bg-red-500/10';
@@ -912,9 +910,9 @@
                         <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-6 flex flex-col items-center text-center gap-4">
                             <span class="text-zinc-400 text-xs font-medium uppercase tracking-widest">Credits</span>
 
-                            <!-- Large dollar amount (video: ~72px, dominant element) -->
+                            <!-- Large percentage (dominant element) -->
                             <div class="flex flex-col items-center gap-1">
-                                <span id="lc-credits-dollar" class="font-bold" style="font-size:clamp(3rem,10vw,4.5rem);line-height:1;color:#10b981;">$--</span>
+                                <span id="lc-credits-dollar" class="font-bold" style="font-size:clamp(3rem,10vw,4.5rem);line-height:1;color:#10b981;">--%</span>
                                 <span class="text-zinc-400 text-sm font-medium">remaining</span>
                             </div>
 
@@ -926,18 +924,18 @@
                             <!-- Usage stats row (matches video) -->
                             <div class="flex items-center justify-center gap-0 w-full text-xs text-zinc-500">
                                 <div class="flex flex-col items-center px-4 py-1 flex-1">
-                                    <span id="lc-stat-used" class="text-zinc-300 font-semibold text-sm">$--</span>
+                                    <span id="lc-stat-used" class="text-zinc-300 font-semibold text-sm">--%</span>
                                     <span>used this month</span>
                                 </div>
                                 <div class="w-px h-8 bg-white/8 shrink-0"></div>
                                 <div class="flex flex-col items-center px-4 py-1 flex-1">
-                                    <span id="lc-stat-remaining" class="text-zinc-300 font-semibold text-sm">$--</span>
+                                    <span id="lc-stat-remaining" class="text-zinc-300 font-semibold text-sm">--%</span>
                                     <span>remaining</span>
                                 </div>
                                 <div class="w-px h-8 bg-white/8 shrink-0"></div>
                                 <div class="flex flex-col items-center px-4 py-1 flex-1">
-                                    <span class="text-zinc-300 font-semibold text-sm">$${limit.toFixed(2)}</span>
-                                    <span>per month plan</span>
+                                    <span class="text-zinc-300 font-semibold text-sm">100%</span>
+                                    <span>at plan start</span>
                                 </div>
                             </div>
 
