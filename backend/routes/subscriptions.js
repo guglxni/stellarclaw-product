@@ -7,7 +7,6 @@
  *   POST   /create-checkout-session
  *   POST   /create-portal-session
  *   GET    /subscription/:userId
- *   POST   /create-trial-checkout
  *   GET    /pricing
  *   POST   /redeem-beta
  *   POST   /referral/generate
@@ -64,7 +63,7 @@ function createSubscriptionRouter(deps) {
 
         // Check if user already has an active subscription
         const existing = await stmtSubs.getByUserId(userId);
-        if (existing && ['active', 'trialing'].includes(existing.status)) {
+        if (existing && ['active', 'trialing', 'past_due'].includes(existing.status)) {
             return res.status(409).json({
                 error: 'You already have an active subscription',
                 plan: existing.plan,
@@ -89,8 +88,8 @@ function createSubscriptionRouter(deps) {
                 });
             }
             earlyBird = true;
-            discountCode = 'EARLYCLAW'; // Dodo applies ~30.1% off → ~$6.99/mo
-            logEvent(userId, 'promo_code_applied', { code: 'EARLYCLAW', spotsRemaining: 500 - usedCount - 1 });
+            discountCode = 'EARLYCLAW'; // Dodo applies 25% off first month → $7.49, then $9.99/mo
+            logEvent(userId, 'promo_code_applied', { code: 'EARLYCLAW', spotsRemaining: 500 - usedCount });
         }
 
         // Handle referral code
@@ -201,71 +200,11 @@ function createSubscriptionRouter(deps) {
         });
     }));
 
-    // ─── POST /create-trial-checkout — $0.75 Two-Day Trial Checkout ─────────────
-    // Creates a Dodo one-time payment for the trial product ($0.75).
-    // On payment.succeeded the webhook activates a 48h trialing subscription.
-    router.post('/create-trial-checkout', deployLimiter, asyncHandler(authMiddleware), checkoutPerUser, asyncHandler(async (req, res) => {
-        const userId = req.verifiedUserId || req.body?.userId;
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
-            return res.status(403).json({ error: 'Forbidden: user ID mismatch' });
-        }
-        const email = req.verifiedEmail || req.body.email;
-
-        if (typeof userId !== 'string') {
-            return res.status(400).json({ error: 'userId is required' });
-        }
-
-        // Block if user already has active/trialing access
-        const existing = await stmtSubs.getByUserId(userId);
-        if (existing && ['active', 'trialing'].includes(existing.status)) {
-            return res.status(409).json({
-                error: 'You already have an active subscription',
-                status: existing.status,
-            });
-        }
-
-        // Block if user has already used a trial (trial_ends_at was set at any point)
-        const usedTrial = await db.get(
-            'SELECT trial_ends_at FROM subscriptions WHERE user_id = ? AND trial_ends_at IS NOT NULL',
-            [userId]
-        );
-        if (usedTrial) {
-            return res.status(409).json({ error: 'Trial already used. Please subscribe to continue.' });
-        }
-
-        try {
-            const session = await dodo.createTrialCheckoutSession(
-                userId,
-                email || `${userId}@liveclaw.xyz`,
-                'https://liveclaw.xyz?checkout=trial-success'
-            );
-            logEvent(userId, 'trial_checkout_created', { sessionId: session.sessionId });
-            return res.json({ checkoutUrl: session.checkoutUrl, sessionId: session.sessionId });
-        } catch (err) {
-            log.checkout.error('Dodo trial checkout error', { error: err.message });
-            return res.status(502).json({ error: 'Failed to create trial checkout session' });
-        }
-    }));
-
     // ─── GET /pricing — Public Pricing ──────────────────────────────────────────
     router.get('/pricing', asyncHandler(async (req, res) => {
         const earlyBirdUsed = (await db.get(
             "SELECT COUNT(*) as count FROM subscriptions WHERE early_bird = 1 AND status IN ('active','trialing','past_due')"
         )).count;
-
-        // Check trial eligibility if userId is provided
-        let trialEligible = true;
-        const userId = req.query.userId;
-        if (userId && typeof userId === 'string') {
-            const usedTrial = await db.get(
-                'SELECT trial_ends_at FROM subscriptions WHERE user_id = ? AND trial_ends_at IS NOT NULL',
-                [userId]
-            );
-            if (usedTrial) trialEligible = false;
-        }
 
         const allChannels = ['telegram', 'discord', 'slack', 'whatsapp'];
         const allModels = [
@@ -278,22 +217,8 @@ function createSubscriptionRouter(deps) {
         ];
 
         return res.json({
-            trialEligible,
             models: allModels,
             plans: {
-                trial: {
-                    id: 'trial',
-                    name: 'LiveClaw Trial',
-                    price: 0.75,
-                    currency: 'usd',
-                    interval: 'one-time',
-                    duration: '48 hours',
-                    features: [
-                        '24/7 AI agent on Telegram, Discord, Slack & WhatsApp',
-                        'Custom personality (SOUL.md)',
-                        'Full access for 48 hours',
-                    ],
-                },
                 standard: {
                     id: 'standard',
                     name: 'LiveClaw',
@@ -312,8 +237,9 @@ function createSubscriptionRouter(deps) {
                 },
                 earlyClaw: {
                     id: 'standard',
-                    name: 'LiveClaw — Early Claw',
-                    price: 6.99,
+                    name: 'Early Claw',
+                    firstMonthPrice: 7.49,
+                    price: 9.99,
                     currency: 'usd',
                     interval: 'month',
                     bots: 1,
@@ -321,12 +247,12 @@ function createSubscriptionRouter(deps) {
                     promoCode: 'EARLYCLAW',
                     spotsRemaining: Math.max(0, 500 - earlyBirdUsed),
                     features: [
+                        'First month $7.49, then $9.99/mo',
                         '24/7 AI agent on Telegram, Discord, Slack & WhatsApp',
                         '6 AI models — MiniMax, MiMo, GLM-5, DeepSeek & more',
                         'Custom personality (SOUL.md)',
                         'Unlimited messages within budget',
                         'Email support',
-                        'Locked-in Early Claw pricing (first month only)',
                     ],
                 },
             },
@@ -334,9 +260,9 @@ function createSubscriptionRouter(deps) {
     }));
 
     // ─── POST /redeem-beta — Redeem a Beta Access Code via Dodo Checkout ────────
-    // Validates the beta code in our DB, then creates a Dodo trial checkout with
-    // the code as a 100% discount coupon. Dodo handles billing ($0.75 - 100% = $0.00),
-    // then fires payment.succeeded → webhook activates 48h trial.
+    // Validates the beta code in our DB, then creates a standard checkout with
+    // the code as a 100% discount coupon (first month free via subscription_cycles: 1).
+    // Dodo handles billing ($9.99 - 100% = $0.00 first month), then charges normally.
     router.post('/redeem-beta', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
         const { betaCode } = req.body;
         const userId = req.verifiedUserId || req.body?.userId;
@@ -364,7 +290,7 @@ function createSubscriptionRouter(deps) {
 
         // Check user doesn't already have an active/trialing subscription
         const existing = await stmtSubs.getByUserId(userId);
-        if (existing && ['active', 'trialing'].includes(existing.status)) {
+        if (existing && ['active', 'trialing', 'past_due'].includes(existing.status)) {
             return res.status(409).json({
                 error: 'You already have an active subscription',
                 status: existing.status,
@@ -388,13 +314,14 @@ function createSubscriptionRouter(deps) {
             return res.status(410).json({ error: 'Beta code has already been used' });
         }
 
-        // Create a Dodo checkout for the trial product with this code as a 100% discount
+        // Create a standard Dodo checkout with the beta code as a 100% first-month discount
         try {
-            const session = await dodo.createTrialCheckoutSession(
+            const session = await dodo.createCheckoutSession(
+                'beta',
                 userId,
                 email || `${userId}@liveclaw.xyz`,
-                'https://liveclaw.xyz?checkout=trial-success',
-                code  // beta code = Dodo discount code
+                'https://liveclaw.xyz?checkout=success',
+                code  // beta code = Dodo discount code (100% off first month)
             );
 
             // Track that this user used this beta code
@@ -409,7 +336,7 @@ function createSubscriptionRouter(deps) {
                 success: true,
                 checkoutUrl: session.checkoutUrl,
                 sessionId: session.sessionId,
-                message: 'Complete checkout to activate your 48-hour free trial.',
+                message: 'Complete checkout to activate your free first month.',
             });
         } catch (err) {
             log.checkout.error('Beta redeem checkout error', { error: err.message });
@@ -418,7 +345,48 @@ function createSubscriptionRouter(deps) {
                 'UPDATE beta_codes SET redeemed_by = NULL, redeemed_at = NULL, redeemed_ip = NULL, user_agent = NULL WHERE code = ? AND redeemed_by = ?',
                 [code, userId]
             );
-            return res.status(502).json({ error: 'Failed to create trial checkout session' });
+            return res.status(502).json({ error: 'Failed to create checkout session' });
+        }
+    }));
+
+    // ─── POST /purchase-credits — Buy LLM Credits via Dodo ─────────────────────
+    // Creates a Dodo one-time checkout for credit top-up.
+    // On payment.succeeded, the webhook tops up the user's Bifrost VK budget.
+    router.post('/purchase-credits', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
+        const userId = req.verifiedUserId || req.body?.userId;
+        if (!userId) return res.status(401).json({ error: 'User ID required' });
+        if (req.verifiedUserId && req.verifiedUserId !== (req.body?.userId || req.verifiedUserId)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const email = req.verifiedEmail || req.body.email;
+        const amount = parseInt(req.body.amount, 10);
+
+        if (!amount || amount < 1 || amount > 50) {
+            return res.status(400).json({ error: 'Amount must be between $1 and $50' });
+        }
+
+        // User must have an active subscription and a deployed bot
+        const sub = await stmtSubs.getByUserId(userId);
+        if (!sub || !['active', 'trialing', 'past_due'].includes(sub.status)) {
+            return res.status(403).json({ error: 'Active subscription required' });
+        }
+        const bot = await db.get('SELECT bifrost_vk_id FROM bots WHERE user_id = ?', [userId]);
+        if (!bot || !bot.bifrost_vk_id) {
+            return res.status(404).json({ error: 'No deployed bot found' });
+        }
+
+        try {
+            const session = await dodo.createCreditsCheckout(
+                userId,
+                email || `${userId}@liveclaw.xyz`,
+                amount,
+                'https://liveclaw.xyz?checkout=credits-success'
+            );
+            logEvent(userId, 'credits_checkout_created', { amount, sessionId: session.sessionId });
+            return res.json({ checkoutUrl: session.checkoutUrl, sessionId: session.sessionId });
+        } catch (err) {
+            log.checkout.error('Credits checkout error', { error: err.message });
+            return res.status(502).json({ error: 'Failed to create credits checkout' });
         }
     }));
 
@@ -535,6 +503,129 @@ function createSubscriptionRouter(deps) {
         logEvent(userId, 'referral_applied', { code, referrerId: referrer.user_id });
 
         return res.json({ success: true, message: 'Referral code applied successfully' });
+    }));
+
+    // ─── Waitlist ─────────────────────────────────────────────────────────────
+    // Rate-limited: 5 attempts per 15 min per IP
+    const waitlistLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false });
+
+    // POST /waitlist/join — Submit email + X username, receive OTP
+    router.post('/waitlist/join', waitlistLimiter, asyncHandler(async (req, res) => {
+        const { email, xUsername, linkedinUrl } = req.body;
+        if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+            return res.status(400).json({ error: 'Valid email required' });
+        }
+        if (!xUsername || typeof xUsername !== 'string' || xUsername.trim().length < 1 || xUsername.length > 50) {
+            return res.status(400).json({ error: 'X (Twitter) username is required' });
+        }
+        // Sanitize X username: strip @ prefix, allow only alphanumeric + underscore
+        const cleanX = xUsername.trim().replace(/^@/, '');
+        if (!/^[a-zA-Z0-9_]{1,15}$/.test(cleanX)) {
+            return res.status(400).json({ error: 'Invalid X username format' });
+        }
+        // Validate LinkedIn URL if provided
+        let cleanLinkedin = null;
+        if (linkedinUrl && typeof linkedinUrl === 'string' && linkedinUrl.trim()) {
+            const url = linkedinUrl.trim();
+            if (url.length > 200 || !/^https?:\/\/(www\.)?linkedin\.com\/in\/[a-zA-Z0-9_-]+\/?$/i.test(url)) {
+                return res.status(400).json({ error: 'Invalid LinkedIn profile URL' });
+            }
+            cleanLinkedin = url;
+        }
+
+        const normalised = email.toLowerCase().trim();
+
+        // Check if already verified. Return same success response to avoid email enumeration (A01).
+        const existing = await db.get('SELECT verified, promo_code FROM waitlist WHERE email = ?', [normalised]);
+        if (existing && existing.verified) {
+            return res.json({ success: true, message: 'Verification code sent to your email.' });
+        }
+
+        // Generate 6-digit OTP, expires in 10 minutes
+        const otp = String(crypto.randomInt(100000, 999999));
+        const otpExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+        await db.run(
+            `INSERT INTO waitlist (email, x_username, linkedin_url, otp, otp_expires) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(email) DO UPDATE SET otp = excluded.otp, otp_expires = excluded.otp_expires,
+             x_username = excluded.x_username, linkedin_url = excluded.linkedin_url`,
+            [normalised, cleanX, cleanLinkedin, otp, otpExpires]
+        );
+
+        // Send OTP via Resend (FOSS-friendly transactional email, 3k/mo free)
+        const resendKey = process.env.RESEND_API_KEY;
+        if (resendKey) {
+            try {
+                const emailRes = await fetch('https://api.resend.com/emails', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        from: process.env.RESEND_FROM || 'LiveClaw <noreply@liveclaw.xyz>',
+                        to: normalised,
+                        subject: 'Your LiveClaw verification code',
+                        html: `<div style="font-family:-apple-system,sans-serif;max-width:400px;margin:0 auto;padding:2rem;">
+                            <h2 style="color:#fff;margin:0 0 0.5rem;">LiveClaw</h2>
+                            <p style="color:#a1a1aa;font-size:0.9375rem;margin:0 0 1.5rem;">Here's your verification code:</p>
+                            <div style="background:#18181b;border:1px solid #27272a;border-radius:0.75rem;padding:1.25rem;text-align:center;margin:0 0 1.5rem;">
+                                <span style="font-size:2rem;font-weight:700;letter-spacing:0.3em;color:#e4e4e7;">${otp}</span>
+                            </div>
+                            <p style="color:#71717a;font-size:0.8125rem;margin:0;">This code expires in 10 minutes. If you didn't request this, you can ignore this email.</p>
+                        </div>`,
+                    }),
+                });
+                if (!emailRes.ok) {
+                    const errBody = await emailRes.text();
+                    log.checkout.error('Resend email failed', { status: emailRes.status, body: errBody });
+                }
+            } catch (err) {
+                log.checkout.error('Resend email error', { error: err.message });
+            }
+        } else {
+            // Fallback: log OTP (dev mode)
+            log.checkout.info('Waitlist OTP (no RESEND_API_KEY)', { email: normalised, otp });
+        }
+
+        logEvent('system', 'waitlist_otp_sent', { email: normalised, xUsername: cleanX });
+
+        return res.json({ success: true, message: 'Verification code sent to your email.' });
+    }));
+
+    // POST /waitlist/verify — Verify OTP, mark as verified
+    router.post('/waitlist/verify', waitlistLimiter, asyncHandler(async (req, res) => {
+        const { email, otp } = req.body;
+        if (!email || !otp) return res.status(400).json({ error: 'Email and OTP required' });
+        const normalised = email.toLowerCase().trim();
+
+        const record = await db.get('SELECT otp, otp_expires, verified FROM waitlist WHERE email = ?', [normalised]);
+        // Return the same error for unknown email and wrong OTP to prevent email enumeration (A01).
+        if (!record) return res.status(400).json({ error: 'Invalid verification code' });
+        if (record.verified) return res.json({ success: true, message: 'Already verified. You will receive your code soon.' });
+
+        // Constant-time comparison prevents timing-based OTP brute-force (A07).
+        const expected = Buffer.from(String(record.otp).trim().padEnd(16));
+        const provided  = Buffer.from(String(otp).trim().padEnd(16));
+        const match = expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
+        if (!match) {
+            return res.status(400).json({ error: 'Invalid verification code' });
+        }
+        if (new Date(record.otp_expires) < new Date()) {
+            return res.status(410).json({ error: 'Code expired. Request a new one.' });
+        }
+
+        await db.run(
+            'UPDATE waitlist SET verified = 1, otp = NULL, otp_expires = NULL WHERE email = ?',
+            [normalised]
+        );
+        logEvent('system', 'waitlist_verified', { email: normalised });
+
+        return res.json({ success: true, message: 'Email verified! You are on the waitlist and will receive your exclusive promo code soon.' });
+    }));
+
+    // GET /waitlist/count — Public count of waitlist signups
+    const countLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
+    router.get('/waitlist/count', countLimiter, asyncHandler(async (_req, res) => {
+        const row = await db.get('SELECT COUNT(*) as c FROM waitlist WHERE verified = 1');
+        return res.json({ count: Number(row.c) || 0 });
     }));
 
     return router;

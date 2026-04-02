@@ -44,15 +44,15 @@ function getClient() {
 
 // ─── Product IDs ─────────────────────────────────────────────────────────────
 // Standard plan: $9.99/mo
-// Apply EARLYCLAW promo code → Dodo applies ~30.1% off → ~$6.99/mo (locked in, first 500)
+// Apply EARLYCLAW promo code → 25% off first month → $7.49 first month, then $9.99/mo (first 500)
 const PRODUCT_ID = process.env.DODO_PRODUCT_ID || '';
-// Two-day trial: $0.75 one-time payment → 48h trialing access, then prompted to subscribe
-const TRIAL_PRODUCT_ID = process.env.DODO_TRIAL_PRODUCT_ID || '';
+// Credits: one-time purchase to top up LLM budget via Bifrost VK
+const CREDITS_PRODUCT_ID = process.env.DODO_CREDITS_PRODUCT_ID || '';
 
 // ─── Bifrost budget — per-subscriber monthly LLM spend cap ──────────────────
-// Configurable via PLAN_BUDGET_USD env var. Default $3.00 per user.
-// MiniMax M2.7: ~$0.00051/msg → $3.00 ≈ 5,800 messages/month.
-// MIMO v2 Pro: ~$0.004/msg → $3.00 ≈ 750 messages/month.
+// MiniMax M2.7 (reasoning model, $0.30/$1.20 per M tokens):
+//   Casual (10 msgs/day): $0.70-1.00/mo | Medium (20/day): $1.50-2.50 | Heavy (30/day): $2.50-4.00
+// $3.00 budget supports all usage tiers with healthy margin at $9.99/mo standard.
 const PLAN_BUDGET = parseFloat(process.env.PLAN_BUDGET_USD) || 3.00;
 
 // ─── Bot limit — 1 bot per subscriber ───────────────────────────────────────
@@ -84,9 +84,16 @@ async function createCheckoutSession(plan, userId, email, returnUrl, discountCod
         // so the webhook handler can confirm and assign the spot after payment clears
         metadata: { liveclaw_user_id: userId, plan, ...(earlyClaw && { early_bird: '1' }) },
         return_url: returnUrl || 'https://liveclaw.xyz?checkout=success',
-        // Enable UPI for Indian customers (Adaptive Currency must be on in Dodo dashboard).
-        // credit/debit cover all international cards + Rupay; upi_collect adds UPI QR/VPA.
-        allowed_payment_method_types: ['credit', 'debit', 'apple_pay', 'google_pay', 'upi_collect'],
+        // Payment methods — all must also be enabled in the Dodo dashboard.
+        // upi_autopay  = UPI AutoPay e-mandate for recurring subscriptions (India)
+        // upi_collect  = one-time UPI QR/VPA (fallback for non-mandate flows)
+        // credit/debit = international cards + Rupay
+        // apple_pay / google_pay = wallet pass-through
+        allowed_payment_method_types: [
+            'credit', 'debit',
+            'apple_pay', 'google_pay',
+            'upi_autopay', 'upi_collect',
+        ],
     };
 
     if (discountCode) {
@@ -100,40 +107,29 @@ async function createCheckoutSession(plan, userId, email, returnUrl, discountCod
     };
 }
 
+
 /**
- * Create a $0.75 two-day trial checkout session.
- * On payment.succeeded the webhook activates a 48-hour trialing subscription.
+ * Create a one-time credits checkout for topping up LLM budget.
  *
- * @param {string} userId          - Google sub
- * @param {string} email           - Customer email
- * @param {string} [returnUrl]     - URL to redirect after checkout
- * @param {string} [discountCode]  - Optional discount code (beta codes = 100% off)
+ * @param {string} userId      - LiveClaw user ID
+ * @param {string} email       - Customer email
+ * @param {number} quantity    - Number of $1 credit units to purchase
+ * @param {string} [returnUrl] - Redirect after checkout
  * @returns {Promise<{ sessionId: string, checkoutUrl: string }>}
  */
-async function createTrialCheckoutSession(userId, email, returnUrl, discountCode) {
+async function createCreditsCheckout(userId, email, quantity = 1, returnUrl) {
     const dodo = getClient();
-    if (!TRIAL_PRODUCT_ID) {
-        throw new Error('DODO_TRIAL_PRODUCT_ID is not configured. Set it in .env.');
+    if (!CREDITS_PRODUCT_ID) {
+        throw new Error('DODO_CREDITS_PRODUCT_ID is not configured. Set it in .env.');
     }
-    const params = {
-        product_cart: [{ product_id: TRIAL_PRODUCT_ID, quantity: 1 }],
+    const session = await dodo.checkoutSessions.create({
+        product_cart: [{ product_id: CREDITS_PRODUCT_ID, quantity }],
         customer: { email, name: email },
-        metadata: {
-            liveclaw_user_id: userId,
-            plan: 'trial',
-            ...(discountCode && { beta_code: discountCode }),
-        },
-        return_url: returnUrl || 'https://liveclaw.xyz?checkout=trial-success',
+        metadata: { liveclaw_user_id: userId, plan: 'credits', credit_amount_usd: String(quantity) },
+        return_url: returnUrl || 'https://liveclaw.xyz?checkout=credits-success',
         allowed_payment_method_types: ['credit', 'debit', 'apple_pay', 'google_pay', 'upi_collect'],
-    };
-    if (discountCode) {
-        params.discount_code = discountCode;
-    }
-    const session = await dodo.checkoutSessions.create(params);
-    return {
-        sessionId: session.session_id,
-        checkoutUrl: session.checkout_url,
-    };
+    });
+    return { sessionId: session.session_id, checkoutUrl: session.checkout_url };
 }
 
 /**
@@ -192,16 +188,16 @@ function verifyWebhookEvent(rawBody, headers) {
 }
 
 /**
- * Create a 100% discount code in Dodo, restricted to the trial product.
- * Each beta code becomes a Dodo coupon with usage_limit=1.
+ * Create a 100% discount code in Dodo, restricted to the standard product.
+ * Each beta code becomes a Dodo coupon with usage_limit=1, first month only.
  *
  * @param {string} code - The beta code (e.g. 'A1B2-C3D4-E5F6')
  * @returns {Promise<{ discountId: string, code: string }>}
  */
 async function createBetaDiscount(code) {
     const dodo = getClient();
-    if (!TRIAL_PRODUCT_ID) {
-        throw new Error('DODO_TRIAL_PRODUCT_ID is not configured. Set it in .env.');
+    if (!PRODUCT_ID) {
+        throw new Error('DODO_PRODUCT_ID is not configured. Set it in .env.');
     }
     const discount = await dodo.discounts.create({
         name: `Beta Code ${code}`,
@@ -209,7 +205,8 @@ async function createBetaDiscount(code) {
         amount: 10000, // 100.00% in basis points
         code,
         usage_limit: 1,
-        restricted_to: [TRIAL_PRODUCT_ID],
+        restricted_to: [PRODUCT_ID],
+        subscription_cycles: 1, // First month only
     });
     return { discountId: discount.discount_id, code: discount.code };
 }
@@ -228,7 +225,7 @@ async function retrieveDiscountByCode(code) {
 // ─── Exports ────────────────────────────────────────────────────────────────
 module.exports = {
     createCheckoutSession,
-    createTrialCheckoutSession,
+    createCreditsCheckout,
     createPortalSession,
     getSubscription,
     cancelSubscription,
@@ -236,7 +233,7 @@ module.exports = {
     createBetaDiscount,
     retrieveDiscountByCode,
     PRODUCT_ID,
-    TRIAL_PRODUCT_ID,
+    CREDITS_PRODUCT_ID,
     PLAN_BUDGET,
     BOT_LIMIT,
     // Expose for testing only

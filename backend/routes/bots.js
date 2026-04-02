@@ -170,15 +170,31 @@ function createBotRouter(deps) {
             bot.status = 'crashed';
         }
 
+        // Fetch real-time LLM usage from Bifrost VK
+        let usage = null;
+        if (bot.bifrost_vk_id) {
+            try {
+                const vkUsage = await bifrost.getVirtualKeyUsage(bot.bifrost_vk_id);
+                usage = {
+                    usedPct: vkUsage.limitUsd > 0 ? Math.round((vkUsage.spentUsd / vkUsage.limitUsd) * 100) : 0,
+                    remainingPct: vkUsage.limitUsd > 0 ? Math.max(0, Math.round(((vkUsage.limitUsd - vkUsage.spentUsd) / vkUsage.limitUsd) * 100)) : 100,
+                    isActive: vkUsage.isActive,
+                };
+            } catch (_) { /* Bifrost unreachable — return null usage */ }
+        }
+
+        // Parse active channels
+        let channels = [];
+        try { channels = JSON.parse(bot.active_channels || '[]'); } catch (_) { /* noop */ }
+
         return res.json({
             userId: bot.user_id,
-            pid: bot.pid,
             model: bot.model,
             status: bot.status,
-            creditLimit: bot.credit_limit,
-            creditDepleted: bot.credit_limit <= 0.001, // flag for frontend warning
-            createdAt: bot.created_at,
             alive,
+            channels,
+            usage,
+            createdAt: bot.created_at,
         });
     }));
 

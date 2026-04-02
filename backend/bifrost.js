@@ -24,29 +24,44 @@ const BIFROST_BASE = process.env.BIFROST_GATEWAY_URL || 'http://localhost:8080';
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Generic Bifrost API request with error handling.
+ * Generic Bifrost API request with timeout, retry, and error handling.
  *
  * @param {string} path    - API path (e.g. '/api/governance/virtual-keys')
  * @param {object} options - fetch options
+ * @param {number} retries - Number of retry attempts (default 2, total 3 attempts)
  * @returns {Promise<object>}
  */
-async function bifrostRequest(path, options = {}) {
+async function bifrostRequest(path, options = {}, retries = 2) {
     const url = `${BIFROST_BASE}${path}`;
-
     const headers = { 'Content-Type': 'application/json', ...options.headers };
+    const method = options.method || 'GET';
 
-    const res = await fetch(url, {
-        ...options,
-        headers,
-    });
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const res = await fetch(url, {
+                ...options,
+                headers,
+                signal: AbortSignal.timeout(10000), // 10s timeout
+            });
 
-    if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Bifrost API ${options.method || 'GET'} ${path} → ${res.status}: ${body}`);
+            if (!res.ok) {
+                const body = await res.text();
+                const err = new Error(`Bifrost API ${method} ${path} → ${res.status}: ${body}`);
+                err.statusCode = res.status;
+                // Don't retry 4xx (client errors) — only retry 5xx and network errors
+                if (res.status < 500) throw err;
+                if (attempt === retries) throw err;
+            } else {
+                const text = await res.text();
+                return text ? JSON.parse(text) : {};
+            }
+        } catch (err) {
+            if (err.statusCode && err.statusCode < 500) throw err; // Don't retry client errors
+            if (attempt === retries) throw err;
+        }
+        // Exponential backoff: 200ms, 600ms
+        await new Promise(r => setTimeout(r, 200 * Math.pow(3, attempt)));
     }
-
-    const text = await res.text();
-    return text ? JSON.parse(text) : {};
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -72,17 +87,50 @@ async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.
         throw new TypeError('creditLimit must be a positive number');
     }
 
+    // Ensure Bifrost customer exists (required FK for virtual keys)
+    const customerId = await ensureBifrostCustomer(userId);
+
     // Map our model names to provider config
     const providerConfig = getProviderConfig(model);
 
+    const vkName = `liveclaw-${userId}`;
+
+    // Check if a VK with this name already exists (e.g. from a previous deploy).
+    // Bifrost rejects duplicate names, so reactivate + update instead of creating.
+    let existingId = null;
+    try {
+        const list = await bifrostRequest(`/api/governance/virtual-keys?name=${encodeURIComponent(vkName)}`);
+        const keys = list.virtual_keys || list.keys || list.data || [];
+        const found = keys.find(k => k.name === vkName);
+        if (found) existingId = found.id;
+    } catch (_) { /* fall through to create */ }
+
+    if (existingId) {
+        // Reactivate and update provider config + budget for the new deploy
+        const data = await bifrostRequest(`/api/governance/virtual-keys/${encodeURIComponent(existingId)}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                provider_configs: [providerConfig],
+                budget: { max_limit: creditLimit, reset_duration: '1M' },
+                is_active: true,
+            }),
+        });
+        const vk = data.virtual_key || data;
+        return {
+            id: existingId,
+            key: vk.value || vk.key || data.key || existingId,
+        };
+    }
+
+    // No existing VK — create fresh
     const payload = {
-        name: `liveclaw-${userId}`,
+        name: vkName,
         description: `LiveClaw agent for user ${userId}`,
         provider_configs: [providerConfig],
-        customer_id: `liveclaw-user-${userId}`,
+        customer_id: customerId,
         budget: {
             max_limit: creditLimit,
-            reset_duration: '1M', // Monthly reset
+            reset_duration: '1M',
         },
         rate_limit: {
             request_max_limit: 100,
@@ -98,10 +146,53 @@ async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.
         body: JSON.stringify(payload),
     });
 
+    const vk = data.virtual_key || data;
     return {
-        id: data.id || data.vk_id || `vk-${Date.now()}`,
-        key: data.key || data.virtual_key || data.id,
+        id: vk.id || data.id || data.vk_id || `vk-${Date.now()}`,
+        key: vk.value || data.key || data.virtual_key || data.id,
     };
+}
+
+/**
+ * Ensures a Bifrost governance customer exists for the given user.
+ * Creates one if it doesn't exist, returns the Bifrost-assigned customer ID.
+ * Uses in-memory lock to prevent duplicate creation under concurrent requests.
+ */
+const _customerLocks = new Map();
+
+async function ensureBifrostCustomer(userId) {
+    const customerName = `liveclaw-user-${userId}`;
+
+    // Prevent concurrent creation for the same user
+    if (_customerLocks.has(userId)) {
+        return _customerLocks.get(userId);
+    }
+
+    const promise = (async () => {
+        try {
+            // Check if customer already exists
+            const list = await bifrostRequest(`/api/governance/customers?name=${encodeURIComponent(customerName)}`);
+            const customers = list.customers || [];
+            const existing = customers.find(c => c.name === customerName);
+            if (existing) return existing.id;
+        } catch (_) { /* fall through to create */ }
+
+        // Create new customer
+        const data = await bifrostRequest('/api/governance/customers', {
+            method: 'POST',
+            body: JSON.stringify({ name: customerName }),
+        });
+
+        const customer = data.customer || data;
+        return customer.id;
+    })();
+
+    _customerLocks.set(userId, promise);
+    try {
+        return await promise;
+    } finally {
+        _customerLocks.delete(userId);
+    }
 }
 
 /**

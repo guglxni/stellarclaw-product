@@ -9,7 +9,7 @@
  *  5. Manages Dodo Payments subscription lifecycle (checkout, portal, webhooks)
  *  6. Gracefully shuts down on SIGTERM/SIGINT
  *
- * Monetisation: Dodo Payments — $9.99/mo standard ($6.99 Early Claw offer w/ EARLYCLAW code) with 2-day trial at $0.75.
+ * Monetisation: Dodo Payments — $9.99/mo standard (Early Claw: $7.49 first month w/ EARLYCLAW code, first 500 users).
  * MoR model: Dodo handles global taxes, invoicing, and checkout.
  */
 
@@ -226,7 +226,7 @@ async function getGooglePublicKeys() {
     if (googleKeysCache && Date.now() < googleKeysCacheExpiry) {
         return googleKeysCache;
     }
-    const res = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/certs', { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`Google JWKS fetch failed: ${res.status}`);
     googleKeysCache = await res.json();
     // Cache for 6 hours
@@ -522,6 +522,19 @@ await db.exec(`
         updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS waitlist (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        email        TEXT    NOT NULL UNIQUE,
+        x_username   TEXT    NOT NULL,
+        linkedin_url TEXT,
+        otp          TEXT,
+        otp_expires  DATETIME,
+        verified     INTEGER NOT NULL DEFAULT 0,
+        promo_code   TEXT,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_waitlist_email ON waitlist(email);
     CREATE INDEX IF NOT EXISTS idx_subs_user     ON subscriptions(user_id);
     CREATE INDEX IF NOT EXISTS idx_subs_dodo     ON subscriptions(dodo_subscription_id);
     CREATE INDEX IF NOT EXISTS idx_subs_status_updated ON subscriptions(status, updated_at);
@@ -544,6 +557,9 @@ try { await db.exec("ALTER TABLE bots ADD COLUMN discord_token TEXT"); } catch (
 try { await db.exec("ALTER TABLE bots ADD COLUMN slack_app_token TEXT"); } catch (_) { /* already exists */ }
 try { await db.exec("ALTER TABLE bots ADD COLUMN slack_bot_token TEXT"); } catch (_) { /* already exists */ }
 try { await db.exec("ALTER TABLE bots ADD COLUMN active_channels TEXT DEFAULT '[]'"); } catch (_) { /* already exists */ }
+// Waitlist columns
+try { await db.exec("ALTER TABLE waitlist ADD COLUMN x_username TEXT NOT NULL DEFAULT ''"); } catch (_) { /* already exists */ }
+try { await db.exec("ALTER TABLE waitlist ADD COLUMN linkedin_url TEXT"); } catch (_) { /* already exists */ }
 
 // Statement functions (async equivalents of prepared statements)
 stmt = {
@@ -914,7 +930,7 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
             if (Object.keys(safeMcpServers).length === 0) safeMcpServers = null;
         }
 
-        pid = spawnPicobot(userId, virtualKey.key, model, {
+        pid = await spawnPicobot(userId, virtualKey.key, model, {
             telegramToken,
             telegramAllowFrom: allowFrom,
             discordToken,
@@ -924,8 +940,15 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
         });
         logEvent(userId, 'picobot_spawned', { pid, model, channels: activeChannels });
     } catch (err) {
-        log.deploy.error('picobot spawn error', { error: err.message });
+        log.deploy.error('picobot spawn error', { error: err.message, stack: err.stack });
         logEvent(userId, 'picobot_error', err.message);
+        // Rollback: deactivate the orphaned Virtual Key
+        try {
+            await bifrost.deactivateVirtualKey(virtualKey.id);
+            log.deploy.info('Rolled back orphaned VK', { vkId: virtualKey.id });
+        } catch (rollbackErr) {
+            log.deploy.error('VK rollback failed', { vkId: virtualKey.id, error: rollbackErr.message });
+        }
         const detail = isProd ? undefined : err.message;
         throw httpError(500, { error: 'Failed to spawn agent', detail });
     }
@@ -1058,6 +1081,7 @@ function isPrivateUrl(url) {
             if (a === 127) return true;                        // 127.0.0.0/8
             if (a === 169 && b === 254) return true;           // 169.254.0.0/16 (cloud metadata)
             if (a === 0) return true;                          // 0.0.0.0/8
+            if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT / Tailscale)
         }
         // IPv6 private/reserved ranges
         if (hostname === '::1') return true;                            // loopback
@@ -1363,7 +1387,7 @@ app.post('/verify-telegram-token', deployLimiter, asyncHandler(authMiddleware), 
 // ─── Spawn picobot ──────────────────────────────────────────────────────────
 // picobot reads ~/.picobot/config.json — env vars only work in Docker.
 // We generate a per-user config.json in an isolated HOME directory.
-function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', channelOpts = {}) {
+async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', channelOpts = {}) {
     const { telegramToken, telegramAllowFrom = [], discordToken, slackAppToken, slackBotToken, mcpServers: userMcpServers } = channelOpts;
 
     // Sanitize userId to prevent path traversal (defense-in-depth)
@@ -1410,12 +1434,19 @@ function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', channel
         allowFrom: [],
     };
 
+    // Resolve full OpenRouter model name (e.g. 'minimax/minimax-m2.7') from internal
+    // LiveClaw model id (e.g. 'minimax-m2.7'). Bifrost VK allowed_models uses the full
+    // OpenRouter model name — sending the short internal name causes every LLM request
+    // to be rejected and picobot to reply "Sorry, I encountered an error."
+    const providerConfig = bifrost.getProviderConfig(model);
+    const resolvedModelName = (providerConfig.allowed_models && providerConfig.allowed_models[0]) || model;
+
     // Write per-user config.json
     const picobotConfig = {
         agents: {
             defaults: {
                 workspace: workspaceDir,
-                model,
+                model: resolvedModelName,
                 maxTokens: 8192,
                 temperature: 0.7,
                 maxToolIterations: 200,
@@ -1476,6 +1507,11 @@ function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', channel
         ].join('\n'), 'utf8');
     }
 
+    // Validate binary exists before attempting spawn
+    if (!fs.existsSync(config.picobotPath)) {
+        throw new Error(`Picobot binary not found at ${config.picobotPath}`);
+    }
+
     const child = spawn(config.picobotPath, ['gateway'], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'], // fully detached, no pipe leaks
@@ -1486,11 +1522,27 @@ function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', channel
         cwd: userDir,
     });
 
+    // Track spawn errors — the 'error' event fires asynchronously if exec fails
+    let spawnError = null;
+    child.on('error', (err) => {
+        spawnError = err;
+        log.deploy.error('picobot spawn error', { pid: child.pid, userId, error: err.message });
+    });
+
     child.unref();
 
-    child.on('error', (err) => {
-        log.deploy.error('picobot spawn error', { pid: child.pid, error: err.message });
-    });
+    // Brief pause to catch immediate spawn failures (permission denied, bad binary, etc.)
+    await new Promise(resolve => setTimeout(resolve, 150));
+    if (spawnError) {
+        throw new Error(`Picobot spawn failed: ${spawnError.message}`);
+    }
+
+    // Verify process is actually alive
+    try {
+        process.kill(child.pid, 0);
+    } catch (_) {
+        throw new Error(`Picobot process exited immediately after spawn (pid ${child.pid})`);
+    }
 
     return child.pid;
 }
@@ -1673,8 +1725,7 @@ app.use((_req, res) => {
 // ─── Global Error Handler ───────────────────────────────────────────────────
 app.use((err, req, res, _next) => {
     const status = err.statusCode || 500;
-    log.system.error(`Error ${status}`, { requestId: req.requestId, error: err.message, status });
-    if (!isProd) log.system.debug('Stack trace', { stack: err.stack });
+    log.system.error(`Error ${status}`, { requestId: req.requestId, error: err.message, status, stack: err.stack });
 
     res.status(status).json({
         error: isProd ? 'Internal server error' : err.message,
@@ -1721,11 +1772,22 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 if (config.nodeEnv !== 'test') {
     initDatabase().then(() => {
     server = app.listen(config.port, () => {
-        // Read picobot version for startup banner
+        // Detect picobot version: try version file, then binary --version, then mark missing
         let pbVer = 'unknown';
         try {
             pbVer = fs.readFileSync(path.join(path.dirname(config.picobotPath), '.picobot-version'), 'utf8').trim();
-        } catch (_) { /* not installed yet */ }
+        } catch (_) {
+            try {
+                pbVer = execFileSync(config.picobotPath, ['--version'], { timeout: 3000 }).toString().trim() || 'installed';
+            } catch (e) {
+                if (!fs.existsSync(config.picobotPath)) {
+                    pbVer = 'MISSING';
+                    log.startup.error('Picobot binary not found', { path: config.picobotPath });
+                } else {
+                    pbVer = 'installed (version unknown)';
+                }
+            }
+        }
 
         log.startup.info('LiveClaw Orchestrator v2.0.0 started', {
             env: config.nodeEnv,
@@ -1820,14 +1882,19 @@ if (config.nodeEnv !== 'test') {
                     log.watchdog.warn('Dead bot detected, auto-restarting', { userId: bot.user_id, pid: bot.pid });
 
                     try {
-                        const decryptedToken = decryptToken(bot.telegram_token);
                         const decryptedVk = decryptToken(bot.bifrost_vk);
-                        const newPid = spawnPicobot(bot.user_id, decryptedToken, decryptedVk, bot.model);
+                        const channelOpts = {
+                            telegramToken: bot.telegram_token ? decryptToken(bot.telegram_token) : undefined,
+                            discordToken: bot.discord_token ? decryptToken(bot.discord_token) : undefined,
+                            slackAppToken: bot.slack_app_token ? decryptToken(bot.slack_app_token) : undefined,
+                            slackBotToken: bot.slack_bot_token ? decryptToken(bot.slack_bot_token) : undefined,
+                        };
+                        const newPid = await spawnPicobot(bot.user_id, decryptedVk, bot.model, channelOpts);
                         await stmt.updatePid(newPid, 'running', bot.user_id);
                         logEvent(bot.user_id, 'bot_auto_restarted', { oldPid: bot.pid, newPid });
                         log.watchdog.info('Bot restarted', { userId: bot.user_id, newPid });
                     } catch (err) {
-                        log.watchdog.error('Failed to restart bot', { userId: bot.user_id, error: err.message });
+                        log.watchdog.error('Failed to restart bot', { userId: bot.user_id, error: err.message, stack: err.stack });
                         await stmt.updateStatus('crashed', bot.user_id);
                         logEvent(bot.user_id, 'bot_restart_failed', err.message);
                     }

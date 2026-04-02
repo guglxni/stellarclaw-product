@@ -14,9 +14,6 @@
   // PostHog  — FOSS product analytics (github.com/PostHog/posthog)
   window.LIVECLAW_POSTHOG_KEY            = '{{LIVECLAW_POSTHOG_KEY}}';
   window.LIVECLAW_POSTHOG_HOST           = '{{LIVECLAW_POSTHOG_HOST}}';
-  // Umami    — FOSS page analytics (github.com/umami-software/umami)
-  window.LIVECLAW_UMAMI_URL              = '{{LIVECLAW_UMAMI_URL}}';
-  window.LIVECLAW_UMAMI_WEBSITE_ID       = '{{LIVECLAW_UMAMI_WEBSITE_ID}}';
   // GTM      — tag container for future ad pixels (Meta, Google Ads, TikTok…)
   window.LIVECLAW_GTM_ID                 = '{{LIVECLAW_GTM_ID}}';
 })();

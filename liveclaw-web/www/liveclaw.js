@@ -15,22 +15,9 @@
 
     // ─── Analytics Bootstrap ─────────────────────────────────────────────────
     // PostHog  - FOSS product analytics  (github.com/PostHog/posthog)
-    // Umami    - FOSS page analytics     (github.com/umami-software/umami)
     // GTM      - tag container for future ad pixels (Meta, Google Ads, etc.)
     // Each provider loads only when its window.LIVECLAW_* var is set in config.js.
     (function bootstrapAnalytics() {
-        // ── Umami ────────────────────────────────────────────────────────────
-        var umamiUrl = window.LIVECLAW_UMAMI_URL;
-        var umamiId  = window.LIVECLAW_UMAMI_WEBSITE_ID;
-        if (umamiUrl && umamiId) {
-            var us = document.createElement('script');
-            us.defer = true;
-            us.src = umamiUrl + '/script.js';
-            us.setAttribute('data-website-id', umamiId);
-            us.setAttribute('data-auto-track', 'true');
-            document.head.appendChild(us);
-        }
-
         // ── PostHog ──────────────────────────────────────────────────────────
         var phKey  = window.LIVECLAW_POSTHOG_KEY;
         var phHost = window.LIVECLAW_POSTHOG_HOST || 'https://us.i.posthog.com';
@@ -73,11 +60,10 @@
     })();
 
     // ─── Shared analytics helper ─────────────────────────────────────────────
-    // Single call fires to PostHog, Umami, and GTM dataLayer simultaneously.
+    // Single call fires to PostHog and GTM dataLayer simultaneously.
     function track(event, props) {
         try {
             if (window.posthog && window.posthog.capture) window.posthog.capture(event, props || {});
-            if (window.umami   && window.umami.track)   window.umami.track(event, props || {});
             if (window.dataLayer) window.dataLayer.push(Object.assign({ event: event }, props || {}));
         } catch (_) { /* analytics must never break the app */ }
     }
@@ -145,29 +131,62 @@
     // ─── Google Sign-In ─────────────────────────────────────────────────────
     var _gsiInitDone = false;
 
+    /**
+     * Hides ALL React-rendered Google sign-in buttons to prevent duplicates.
+     * React may re-render its button after hydration — this CSS rule ensures
+     * only the GSI iframe button or our authenticated flow is visible.
+     */
+    /**
+     * Google Sign-In Strategy:
+     *
+     * The React SSR app renders its own "Sign in with Google" button.
+     * We need to replace it with Google's official GSI iframe button.
+     *
+     * Approach:
+     * 1. CSS in index.html hides the React button BEFORE hydration (no flash).
+     * 2. We find the React button's parent container and TAKE IT OVER completely —
+     *    replacing innerHTML so React can never re-render its button into it.
+     * 3. GSI script loads async and renders the real Google button inside our container.
+     *
+     * This is the ONLY reliable way to prevent the double-button problem.
+     * DO NOT use insertBefore/appendChild alongside React — React re-renders
+     * will always fight you. Take over the container entirely.
+     */
+
+    function findAuthContainer() {
+        return document.getElementById('liveclaw-auth-flow')
+            || document.getElementById('liveclaw-gsi-btn')
+            || (function () {
+                var btn = findGoogleButton();
+                return btn ? (btn.closest('div.w-full.flex.flex-col.gap-3.min-w-0') || btn.parentElement) : null;
+            })();
+    }
+
     function initGoogleAuth() {
-        // If already signed in, just render the authenticated flow
         if (state.userId) {
-            if (state.isDeployed) {
-                showSuccessDashboard();
-            } else {
-                renderAuthenticatedFlow();
-            }
+            if (state.isDeployed) { showSuccessDashboard(); }
+            else { renderAuthenticatedFlow(); }
             return;
         }
 
-        // Only init GSI once - prevent duplicate renders from repeated init() calls
         if (_gsiInitDone) return;
 
-        // Find the custom button - if it's already been replaced, skip
         var googleBtn = findGoogleButton();
-        if (!googleBtn) return;
-
-        if (!GOOGLE_CLIENT_ID) return;
+        if (!googleBtn || !GOOGLE_CLIENT_ID) return;
 
         _gsiInitDone = true;
 
-        // Generate OAuth nonce
+        // Replace ONLY the React button with our GSI container.
+        // The button is already hidden by CSS. We create a div in its place
+        // and give it a stable ID so React can't re-render into it.
+        var gsiContainer = document.createElement('div');
+        gsiContainer.id = 'liveclaw-gsi-btn';
+        googleBtn.parentNode.replaceChild(gsiContainer, googleBtn);
+
+        // Also hide the static h3 subtitle after the button — pricing line replaces it
+        var nextH3 = gsiContainer.nextElementSibling;
+        if (nextH3 && nextH3.tagName === 'H3') nextH3.style.display = 'none';
+
         var oauthNonce = (function() {
             var array = new Uint8Array(16);
             crypto.getRandomValues(array);
@@ -175,27 +194,16 @@
         })();
         sessionStorage.setItem('liveclaw_oauth_nonce', oauthNonce);
 
-        // Create the GSI container immediately (before async load) so it holds
-        // the spot in the DOM even if init() is called again
-        var gsiContainer = document.createElement('div');
-        gsiContainer.id = 'liveclaw-gsi-btn';
-        googleBtn.parentNode.replaceChild(gsiContainer, googleBtn);
-
-        // Show a loading state while GSI loads
-        gsiContainer.innerHTML = '<button type="button" disabled style="opacity:0.5;cursor:wait;" class="bg-white text-black font-medium text-sm px-5 py-2.5 rounded-xl flex items-center gap-2"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" class="w-5 h-5">Sign in with Google...</button>';
-
         loadScript('https://accounts.google.com/gsi/client', function () {
-            if (state.userId) return; // signed in while loading
+            if (state.userId) return;
 
             window.google.accounts.id.initialize({
                 client_id: GOOGLE_CLIENT_ID,
                 callback: handleGoogleCredential,
-                auto_select: false, // don't auto-sign-in (causes stuck states)
+                auto_select: false,
                 nonce: oauthNonce,
             });
 
-            // Clear loading state and render the real GSI button
-            gsiContainer.innerHTML = '';
             window.google.accounts.id.renderButton(gsiContainer, {
                 type: 'standard',
                 theme: 'outline',
@@ -499,6 +507,56 @@
     async function executeDeploy(buttonEl, origHTML, headers) {
         const modelId = normalizeModelId(state.selectedModel);
 
+        // Show step-by-step deployment progress in the card area
+        const h1 = document.querySelector('h1.main-text');
+        const heroSection = h1 ? h1.closest('section') : null;
+        const optionsArea = heroSection ? heroSection.nextElementSibling : null;
+
+        const deploySteps = [
+            'Starting your deployment...',
+            'Setting up your AI agent...',
+            'Connecting to the gateway...',
+            'Pairing with your channel...',
+            'Almost there...',
+        ];
+        let stepIdx = 0;
+        let progressInterval = null;
+
+        if (optionsArea) {
+            optionsArea.innerHTML = `
+                <div class="w-full flex justify-center px-4 sm:px-6 pb-8">
+                    <div class="w-full max-w-xl flex flex-col items-center gap-6 py-10">
+                        <div id="lc-deploy-icon-wrap" class="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center">
+                            <svg id="lc-deploy-spinner" class="w-8 h-8 animate-spin text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path>
+                            </svg>
+                        </div>
+                        <div class="text-center flex flex-col gap-2">
+                            <p id="lc-deploy-step" class="text-white font-medium text-base">${deploySteps[0]}</p>
+                            <p class="text-amber-400/80 text-xs flex items-center gap-1.5 justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                Do not switch tabs during deployment
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            ${deploySteps.map(function(_, i) { return '<span id="lc-step-dot-' + i + '" class="w-1.5 h-1.5 rounded-full ' + (i === 0 ? 'bg-indigo-400' : 'bg-white/10') + '"></span>'; }).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            progressInterval = setInterval(function() {
+                stepIdx = (stepIdx + 1) % deploySteps.length;
+                var stepEl = document.getElementById('lc-deploy-step');
+                if (stepEl) stepEl.textContent = deploySteps[stepIdx];
+                for (var i = 0; i < deploySteps.length; i++) {
+                    var dot = document.getElementById('lc-step-dot-' + i);
+                    if (dot) dot.className = 'w-1.5 h-1.5 rounded-full ' + (i === stepIdx ? 'bg-indigo-400' : 'bg-white/10');
+                }
+            }, 1800);
+        }
+
         try {
             const res = await fetch(API_BASE + '/deploy-bot', {
                 method: 'POST',
@@ -517,6 +575,19 @@
             const data = await res.json();
 
             if (res.ok && data.success) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+
+                // Brief success celebration
+                var stepEl = document.getElementById('lc-deploy-step');
+                if (stepEl) stepEl.textContent = 'Deployment successful!';
+                var iconWrap = document.getElementById('lc-deploy-icon-wrap');
+                if (iconWrap) {
+                    iconWrap.className = 'w-16 h-16 rounded-2xl bg-emerald-500/15 flex items-center justify-center';
+                    iconWrap.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"></path></svg>';
+                }
+                await new Promise(function(r) { setTimeout(r, 700); });
+
                 state.isDeployed = true;
                 state.botPid = data.pid;
                 state.botCreditLimit = data.creditLimit;
@@ -527,6 +598,14 @@
                 showToast('Your Claw agent is live on ' + channelNames + '!', 'success', 'Deployed');
                 track('bot_deployed', { model: modelId });
                 showSuccessDashboard();
+                return;
+            }
+
+            clearInterval(progressInterval);
+            progressInterval = null;
+            // Restore options area on error
+            if (optionsArea && heroSection) {
+                location.reload();
                 return;
             }
 
@@ -543,6 +622,7 @@
             console.error('[LiveClaw] Deploy error:', err);
             showToast('Network error while deploying. Please try again.', 'error');
         } finally {
+            clearInterval(progressInterval);
             if (buttonEl) {
                 buttonEl.disabled = false;
                 buttonEl.innerHTML = origHTML;
@@ -598,14 +678,8 @@
     function renderAuthenticatedFlow() {
         if (!state.userId || state.isDeployed) return;
 
-        // Try to find existing auth flow container first (re-render after Telegram connect)
-        let authSection = document.getElementById('liveclaw-auth-flow');
-        if (!authSection) {
-            // First render - find the Google button and replace its parent
-            const googleBtn = findGoogleButton();
-            if (!googleBtn) return;
-            authSection = googleBtn.closest('div.w-full.flex.flex-col.gap-3.min-w-0') || googleBtn.parentElement;
-        }
+        // Find the auth container (GSI container we took over, or React button parent)
+        let authSection = document.getElementById('liveclaw-auth-flow') || findAuthContainer();
         if (!authSection) return;
 
         const displayName = escapeHtml(state.userName || 'Signed In');
@@ -622,6 +696,10 @@
         const avatarHtml = state.userAvatar
             ? `<img src="${escapeHtml(state.userAvatar)}" alt="${displayName}" class="size-8 rounded-full object-cover">`
             : `<span class="size-8 rounded-full bg-white/15 text-white text-xs font-semibold flex items-center justify-center">${displayName.slice(0, 1).toUpperCase()}</span>`;
+
+        // Hide the static h3 subtitle (the pricing-line div replaces it)
+        var staticH3 = authSection.nextElementSibling;
+        if (staticH3 && staticH3.tagName === 'H3') staticH3.style.display = 'none';
 
         // Ensure the container has the right ID and classes so re-renders can find it
         authSection.id = 'liveclaw-auth-flow';
@@ -682,31 +760,61 @@
             if (!res.ok) throw new Error('failed');
             const data = await res.json();
             const standard = data.plans.standard;
-            const trial = data.plans.trial;
             const earlyClaw = data.plans.earlyClaw;
             const slotsLeft = earlyClaw ? Math.max(0, earlyClaw.spotsRemaining) : 0;
             const slotColor = slotsLeft < 50 ? '#f87171' : slotsLeft < 150 ? '#fb923c' : '#38bdf8';
             const slotSpan = slotsLeft > 0
-                ? ` <span style="color:${slotColor}; font-weight:500;">🦞 Early Claw $${earlyClaw.price.toFixed(2)}/mo with code EARLYCLAW \u2014 only ${slotsLeft} slots left</span>`
+                ? ` <span style="color:${slotColor}; font-weight:500;">🦞 Early Claw: $7.49 first month (25% off) \u2014 ${slotsLeft} of 500 spots left</span>`
                 : '';
 
             var hasChannelForPricing = state.telegramToken || state.discordToken || (state.slackAppToken && state.slackBotToken);
-            if (!hasChannelForPricing) {
-                el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect a channel to continue.</p>';
-            } else {
-                el.innerHTML = `
-                    <p class="text-xs text-zinc-500">
-                        <span class="font-medium text-zinc-400">$${standard.price.toFixed(2)}/month.</span>
-                        $${trial ? trial.price.toFixed(2) : '0.75'} two-day trial available. Cancel anytime.${slotSpan}
-                    </p>
-                `;
-            }
+            const statusText = hasChannelForPricing
+                ? 'Ready to deploy. Cancel anytime.'
+                : 'Connect a channel above to get started.';
+            el.innerHTML = `
+                <p class="text-xs text-zinc-500">
+                    <span class="font-medium text-zinc-400">${statusText}</span>${slotSpan}
+                </p>
+            `;
         } catch (_) {
-            if (el) el.innerHTML = '<p class="text-[#6A6B6C] font-medium text-sm">Connect a channel to continue.</p>';
+            if (el) el.innerHTML = '<p class="text-zinc-500 text-xs">Connect a channel above to get started.</p>';
         }
     }
 
     // ─── Success Dashboard ──────────────────────────────────────────────────
+    function updateCreditDisplay(remainingPct, usedPct) {
+        const barEl = document.getElementById('lc-credits-bar');
+        const dollarEl = document.getElementById('lc-credits-dollar');
+        const breakdownEl = document.getElementById('lc-credits-breakdown');
+        const pctEl = document.getElementById('lc-credits-pct');
+
+        const remaining = Math.max(0, Math.min(100, remainingPct || 0));
+        const color = remaining > 50 ? '#10b981' : remaining > 20 ? '#f59e0b' : '#ef4444';
+
+        if (barEl) {
+            barEl.style.width = remaining + '%';
+            barEl.style.background = color;
+        }
+
+        const limit = state.botCreditLimit || 3.00;
+        const remainingUsd = (limit * remaining / 100).toFixed(2);
+        const usedUsd = (limit * Math.max(0, Math.min(100, usedPct || 0)) / 100).toFixed(2);
+
+        if (dollarEl) {
+            dollarEl.textContent = '$' + remainingUsd;
+            dollarEl.style.color = color;
+        }
+        if (breakdownEl) {
+            breakdownEl.textContent = '$' + usedUsd + ' used \u00B7 $' + limit.toFixed(2) + '/mo plan';
+        }
+        // Legacy element (kept for backwards compat if still in DOM)
+        if (pctEl) {
+            const colorClass = remaining > 50 ? 'text-emerald-400 bg-emerald-500/10' : remaining > 20 ? 'text-amber-400 bg-amber-500/10' : 'text-red-400 bg-red-500/10';
+            pctEl.className = `${colorClass} text-xs font-medium px-2 py-0.5 rounded-full`;
+            pctEl.textContent = remaining + '% remaining';
+        }
+    }
+
     function showSuccessDashboard() {
         // Find the hero section (the one with the h1)
         const h1 = document.querySelector('h1.main-text');
@@ -723,92 +831,142 @@
         fetchSubscription();
 
         // Replace hero content
+        // Detect connected channels from state
+        const channels = [];
+        if (state.telegramToken) channels.push('Telegram');
+        if (state.discordToken) channels.push('Discord');
+        if (state.slackAppToken && state.slackBotToken) channels.push('Slack');
+        const channelIcons = {
+            Telegram: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Telegram_logo.svg/960px-Telegram_logo.svg.png',
+            Discord: 'https://scbwi-storage-prod.s3.amazonaws.com/images/discord-mark-blue_rA6tXJo.png',
+            Slack: 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Slack_icon_2019.svg/480px-Slack_icon_2019.svg.png',
+        };
+
         heroSection.innerHTML = `
-            <div class="flex flex-col items-center gap-6 text-center">
+            <div class="flex flex-col items-center gap-5 text-center">
                 <div class="relative">
-                    <div class="w-20 h-20 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 text-emerald-400" viewBox="0 0 24 24" fill="none"
+                    <div class="w-16 h-16 rounded-2xl bg-emerald-500/15 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-emerald-400" viewBox="0 0 24 24" fill="none"
                              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M5 12l5 5l10 -10"></path>
+                            <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"></path>
                         </svg>
                     </div>
-                    <span class="absolute -bottom-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full border-2 border-zinc-950 flex items-center justify-center">
-                        <span class="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+                    <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-zinc-950 flex items-center justify-center">
+                        <span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
                     </span>
                 </div>
-                <h1 class="main-text text-balance">Your Claw Agent is Live</h1>
-                <p class="text-sm sm:text-base text-zinc-400 leading-relaxed max-w-xl mx-auto">
-                    Your AI agent is running 24/7 on Telegram. Open your bot in the Telegram app and start chatting!
-                </p>
+                <div>
+                    <h1 class="main-text text-balance" style="font-size:clamp(1.5rem,4vw,2.25rem)">Your Claw Agent is Live</h1>
+                    <p class="text-sm text-zinc-500 mt-2">Running 24/7 on ${channels.length ? channels.join(', ') : 'your channel'}</p>
+                </div>
             </div>
         `;
 
-        const planLabel = state.subscription ? escapeHtml(state.subscription.plan || 'starter') : '-';
-        const planUpper = planLabel.charAt(0).toUpperCase() + planLabel.slice(1);
+        const sub = state.subscription || {};
+        const planLabel = sub.earlyBird ? 'Early Claw' : (sub.plan === 'standard' ? 'LiveClaw' : escapeHtml(sub.plan || '-'));
+        const budgetDisplay = '$' + (state.botCreditLimit || 3.00).toFixed(2);
+        const periodEnd = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
+        const renewsIn = periodEnd ? Math.max(0, Math.ceil((periodEnd - Date.now()) / 86400000)) : null;
 
         // Replace the options/card area with a status dashboard
         if (optionsArea) {
             optionsArea.innerHTML = `
                 <div class="w-full flex justify-center px-4 sm:px-6 pb-8">
-                    <div class="w-full max-w-lg flex flex-col gap-4">
-                        <!-- Status Card -->
-                        <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-5 flex flex-col gap-4">
-                            <div class="flex items-center justify-between">
-                                <span class="text-zinc-400 text-sm">Status</span>
-                                <span class="flex items-center gap-2 text-emerald-400 text-sm font-medium">
-                                    <span class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
-                                    Active
-                                </span>
+                    <div class="w-full max-w-xl flex flex-col gap-4">
+
+                        <!-- Status + Info Cards Row -->
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <!-- Agent Card -->
+                            <div class="flex-1 rounded-2xl border border-white/8 bg-white/[0.03] p-4 flex flex-col gap-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-zinc-400 text-xs font-medium uppercase tracking-wider">Agent</span>
+                                    <span id="lc-status-badge" class="flex items-center gap-1.5 text-emerald-400 text-xs font-medium bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                                        Running
+                                    </span>
+                                </div>
+                                <div class="flex flex-col gap-2">
+                                    <div class="flex justify-between">
+                                        <span class="text-zinc-500 text-sm">Model</span>
+                                        <span class="text-white text-sm font-medium">${escapeHtml(getModelLabel(state.selectedModel))}</span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span class="text-zinc-500 text-sm">Channels</span>
+                                        <span class="flex items-center gap-1.5">
+                                            ${channels.map(c => `<img src="${channelIcons[c]}" alt="${c}" title="${c}" class="w-4 h-4 rounded-sm object-contain">`).join('')}
+                                            ${channels.length === 0 ? '<span class="text-zinc-600 text-sm">-</span>' : ''}
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-zinc-400 text-sm">Plan</span>
-                                <span class="text-white text-sm font-medium">${planUpper}</span>
-                            </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-zinc-400 text-sm">Model</span>
-                                <span class="text-white text-sm font-medium">${escapeHtml(getModelLabel(state.selectedModel))}</span>
-                            </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-zinc-400 text-sm">Budget</span>
-                                <span class="text-white text-sm font-medium">$${(state.botCreditLimit || 0.05).toFixed(2)}</span>
-                            </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-zinc-400 text-sm">Process ID</span>
-                                <span class="text-zinc-500 text-sm font-mono">${escapeHtml(String(state.botPid || '-'))}</span>
+
+                            <!-- Credits Card -->
+                            <div class="flex-1 rounded-2xl border border-white/8 bg-white/[0.03] p-4 flex flex-col gap-3">
+                                <span class="text-zinc-400 text-xs font-medium uppercase tracking-wider">Credits</span>
+                                <div class="flex flex-col gap-0.5">
+                                    <div class="flex items-baseline gap-1.5">
+                                        <span id="lc-credits-dollar" class="text-3xl font-bold text-emerald-400" style="color:#10b981;">$--</span>
+                                        <span class="text-zinc-500 text-sm font-medium">remaining</span>
+                                    </div>
+                                    <p id="lc-credits-breakdown" class="text-zinc-600 text-xs">Loading usage...</p>
+                                </div>
+                                <!-- Progress bar -->
+                                <div style="width:100%;height:4px;border-radius:9999px;background:rgba(255,255,255,0.06);overflow:hidden;">
+                                    <div id="lc-credits-bar" style="height:100%;border-radius:9999px;background:#10b981;width:100%;transition:width 0.5s ease;"></div>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-zinc-500 text-xs">${planLabel}${renewsIn !== null ? ' \u00B7 renews in ' + renewsIn + 'd' : ''}</span>
+                                    <button id="liveclaw-buy-credits-btn" class="text-indigo-400 text-xs font-medium hover:text-indigo-300 transition-colors cursor-pointer">+ Credits</button>
+                                </div>
                             </div>
                         </div>
 
-                        <!-- Actions -->
-                        <div class="flex gap-3">
+                        <!-- Quick Actions -->
+                        <div class="flex gap-2.5">
                             <button id="liveclaw-refresh-btn"
                                 class="flex-1 rounded-xl border border-white/8 bg-white/[0.03] py-2.5 text-sm text-white font-medium cursor-pointer hover:bg-white/[0.06] transition-colors flex items-center justify-center gap-2">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"></path>
                                     <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"></path>
                                 </svg>
-                                Refresh Status
+                                Refresh
+                            </button>
+                            <button id="liveclaw-manage-sub-btn"
+                                class="flex-1 rounded-xl border border-white/8 bg-white/[0.03] py-2.5 text-sm text-zinc-300 font-medium cursor-pointer hover:bg-white/[0.06] transition-colors flex items-center justify-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                </svg>
+                                Billing
                             </button>
                             <button id="liveclaw-stop-btn"
-                                class="flex-1 rounded-xl border border-red-500/20 bg-red-500/10 py-2.5 text-sm text-red-400 font-medium cursor-pointer hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2">
+                                class="rounded-xl border border-red-500/20 bg-red-500/10 py-2.5 px-4 text-sm text-red-400 font-medium cursor-pointer hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                                     <rect x="6" y="6" width="12" height="12" rx="2"></rect>
                                 </svg>
-                                Stop Agent
+                                Stop
                             </button>
                         </div>
 
-                        <!-- Manage Subscription -->
-                        <button id="liveclaw-manage-sub-btn"
-                            class="w-full rounded-xl border border-indigo-500/20 bg-indigo-500/10 py-2.5 text-sm text-indigo-300 font-medium cursor-pointer hover:bg-indigo-500/20 transition-colors flex items-center justify-center gap-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-                            </svg>
-                            Manage Subscription
-                        </button>
-
-                        <p class="text-center text-zinc-500 text-xs mt-1">
-                            View billing, upgrade, or cancel your plan.
-                        </p>
+                        <!-- User Info -->
+                        <div class="flex items-center gap-3 px-1 pt-1">
+                            ${state.userAvatar
+                                ? `<img src="${escapeHtml(state.userAvatar)}" alt="" class="w-7 h-7 rounded-full object-cover">`
+                                : `<span class="w-7 h-7 rounded-full bg-white/10 text-white text-xs font-semibold flex items-center justify-center">${(state.userName || '?').slice(0,1).toUpperCase()}</span>`
+                            }
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm text-zinc-300 font-medium truncate">${escapeHtml(state.userName || '')}</p>
+                                <p class="text-xs text-zinc-600 truncate">${escapeHtml(state.userEmail || '')}</p>
+                            </div>
+                            <button id="liveclaw-signout-btn" type="button" title="Sign out"
+                                class="text-zinc-600 hover:text-red-400 transition-colors text-xs flex items-center gap-1 px-2 py-1 rounded-md">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                    <polyline points="16 17 21 12 16 7"></polyline>
+                                    <line x1="21" y1="12" x2="9" y2="12"></line>
+                                </svg>
+                                Sign out
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -816,34 +974,38 @@
             // Wire dashboard buttons
             const refreshBtn = document.getElementById('liveclaw-refresh-btn');
             const stopBtn = document.getElementById('liveclaw-stop-btn');
+            const dashSignOut = document.getElementById('liveclaw-signout-btn');
 
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', async () => {
+                    refreshBtn.disabled = true;
+                    refreshBtn.innerHTML = '<svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle style="opacity:0.25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path style="opacity:0.75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"/></svg> Refreshing';
                     try {
-                        const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId), { credentials: 'include' });
+                        if (!await ensureFreshToken()) { refreshBtn.disabled = false; refreshBtn.innerHTML = 'Refresh'; return; }
+                        const headers = {};
+                        if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
+                        const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId), { headers, credentials: 'include' });
                         const data = await res.json();
                         if (res.ok) {
-                            const statusEl = refreshBtn.closest('.flex.flex-col.gap-4');
-                            const card = statusEl ? statusEl.querySelector('.rounded-2xl') : null;
-                            if (card) {
-                                const spans = card.querySelectorAll('.text-sm.font-medium');
-                                // status
-                                const statusSpan = card.querySelector('.text-emerald-400, .text-red-400');
-                                if (statusSpan) {
-                                    const isAlive = data.alive;
-                                    statusSpan.className = `flex items-center gap-2 ${isAlive ? 'text-emerald-400' : 'text-red-400'} text-sm font-medium`;
-                                    // Sanitize server-supplied status text to prevent XSS
-                                    const safeStatus = escapeHtml(String(data.status || 'unknown'));
-                                    statusSpan.innerHTML = `<span class="w-2 h-2 ${isAlive ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'} rounded-full"></span>${isAlive ? 'Active' : safeStatus}`;
-                                }
+                            // Update status badge
+                            const badge = document.getElementById('lc-status-badge');
+                            if (badge) {
+                                const alive = data.alive;
+                                badge.className = `flex items-center gap-1.5 ${alive ? 'text-emerald-400 bg-emerald-500/10' : 'text-red-400 bg-red-500/10'} text-xs font-medium px-2 py-0.5 rounded-full`;
+                                badge.innerHTML = `<span class="w-1.5 h-1.5 ${alive ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'} rounded-full"></span>${alive ? 'Running' : escapeHtml(String(data.status || 'Stopped'))}`;
                             }
-                            state.botCreditLimit = data.creditLimit;
+                            // Update credit percentage from VK usage
+                            if (data.usage) {
+                                updateCreditDisplay(data.usage.remainingPct, data.usage.usedPct);
+                            }
                             saveState();
                             showToast('Status refreshed', 'success');
                         }
                     } catch (err) {
                         showToast('Failed to refresh status', 'error');
                     }
+                    refreshBtn.disabled = false;
+                    refreshBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg> Refresh';
                 });
             }
 
@@ -854,7 +1016,6 @@
                         if (!await ensureFreshToken()) return;
                         const headers = { 'Content-Type': 'application/json' };
                         if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
-
                         const res = await fetch(API_BASE + '/stop-bot', {
                             method: 'POST',
                             headers,
@@ -874,13 +1035,52 @@
                 });
             }
 
-            // Manage Subscription - open Dodo portal
+            // Manage Subscription
             const manageSubBtn = document.getElementById('liveclaw-manage-sub-btn');
-            if (manageSubBtn) {
-                manageSubBtn.addEventListener('click', async () => {
-                    await openPortal();
+            if (manageSubBtn) manageSubBtn.addEventListener('click', () => openPortal());
+
+            // Sign out from dashboard
+            if (dashSignOut) dashSignOut.addEventListener('click', signOut);
+
+            // Buy credits
+            const buyCreditsBtn = document.getElementById('liveclaw-buy-credits-btn');
+            if (buyCreditsBtn) {
+                buyCreditsBtn.addEventListener('click', async () => {
+                    const amount = prompt('How many dollars of credits? ($1-$50)', '5');
+                    if (!amount) return;
+                    const num = parseInt(amount, 10);
+                    if (!num || num < 1 || num > 50) { showToast('Amount must be between $1 and $50', 'error'); return; }
+                    if (!await ensureFreshToken()) return;
+                    const headers = { 'Content-Type': 'application/json' };
+                    if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
+                    try {
+                        const res = await fetch(API_BASE + '/purchase-credits', {
+                            method: 'POST', headers, credentials: 'include',
+                            body: JSON.stringify({ userId: state.userId, email: state.userEmail, amount: num }),
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.checkoutUrl) {
+                            window.location.href = data.checkoutUrl;
+                        } else {
+                            showToast(data.error || 'Failed to start checkout', 'error');
+                        }
+                    } catch (err) { showToast('Network error', 'error'); }
                 });
             }
+
+            // Auto-fetch usage on load
+            (async function fetchInitialUsage() {
+                try {
+                    if (!await ensureFreshToken()) return;
+                    const headers = {};
+                    if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
+                    const res = await fetch(API_BASE + '/status/' + encodeURIComponent(state.userId), { headers, credentials: 'include' });
+                    const data = await res.json();
+                    if (res.ok && data.usage) {
+                        updateCreditDisplay(data.usage.remainingPct, data.usage.usedPct);
+                    }
+                } catch (_) { /* silent */ }
+            })();
         }
     }
 
@@ -1016,7 +1216,7 @@
                 const res = await fetch(url, { credentials: 'include' });
                 if (!res.ok) throw new Error('Failed to load pricing');
                 const data = await res.json();
-                renderPlans(data.plans, data.trialEligible !== false);
+                renderPlans(data.plans);
             } catch (_) {
                 document.getElementById('pricing-loading').innerHTML = '<p style="color:#f87171;font-size:0.875rem;text-align:center;padding:2rem 0;">Failed to load pricing. Please try again.</p>';
             }
@@ -1030,99 +1230,89 @@
             ).join('');
         }
 
-        function renderPlans(plans, trialEligible) {
+        function renderPlans(plans) {
             const container = document.getElementById('pricing-plans');
             const loading = document.getElementById('pricing-loading');
             if (!container || !loading) return;
 
             const standard = plans.standard;
-            const trial = plans.trial;
             const earlyClaw = plans.earlyClaw;
             const showEarlyClaw = earlyClaw && earlyClaw.spotsRemaining > 0;
-
-            // Determine which subscription plan to show (standard or earlyClaw)
-            const subPlan = (appliedPromo === 'EARLYCLAW' && showEarlyClaw) ? earlyClaw : standard;
-            const isEB = subPlan === earlyClaw;
-            const subBorder = isEB ? 'rgba(245,158,11,0.4)' : 'rgba(99,102,241,0.4)';
-            const subCtaBg = isEB ? '#f59e0b' : '#6366f1';
             const spotsLeft = earlyClaw ? earlyClaw.spotsRemaining : 0;
 
-            const earlyClawBar = isEB ? `
+            const earlyClawBar = `
                 <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.25rem;">
                     <div style="flex:1;height:0.375rem;border-radius:9999px;background:rgba(255,255,255,0.05);overflow:hidden;">
-                        <div style="height:100%;border-radius:9999px;background:${spotsLeft < 50 ? '#ef4444' : spotsLeft < 150 ? '#f59e0b' : '#10b981'};width:${Math.min(100, ((500 - spotsLeft) / 500) * 100)}%;"></div>
+                        <div style="height:100%;border-radius:9999px;background:${spotsLeft < 50 ? '#ef4444' : spotsLeft < 200 ? '#f59e0b' : '#10b981'};width:${Math.min(100, ((500 - spotsLeft) / 500) * 100)}%;"></div>
                     </div>
                     <span style="font-size:0.75rem;color:${spotsLeft < 50 ? '#f87171' : '#a1a1aa'};font-weight:500;white-space:nowrap;">${spotsLeft} spots left</span>
-                </div>` : '';
-
-            // Trial card (left)
-            const trialCardHtml = trialEligible ? `
-                <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
-                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">Try it first</span>
-                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">48-Hour Trial</h3>
-                    <div style="display:flex;align-items:baseline;gap:0.25rem;">
-                        <span style="color:#fff;font-size:1.5rem;font-weight:700;">$${trial.price.toFixed(2)}</span>
-                        <span style="color:#71717a;font-size:0.8rem;">one-time</span>
-                    </div>
-                    <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.375rem;flex:1;">
-                        ${makeFeaturesHtml(trial.features)}
-                    </ul>
-                    <button id="pricing-trial-btn"
-                        data-liveclaw-checkout-label="Start Trial - $${trial.price.toFixed(2)}"
-                        style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:transparent;border:1px solid rgba(99,102,241,0.4);color:#a5b4fc;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
-                        Start Trial - $${trial.price.toFixed(2)}
-                    </button>
-                    <p style="text-align:center;color:#52525b;font-size:0.7rem;">One-time payment. No auto-renew.</p>
-                </div>` : `
-                <div style="flex:1;min-width:0;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.05);background:rgba(255,255,255,0.02);padding:1.25rem;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0.5rem;opacity:0.5;">
-                    <span style="color:#71717a;font-size:0.875rem;font-weight:500;">Trial Used</span>
-                    <p style="color:#52525b;font-size:0.75rem;text-align:center;">You\u2019ve already used your trial. Subscribe to continue.</p>
                 </div>`;
 
-            // Subscription card (right)
-            const subCardHtml = `
-                <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid ${subBorder};background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
-                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:${subCtaBg};color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">
-                        ${isEB ? '\ud83d\udd25 Early Claw' : 'Recommended'}
-                    </span>
-                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">${escapeHtml(subPlan.name)}</h3>
-                    <div style="display:flex;align-items:baseline;gap:0.25rem;">
-                        ${isEB ? '<span style="color:#71717a;font-size:1rem;text-decoration:line-through;">$' + standard.price.toFixed(2) + '</span>' : ''}
-                        <span style="color:#fff;font-size:1.5rem;font-weight:700;">$${subPlan.price.toFixed(2)}</span>
-                        <span style="color:#71717a;font-size:0.8rem;">/month</span>
+            // Early Claw card (left) - 25% off first month ($7.49), then $9.99/mo
+            const earlyClawCardHtml = showEarlyClaw ? `
+                <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid rgba(245,158,11,0.4);background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
+                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:#f59e0b;color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">25% Off - First 500</span>
+                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">Early Claw</h3>
+                    <div style="display:flex;align-items:baseline;gap:0.375rem;">
+                        <span style="color:#71717a;font-size:1rem;text-decoration:line-through;">$${standard.price.toFixed(2)}</span>
+                        <span style="color:#fff;font-size:1.75rem;font-weight:700;">$${earlyClaw.firstMonthPrice.toFixed(2)}</span>
+                        <span style="color:#71717a;font-size:0.8rem;">first month</span>
                     </div>
+                    <p style="color:#a1a1aa;font-size:0.7rem;margin:-0.25rem 0 0;">then $${standard.price.toFixed(2)}/mo</p>
                     ${earlyClawBar}
                     <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.375rem;flex:1;">
-                        ${makeFeaturesHtml(subPlan.features)}
+                        ${makeFeaturesHtml(earlyClaw.features)}
+                    </ul>
+                    <button id="pricing-earlyclaw-btn"
+                        data-liveclaw-checkout-label="Get Started - $${earlyClaw.firstMonthPrice.toFixed(2)}"
+                        style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:#f59e0b;color:#fff;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
+                        Get Started - $${earlyClaw.firstMonthPrice.toFixed(2)}
+                    </button>
+                    <p style="text-align:center;color:#52525b;font-size:0.7rem;">Use code EARLYCLAW. Cancel anytime.</p>
+                </div>` : '';
+
+            // LiveClaw standard card (right)
+            const standardCardHtml = `
+                <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid rgba(99,102,241,0.4);background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
+                    <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:#6366f1;color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">
+                        Recommended
+                    </span>
+                    <h3 style="color:#fff;font-weight:600;font-size:1rem;margin-top:0.25rem;">${escapeHtml(standard.name)}</h3>
+                    <div style="display:flex;align-items:baseline;gap:0.25rem;">
+                        <span style="color:#fff;font-size:1.5rem;font-weight:700;">$${standard.price.toFixed(2)}</span>
+                        <span style="color:#71717a;font-size:0.8rem;">/month</span>
+                    </div>
+                    <ul style="color:#a1a1aa;font-size:0.75rem;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.375rem;flex:1;">
+                        ${makeFeaturesHtml(standard.features)}
                     </ul>
                     <button id="pricing-sub-btn"
-                        data-liveclaw-checkout-label="Subscribe - $${subPlan.price.toFixed(2)}/mo"
-                        style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:${subCtaBg};color:#fff;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
-                        Subscribe - $${subPlan.price.toFixed(2)}/mo
+                        data-liveclaw-checkout-label="Subscribe - $${standard.price.toFixed(2)}/mo"
+                        style="margin-top:0.5rem;width:100%;border-radius:0.5rem;background:#6366f1;color:#fff;padding:0.5rem;font-size:0.8rem;font-weight:600;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:0.375rem;">
+                        Subscribe - $${standard.price.toFixed(2)}/mo
                     </button>
                     <p style="text-align:center;color:#52525b;font-size:0.7rem;">Cancel anytime. Billed monthly.</p>
                 </div>`;
 
             container.innerHTML = `
                 <div class="pricing-grid">
-                    ${trialCardHtml}
-                    ${subCardHtml}
+                    ${earlyClawCardHtml}
+                    ${standardCardHtml}
                 </div>
             `;
 
             loading.style.display = 'none';
             container.style.display = 'flex';
 
-            // Wire trial button
-            const trialBtn = document.getElementById('pricing-trial-btn');
-            if (trialBtn) {
-                trialBtn.addEventListener('click', () => startCheckout(trialBtn, 'trial', false));
+            // Wire Early Claw button
+            const earlyClawBtn = document.getElementById('pricing-earlyclaw-btn');
+            if (earlyClawBtn) {
+                earlyClawBtn.addEventListener('click', () => startCheckout(earlyClawBtn, 'subscription', true));
             }
 
-            // Wire subscription button
+            // Wire standard subscription button
             const subBtn = document.getElementById('pricing-sub-btn');
             if (subBtn) {
-                subBtn.addEventListener('click', () => startCheckout(subBtn, 'subscription', isEB));
+                subBtn.addEventListener('click', () => startCheckout(subBtn, 'subscription', false));
             }
 
             container._plans = plans;
@@ -1146,15 +1336,9 @@
                 const headers = { 'Content-Type': 'application/json' };
                 if (state.idToken) headers['Authorization'] = 'Bearer ' + state.idToken;
 
-                let endpoint, body;
-                if (type === 'trial') {
-                    endpoint = '/create-trial-checkout';
-                    body = { userId: state.userId, email: state.userEmail };
-                } else {
-                    endpoint = '/create-checkout-session';
-                    body = { userId: state.userId, email: state.userEmail, plan: 'standard' };
-                    if (earlyClaw) body.promoCode = 'EARLYCLAW';
-                }
+                let endpoint = '/create-checkout-session';
+                let body = { userId: state.userId, email: state.userEmail, plan: 'standard' };
+                if (earlyClaw) body.promoCode = 'EARLYCLAW';
 
                 const res = await fetch(API_BASE + endpoint, {
                     method: 'POST',
@@ -1187,22 +1371,71 @@
         const promoBtn = document.getElementById('pricing-promo-btn');
         const promoMsg = document.getElementById('pricing-promo-msg');
 
-        promoBtn.addEventListener('click', () => {
+        promoBtn.addEventListener('click', async () => {
             const code = promoInput.value.trim().toUpperCase();
             const container = document.getElementById('pricing-plans');
             if (!code) return;
+
+            // Beta code format: XXXX-XXXX-XXXX
+            if (/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+                if (!state.userId) {
+                    promoMsg.style.color = '#f87171';
+                    promoMsg.textContent = 'Please sign in first to redeem a beta code.';
+                    return;
+                }
+                promoBtn.disabled = true;
+                promoBtn.textContent = 'Redeeming...';
+                promoMsg.style.color = '#a1a1aa';
+                promoMsg.textContent = 'Validating beta code...';
+                try {
+                    // Ensure token is fresh before calling authenticated endpoint
+                    if (!await ensureFreshToken()) {
+                        promoMsg.style.color = '#f87171';
+                        promoMsg.textContent = 'Session expired. Please sign in again.';
+                        promoBtn.disabled = false;
+                        promoBtn.textContent = 'Apply';
+                        return;
+                    }
+                    const res = await fetch(API_BASE + '/redeem-beta', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...(state.idToken ? { 'Authorization': 'Bearer ' + state.idToken } : {}) },
+                        body: JSON.stringify({ betaCode: code, userId: state.userId, email: state.userEmail }),
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.checkoutUrl) {
+                        promoMsg.style.color = '#34d399';
+                        promoMsg.textContent = '\u2713 First month free! Redirecting to checkout...';
+                        promoInput.disabled = true;
+                        promoBtn.textContent = 'Redirecting...';
+                        track('beta_code_redeemed', { code });
+                        setTimeout(() => { window.location.href = data.checkoutUrl; }, 800);
+                    } else {
+                        promoMsg.style.color = '#f87171';
+                        promoMsg.textContent = data.error || 'Failed to redeem beta code.';
+                        promoBtn.disabled = false;
+                        promoBtn.textContent = 'Apply';
+                    }
+                } catch (err) {
+                    promoMsg.style.color = '#f87171';
+                    promoMsg.textContent = 'Network error. Please try again.';
+                    promoBtn.disabled = false;
+                    promoBtn.textContent = 'Apply';
+                }
+                return;
+            }
 
             if (code === 'EARLYCLAW' && container._plans) {
                 const ec = container._plans.earlyClaw;
                 if (ec && ec.spotsRemaining > 0) {
                     appliedPromo = 'EARLYCLAW';
-                    track('promo_applied', { code: 'EARLYCLAW', savings: (container._plans.standard.price - ec.price).toFixed(2) });
+                    const savings = (container._plans.standard.price - ec.firstMonthPrice).toFixed(2);
+                    track('promo_applied', { code: 'EARLYCLAW', savings });
                     promoMsg.style.color = '#34d399';
-                    promoMsg.textContent = '\u2713 Early Claw pricing applied! Save $' + (container._plans.standard.price - ec.price).toFixed(2) + '/mo';
+                    promoMsg.textContent = '\u2713 Early Claw applied! First month $' + ec.firstMonthPrice.toFixed(2) + ' (save $' + savings + ')';
                     promoInput.disabled = true;
                     promoBtn.textContent = 'Applied';
                     promoBtn.disabled = true;
-                    renderPlans(container._plans, !!document.getElementById('pricing-trial-btn'));
+                    renderPlans(container._plans);
                 } else {
                     promoMsg.style.color = '#f87171';
                     promoMsg.textContent = 'All Early Claw spots have been claimed.';
@@ -1430,7 +1663,7 @@
     }
 
     function resetCheckoutButtons() {
-        const buttons = document.querySelectorAll('#pricing-trial-btn, #pricing-sub-btn');
+        const buttons = document.querySelectorAll('#pricing-earlyclaw-btn, #pricing-sub-btn');
         buttons.forEach((btn) => {
             const isRedirecting = /redirecting/i.test(btn.textContent || '');
             const isPending = btn.dataset.liveclawCheckoutPending === '1';
@@ -1480,8 +1713,14 @@
         const cleanUrl = window.location.pathname;
         window.history.replaceState({}, '', cleanUrl);
 
-        if (checkoutStatus === 'success' || checkoutStatus === 'trial-success') {
-            track('checkout_completed', { type: checkoutStatus === 'trial-success' ? 'trial' : 'subscription' });
+        if (checkoutStatus === 'credits-success') {
+            track('credits_purchased', {});
+            showToast('Credits added! Your LLM budget has been topped up.', 'success', 'Credits purchased');
+            return;
+        }
+
+        if (checkoutStatus === 'success') {
+            track('checkout_completed', { type: 'subscription' });
             showToast('Payment confirmed! Deploying your agent now...', 'success', 'Payment successful');
 
             // Wait briefly for webhook to process, then auto-deploy
@@ -1522,6 +1761,7 @@
         wireModelTracking();
         // Expose for inline init script
         window.markChannelSelected = markChannelSelected;
+        window.showToast = showToast;
         handleCheckoutReturn();
         resetCheckoutButtons();
         if (!checkoutResetLifecycleBound) {

@@ -37,15 +37,31 @@ describe('bifrost.js', () => {
         });
 
         it('sends correct POST to /api/governance/virtual-keys', async () => {
+            // 1st call: GET customers (empty list → create)
             mockFetch.mockResolvedValueOnce({
                 ok: true,
-                text: async () => JSON.stringify({ id: 'vk-123', key: 'sk-bf-test' }),
+                text: async () => JSON.stringify({ customers: [] }),
+            });
+            // 2nd call: POST create customer
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                text: async () => JSON.stringify({ customer: { id: 'cust-abc' } }),
+            });
+            // 3rd call: GET existing VK by name (none found)
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                text: async () => JSON.stringify({ virtual_keys: [] }),
+            });
+            // 4th call: POST create VK
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                text: async () => JSON.stringify({ virtual_key: { id: 'vk-123', value: 'sk-bf-test' } }),
             });
 
             const result = await bifrost.createVirtualKey('user-abc', 'minimax-m2.5', 0.05);
 
-            expect(mockFetch).toHaveBeenCalledOnce();
-            const [url, options] = mockFetch.mock.calls[0];
+            // VK creation is the 4th call
+            const [url, options] = mockFetch.mock.calls[3];
             expect(url).toContain('/api/governance/virtual-keys');
             expect(options.method).toBe('POST');
 
@@ -54,27 +70,50 @@ describe('bifrost.js', () => {
             expect(body.budget.max_limit).toBe(0.05);
             expect(body.provider_configs[0].provider).toBe('openrouter');
             expect(body.is_active).toBe(true);
+            expect(body.customer_id).toBe('cust-abc');
             expect(result).toEqual({ id: 'vk-123', key: 'sk-bf-test' });
         });
 
         it('handles API error gracefully', async () => {
+            // Customer lookup succeeds
             mockFetch.mockResolvedValueOnce({
-                ok: false,
-                status: 500,
-                text: async () => 'Internal Server Error',
+                ok: true,
+                text: async () => JSON.stringify({ customers: [{ id: 'cust-1', name: 'liveclaw-user-user1' }] }),
             });
+            // VK name lookup (no existing VK)
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                text: async () => JSON.stringify({ virtual_keys: [] }),
+            });
+            // VK creation fails 3 times (initial + 2 retries)
+            const failResponse = { ok: false, status: 500, text: async () => 'Internal Server Error' };
+            mockFetch.mockResolvedValueOnce(failResponse);
+            mockFetch.mockResolvedValueOnce(failResponse);
+            mockFetch.mockResolvedValueOnce(failResponse);
 
             await expect(bifrost.createVirtualKey('user1')).rejects.toThrow(/500/);
         });
 
         it('uses default model if not specified', async () => {
+            // Customer exists
             mockFetch.mockResolvedValueOnce({
                 ok: true,
-                text: async () => JSON.stringify({ id: 'vk-1', key: 'sk-bf-x' }),
+                text: async () => JSON.stringify({ customers: [{ id: 'cust-1', name: 'liveclaw-user-user1' }] }),
+            });
+            // VK name lookup (no existing VK)
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                text: async () => JSON.stringify({ virtual_keys: [] }),
+            });
+            // VK creation
+            mockFetch.mockResolvedValueOnce({
+                ok: true,
+                text: async () => JSON.stringify({ virtual_key: { id: 'vk-1', value: 'sk-bf-x' } }),
             });
 
             await bifrost.createVirtualKey('user1');
-            const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+            // VK creation is the 3rd call (after customer lookup + VK name lookup)
+            const body = JSON.parse(mockFetch.mock.calls[2][1].body);
             expect(body.provider_configs[0].allowed_models).toContain('minimax/minimax-m2.7');
         });
     });

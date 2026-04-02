@@ -694,10 +694,19 @@
                     <div class="stat-card"><span class="stat-label">Redeemed</span><span class="stat-value amber" id="beta-used">—</span></div>
                     <div class="stat-card"><span class="stat-label">Available</span><span class="stat-value emerald" id="beta-available">—</span></div>
                 </div>
-                <div class="table-wrap">
+                <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem">
+                    <input type="text" id="beta-search" placeholder="Search codes..." style="flex:1;padding:0.5rem 0.75rem;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:0.8125rem;outline:none" />
+                    <select id="beta-status-filter" style="padding:0.5rem 0.75rem;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:0.8125rem;outline:none">
+                        <option value="">All</option>
+                        <option value="available">Available</option>
+                        <option value="redeemed">Redeemed</option>
+                    </select>
+                    <button class="btn-sm" id="beta-copy-btn" title="Copy first available code" style="padding:0.5rem 0.75rem;font-size:0.75rem">Copy Code</button>
+                </div>
+                <div class="table-wrap" style="max-height:400px;overflow-y:auto">
                     <table>
-                        <thead><tr><th>Redeemed At</th><th>Code</th><th>User</th><th>IP</th></tr></thead>
-                        <tbody id="beta-body"><tr><td colspan="4" class="empty-msg">No redemptions yet</td></tr></tbody>
+                        <thead><tr><th>#</th><th>Code</th><th>Status</th><th>Redeemed By</th><th>Redeemed At</th><th>IP</th></tr></thead>
+                        <tbody id="beta-body"><tr><td colspan="6" class="empty-msg">Waiting for live data...</td></tr></tbody>
                     </table>
                 </div>
             </div>
@@ -1082,17 +1091,34 @@
         $('beta-total').textContent = beta.total != null ? beta.total : '—';
         $('beta-used').textContent = beta.used != null ? beta.used : '—';
         $('beta-available').textContent = beta.available != null ? beta.available : '—';
-        const rows = beta.recentRedemptions || [];
-        $('beta-body').innerHTML = rows.length === 0
-            ? '<tr><td colspan="4" class="empty-msg">No redemptions yet</td></tr>'
-            : rows.map(r =>
-                '<tr>' +
-                '<td>' + esc(when(r.redeemedAt)) + '</td>' +
-                '<td class="mono">' + esc(r.code) + '</td>' +
-                '<td class="mono">' + esc(short(r.redeemedBy || '—', 28)) + '</td>' +
-                '<td class="mono">' + esc(r.ip || '—') + '</td>' +
-                '</tr>'
-            ).join('');
+
+        const allCodes = (d.betaCodes && d.betaCodes.codes) || [];
+        const search = ($('beta-search') ? $('beta-search').value.trim().toLowerCase() : '');
+        const statusFilter = ($('beta-status-filter') ? $('beta-status-filter').value : '');
+
+        const filtered = allCodes.filter(c => {
+            if (search && c.code.toLowerCase().indexOf(search) === -1 &&
+                String(c.redeemed_by || '').toLowerCase().indexOf(search) === -1) return false;
+            if (statusFilter === 'available' && c.redeemed_by) return false;
+            if (statusFilter === 'redeemed' && !c.redeemed_by) return false;
+            return true;
+        });
+
+        $('beta-body').innerHTML = filtered.length === 0
+            ? '<tr><td colspan="6" class="empty-msg">No codes match filters</td></tr>'
+            : filtered.map((c, i) => {
+                const redeemed = !!c.redeemed_by;
+                const statusColor = redeemed ? 'var(--amber)' : 'var(--emerald)';
+                const statusLabel = redeemed ? 'Redeemed' : 'Available';
+                return '<tr>' +
+                    '<td style="color:var(--text-muted)">' + (i + 1) + '</td>' +
+                    '<td class="mono" style="cursor:pointer;user-select:all" title="Click to copy">' + esc(c.code) + '</td>' +
+                    '<td><span style="color:' + statusColor + ';font-weight:600;font-size:0.75rem">' + statusLabel + '</span></td>' +
+                    '<td class="mono">' + esc(short(c.redeemed_by || '—', 24)) + '</td>' +
+                    '<td>' + esc(when(c.redeemed_at)) + '</td>' +
+                    '<td class="mono">' + esc(c.redeemed_ip || '—') + '</td>' +
+                    '</tr>';
+            }).join('');
     }
 
     function renderAll(d) {
@@ -1420,6 +1446,20 @@
         $('agent-user-filter').addEventListener('input', () => { if (latest) renderAgents(latest); });
         $('event-user-filter').addEventListener('input', () => { if (latest) renderEvents(latest); });
         $('event-name-filter').addEventListener('input', () => { if (latest) renderEvents(latest); });
+
+        // Beta tab filters
+        if ($('beta-search')) $('beta-search').addEventListener('input', () => { if (latest) renderBeta(latest); });
+        if ($('beta-status-filter')) $('beta-status-filter').addEventListener('change', () => { if (latest) renderBeta(latest); });
+        if ($('beta-copy-btn')) {
+            $('beta-copy-btn').addEventListener('click', () => {
+                if (!latest || !latest.betaCodes) return;
+                const available = latest.betaCodes.codes.filter(c => !c.redeemed_by);
+                if (available.length === 0) { toast('No available codes', 'error'); return; }
+                navigator.clipboard.writeText(available[0].code)
+                    .then(() => toast('Copied: ' + available[0].code, 'success'))
+                    .catch(() => toast('Copy failed', 'error'));
+            });
+        }
 
         // Users tab filters
         if ($('user-sub-filter')) $('user-sub-filter').addEventListener('change', () => { if (latest) renderUsersFromLive(latest); });

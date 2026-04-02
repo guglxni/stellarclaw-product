@@ -534,8 +534,6 @@ jobs:
             -e "s|{{LIVECLAW_TURNSTILE_SITE_KEY}}|${{ secrets.LIVECLAW_TURNSTILE_SITE_KEY }}|g" \
             -e "s|{{LIVECLAW_POSTHOG_KEY}}|${{ secrets.LIVECLAW_POSTHOG_KEY }}|g" \
             -e "s|{{LIVECLAW_POSTHOG_HOST}}|${{ secrets.LIVECLAW_POSTHOG_HOST }}|g" \
-            -e "s|{{LIVECLAW_UMAMI_URL}}|${{ secrets.LIVECLAW_UMAMI_URL }}|g" \
-            -e "s|{{LIVECLAW_UMAMI_WEBSITE_ID}}|${{ secrets.LIVECLAW_UMAMI_WEBSITE_ID }}|g" \
             -e "s|{{LIVECLAW_GTM_ID}}|${{ secrets.LIVECLAW_GTM_ID }}|g" \
             -e "s|{{LIVECLAW_APPLIXIR_ZONE_ID}}|${{ secrets.LIVECLAW_APPLIXIR_ZONE_ID }}|g" \
             liveclaw-web/config.js.template > liveclaw-web/www/config.js

@@ -11,6 +11,72 @@
 
 const express = require('express');
 
+// ─── Email helpers ────────────────────────────────────────────────────────────
+
+/** Basic RFC-5322 email validation to avoid sending to garbage addresses. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Escape user-supplied strings rendered inside HTML email bodies. */
+function escHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/** Shared dark-theme email wrapper. */
+function emailWrapper(body) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#09090b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#09090b;padding:40px 0;">
+    <tr><td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" style="background:#18181b;border:1px solid #27272a;border-radius:12px;overflow:hidden;">
+        <tr><td style="padding:28px 32px 0;">
+          <p style="margin:0 0 24px;font-size:22px;font-weight:700;color:#fafafa;">LiveClaw</p>
+        </td></tr>
+        <tr><td style="padding:0 32px 32px;">${body}</td></tr>
+        <tr><td style="padding:20px 32px;border-top:1px solid #27272a;background:#0f0f11;">
+          <p style="margin:0;font-size:12px;color:#52525b;">LiveClaw &bull; <a href="https://liveclaw.xyz" style="color:#52525b;">liveclaw.xyz</a></p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+/**
+ * Send a transactional email via Resend.
+ * Silently swallows errors — email delivery must never block webhook processing.
+ *
+ * OWASP: email validated, user data HTML-escaped before template render,
+ *        API key read from env (never hardcoded), errors logged without PII.
+ *
+ * @param {object} log
+ * @param {{ to: string, subject: string, html: string }} opts
+ */
+async function sendEmail(log, { to, subject, html }) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const from   = process.env.RESEND_FROM || 'LiveClaw <noreply@notifications.liveclaw.xyz>';
+    if (!apiKey || !EMAIL_RE.test(to)) return; // silently skip if unconfigured or bad address
+    try {
+        const res = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from, to, subject, html }),
+        });
+        if (!res.ok) {
+            const body = await res.text();
+            log.webhook.error('Resend delivery error', { status: res.status, code: body.slice(0, 120) });
+        }
+    } catch (err) {
+        log.webhook.error('Resend fetch error', { code: err.message });
+    }
+}
+
 /**
  * Creates the webhook router with all dependencies injected.
  *
@@ -58,13 +124,15 @@ function createWebhookRouter(deps) {
 
         // ── Idempotency: deduplicate by webhook-id header ───────────────────
         const webhookId = req.headers['webhook-id'];
+        let dedupKey = null;
         if (webhookId) {
-            const dedupKey = `dodo-${webhookId}`;
+            dedupKey = `dodo-${webhookId}`;
             if (await stmt.checkEvent(dedupKey)) {
                 log.webhook.info('Duplicate webhook skipped', { dedupKey });
                 return res.json({ received: true });
             }
-            // Mark as processed immediately to prevent concurrent duplicates
+            // Mark as processed immediately to prevent concurrent duplicates.
+            // If processing fails below, the dedup record is cleared so retries work.
             await stmt.markEvent(dedupKey, data?.metadata?.liveclaw_user_id || 'system', 'dodo_webhook');
         }
 
@@ -72,6 +140,8 @@ function createWebhookRouter(deps) {
         const userId = data?.metadata?.liveclaw_user_id;
         const subId = data?.subscription_id;
         const customerId = data?.customer?.customer_id;
+
+        try {
 
         switch (eventType) {
             case 'subscription.active':
@@ -116,6 +186,37 @@ function createWebhookRouter(deps) {
                     }
 
                     logEvent(target, 'subscription_activated', { subId, eventType });
+
+                    // ── Transactional email ──────────────────────────────────
+                    const customerEmail = data?.customer?.email;
+                    const nextDate = data?.next_billing_date
+                        ? new Date(data.next_billing_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+                        : null;
+
+                    if (eventType === 'subscription.active') {
+                        await sendEmail(log, {
+                            to: customerEmail,
+                            subject: 'Welcome to LiveClaw!',
+                            html: emailWrapper(`
+                                <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#fafafa;">You're in.</p>
+                                <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">Your LiveClaw subscription is active. Your personal AI agent is ready to deploy.</p>
+                                <a href="https://liveclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Deploy your agent</a>
+                                ${nextDate ? `<p style="margin:24px 0 0;font-size:13px;color:#71717a;">Next billing date: ${escHtml(nextDate)}</p>` : ''}
+                            `),
+                        });
+                    } else {
+                        // subscription.renewed
+                        await sendEmail(log, {
+                            to: customerEmail,
+                            subject: 'LiveClaw subscription renewed',
+                            html: emailWrapper(`
+                                <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#fafafa;">Subscription renewed</p>
+                                <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">Your LiveClaw subscription has been renewed successfully.</p>
+                                ${nextDate ? `<p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">Next billing date: <strong style="color:#fafafa;">${escHtml(nextDate)}</strong></p>` : ''}
+                                <a href="https://liveclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Go to dashboard</a>
+                            `),
+                        });
+                    }
                 }
                 break;
             }
@@ -224,6 +325,24 @@ function createWebhookRouter(deps) {
                         break;
                     }
 
+                    // ── Credits top-up: add budget to user's Bifrost VK ──
+                    if (plan === 'credits') {
+                        const creditAmountUsd = parseFloat(data?.metadata?.credit_amount_usd || '0');
+                        if (creditAmountUsd > 0) {
+                            const bot = await db.get('SELECT bifrost_vk_id, credit_limit FROM bots WHERE user_id = ?', [paymentUserId]);
+                            if (bot && bot.bifrost_vk_id) {
+                                try {
+                                    await bifrost.topUpCredits(bot.bifrost_vk_id, bot.credit_limit, creditAmountUsd);
+                                    await stmt.updateCredit(bot.credit_limit + creditAmountUsd, paymentUserId);
+                                    logEvent(paymentUserId, 'credits_topped_up', { amount: creditAmountUsd, newLimit: bot.credit_limit + creditAmountUsd });
+                                } catch (err) {
+                                    log.webhook.error('Credit top-up failed', { userId: paymentUserId, error: err.message });
+                                }
+                            }
+                        }
+                        break;
+                    }
+
                     // Check if referral should be converted (subscription payments only)
                     const pendingRef = await stmtSubs.getPendingReferral(paymentUserId);
                     if (pendingRef) {
@@ -248,12 +367,30 @@ function createWebhookRouter(deps) {
                 const paymentUserId = data?.metadata?.liveclaw_user_id;
                 if (paymentUserId) {
                     logEvent(paymentUserId, 'payment_failed', { paymentId: data?.payment_id });
+                    await sendEmail(log, {
+                        to: data?.customer?.email,
+                        subject: 'Action needed: LiveClaw payment failed',
+                        html: emailWrapper(`
+                            <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#fafafa;">Payment unsuccessful</p>
+                            <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">We couldn't process your LiveClaw subscription payment. Please update your payment method to keep your agent running.</p>
+                            <a href="https://liveclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Update payment method</a>
+                            <p style="margin:24px 0 0;font-size:13px;color:#71717a;">If you continue to have issues, contact us at support@liveclaw.xyz</p>
+                        `),
+                    });
                 }
                 break;
             }
 
             default:
                 log.webhook.info('Unhandled event type', { eventType });
+        }
+
+        } catch (processingErr) {
+            // Clear dedup record so Dodo can retry this webhook
+            if (dedupKey) {
+                try { await db.run('DELETE FROM processed_events WHERE event_id = ?', [dedupKey]); } catch (_) { /* best effort */ }
+            }
+            throw processingErr; // Re-throw so asyncHandler returns 500, triggering Dodo retry
         }
 
         return res.json({ received: true });

@@ -3,7 +3,7 @@
 # LiveClaw — Analytics Setup Wizard
 # =============================================================================
 #
-# Interactive walkthrough for setting up PostHog, Umami, and GTM.
+# Interactive walkthrough for setting up PostHog and GTM.
 # Opens the exact browser pages you need, validates every key,
 # and writes everything into liveclaw-web/.env when done.
 #
@@ -65,7 +65,7 @@ write_env() {
 }
 skip_step() { warn "Skipping — you can re-run this script anytime to fill this in."; }
 
-TOTAL_STEPS=4
+TOTAL_STEPS=3
 COMPLETED=()
 
 [[ -f "$ENV_FILE" ]] || { err ".env not found at $ENV_FILE"; exit 1; }
@@ -74,7 +74,7 @@ COMPLETED=()
 clear
 banner "LiveClaw Analytics Setup Wizard"
 echo ""
-echo -e "  This wizard sets up ${BOLD}PostHog${RESET}, ${BOLD}Umami${RESET}, and ${BOLD}GTM${RESET} step by step."
+echo -e "  This wizard sets up ${BOLD}PostHog${RESET} and ${BOLD}GTM${RESET} step by step."
 echo -e "  It will open browser pages at exactly the right place and"
 echo -e "  write every key into ${BOLD}liveclaw-web/.env${RESET} when done."
 echo ""
@@ -85,7 +85,7 @@ pause
 # =============================================================================
 # STEP 1 — PostHog
 # =============================================================================
-banner "Step 1 of 4 — PostHog"
+banner "Step 1 of 3 — PostHog"
 step 1 "PostHog" "FOSS product analytics — tracks your funnel, identifies users, session recording"
 echo ""
 echo -e "  ${DIM}Repo: https://github.com/PostHog/posthog${RESET}"
@@ -160,171 +160,10 @@ else
 fi
 
 # =============================================================================
-# STEP 2 — Umami
+# STEP 2 — GTM
 # =============================================================================
-banner "Step 2 of 4 — Umami"
-step 2 "Umami" "FOSS page analytics — traffic sources, countries, devices. No cookies, no GDPR banner needed."
-echo ""
-echo -e "  ${DIM}Repo: https://github.com/umami-software/umami${RESET}"
-echo -e "  ${DIM}Free cloud tier at cloud.umami.is — or self-host on your droplet${RESET}"
-echo ""
-read -r -p "  Skip Umami? [y/N]: " SKIP_UMAMI
-if [[ $(echo "$SKIP_UMAMI" | tr "[:upper:]" "[:lower:]") == "y" ]]; then
-    skip_step
-else
-    UMAMI_URL="https://umami.liveclaw.xyz"
-    BACKEND_IP=$(get_droplet_ip "$BACKEND_DROPLET")
-
-    # ── 2a. Umami is already running — just need the DNS record + SSL ────────
-    divider
-    ok "Umami containers already running on ${BACKEND_DROPLET} (${BACKEND_IP}:3001)"
-    ok "Nginx vhost already configured for umami.liveclaw.xyz"
-    echo ""
-    log "Adding DNS record automatically via Spaceship API..."
-    echo ""
-    echo -e "  ${BOLD}You need a Spaceship API key + secret.${RESET}"
-    echo -e "  ${DIM}1. Opening Spaceship API Manager...${RESET}"
-    echo -e "  ${DIM}2. Click ${RESET}${BOLD}Generate New Key${RESET}${DIM} → copy the API Key and API Secret${RESET}"
-    echo ""
-    open_url "https://www.spaceship.com/application/api-manager/"
-    echo ""
-
-    SS_KEY="" SS_SECRET=""
-    while true; do
-        prompt "Paste your Spaceship API Key"
-        read -r SS_KEY
-        if [[ -z "$SS_KEY" ]]; then
-            warn "No key entered."
-            read -r -p "  Skip automated DNS and add it manually? [y/N]: " skip
-            [[ $(echo "$skip" | tr "[:upper:]" "[:lower:]") == "y" ]] && break
-            continue
-        fi
-        prompt "Paste your Spaceship API Secret"
-        read -r SS_SECRET
-        if [[ -z "$SS_SECRET" ]]; then
-            warn "No secret entered."
-            read -r -p "  Skip automated DNS and add it manually? [y/N]: " skip
-            [[ $(echo "$skip" | tr "[:upper:]" "[:lower:]") == "y" ]] && break
-            continue
-        fi
-        # Verify by listing DNS records for liveclaw.xyz
-        SS_VERIFY_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "X-Api-Key: ${SS_KEY}" \
-            -H "X-Api-Secret: ${SS_SECRET}" \
-            "https://spaceship.dev/api/v1/dns/records/liveclaw.xyz?take=1&skip=0" 2>/dev/null)
-        if [[ "$SS_VERIFY_CODE" == "200" ]]; then
-            ok "Spaceship credentials verified"
-            break
-        else
-            err "Credentials invalid or no access to liveclaw.xyz (HTTP ${SS_VERIFY_CODE}) — try again"
-            SS_KEY="" SS_SECRET=""
-        fi
-    done
-
-    if [[ -n "$SS_KEY" && -n "$SS_SECRET" ]]; then
-        # Create DNS A record via Spaceship API
-        log "Creating A record: umami.liveclaw.xyz → ${BACKEND_IP}..."
-        DNS_HTTP=$(curl -s -o /tmp/ss_dns_result.json -w "%{http_code}" -X PUT \
-            -H "X-Api-Key: ${SS_KEY}" \
-            -H "X-Api-Secret: ${SS_SECRET}" \
-            -H "Content-Type: application/json" \
-            --data "{\"force\":false,\"items\":[{\"name\":\"umami\",\"type\":\"A\",\"address\":\"${BACKEND_IP}\",\"ttl\":300}]}" \
-            "https://spaceship.dev/api/v1/dns/records/liveclaw.xyz" 2>/dev/null)
-
-        if [[ "$DNS_HTTP" == "204" ]]; then
-            ok "DNS record created: umami.liveclaw.xyz → ${BACKEND_IP}"
-            # Save keys for future use (e.g. marketing agent)
-            write_env "SPACESHIP_API_KEY"    "$SS_KEY"
-            write_env "SPACESHIP_API_SECRET" "$SS_SECRET"
-            ok "Saved SPACESHIP_API_KEY + SPACESHIP_API_SECRET to .env"
-        else
-            DNS_ERR=$(cat /tmp/ss_dns_result.json 2>/dev/null || echo "unknown error")
-            err "DNS creation failed (HTTP ${DNS_HTTP}): ${DNS_ERR}"
-            warn "Add it manually in Spaceship: A  umami  ${BACKEND_IP}  TTL 300"
-        fi
-        rm -f /tmp/ss_dns_result.json
-    fi
-
-    # ── 2b. Wait for DNS then issue SSL via doctl ────────────────────────────
-    divider
-    log "Waiting for DNS to resolve (Spaceship TTL 300s — may take up to 5 min)..."
-    DNS_RESOLVED=""
-    for i in {1..24}; do
-        RESOLVED_IP=$(dig +short umami.liveclaw.xyz A @1.1.1.1 2>/dev/null | head -1 || true)
-        if [[ "$RESOLVED_IP" == "$BACKEND_IP" ]]; then
-            DNS_RESOLVED=1
-            ok "DNS live: umami.liveclaw.xyz → ${BACKEND_IP}"
-            break
-        fi
-        printf "  ${DIM}Checking DNS via 1.1.1.1... (${i}/24)${RESET}\r"
-        sleep 5
-    done
-    echo ""
-
-    if [[ -z "$DNS_RESOLVED" ]]; then
-        warn "DNS still propagating — proceeding anyway (certbot will show a clear error if it fails)"
-    fi
-
-    log "Issuing SSL certificate via doctl ssh..."
-    droctl_ssh "certbot --nginx -d umami.liveclaw.xyz -m admin@liveclaw.xyz --agree-tos --non-interactive --redirect 2>&1" \
-        && ok "SSL issued — https://umami.liveclaw.xyz is live" \
-        || warn "Certbot failed — re-run after DNS propagates: doctl compute ssh liveclaw-prod --ssh-command 'certbot --nginx -d umami.liveclaw.xyz -m admin@liveclaw.xyz --agree-tos --non-interactive --redirect'"
-
-    # ── 2c. Umami first-login walkthrough ────────────────────────────────────
-    divider
-    log "Set up Umami dashboard..."
-    echo ""
-    echo -e "  ${BOLD}Steps:${RESET}"
-    echo -e "  ${DIM}1. Login: ${RESET}${BOLD}admin${RESET}${DIM} / ${RESET}${BOLD}umami${RESET}${DIM} — change password immediately${RESET}"
-    echo -e "  ${DIM}2. Settings → Websites → Add Website${RESET}"
-    echo -e "     ${BOLD}Name:${RESET} LiveClaw   ${BOLD}Domain:${RESET} liveclaw.xyz"
-    echo -e "  ${DIM}3. Edit the website → Tracking Code → copy ${RESET}${BOLD}data-website-id${RESET}"
-    echo ""
-    open_url "https://umami.liveclaw.xyz"
-    pause
-
-    # ── 2d. Configure Umami CLI ───────────────────────────────────────────────
-    divider
-    log "Configuring Umami CLI..."
-    echo ""
-    echo -e "  ${DIM}Settings → API Keys → Create API Key → copy it${RESET}"
-    echo -e "  ${DIM}Server URL to enter: ${RESET}${BOLD}https://umami.liveclaw.xyz${RESET}"
-    echo ""
-    open_url "https://umami.liveclaw.xyz/settings/api-keys"
-    pause
-    umami config || warn "Run 'umami config' manually to connect the CLI"
-
-    # ── 2e. Website ID ────────────────────────────────────────────────────────
-    divider
-    log "Paste your Umami Website ID..."
-    echo ""
-    echo -e "  ${DIM}Settings → Websites → liveclaw.xyz → Edit → Tracking Code${RESET}"
-    echo -e "  ${DIM}Look for: ${RESET}${BOLD}data-website-id=\"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\"${RESET}"
-    echo ""
-
-    UMAMI_ID=""
-    while true; do
-        prompt "Website ID (UUID)"
-        read -r UMAMI_ID
-        if [[ -z "$UMAMI_ID" ]]; then
-            read -r -p "  Skip for now? [y/N]: " skip
-            [[ $(echo "$skip" | tr "[:upper:]" "[:lower:]") == "y" ]] && { skip_step; break; }
-        elif [[ ! "$UMAMI_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
-            err "Not a valid UUID — format is xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-        else
-            write_env "LIVECLAW_UMAMI_URL"        "${UMAMI_URL%/}"
-            write_env "LIVECLAW_UMAMI_WEBSITE_ID" "$UMAMI_ID"
-            COMPLETED+=("Umami ✓ (${UMAMI_URL})")
-            break
-        fi
-    done
-fi
-
-# =============================================================================
-# STEP 3 — GTM
-# =============================================================================
-banner "Step 3 of 4 — Google Tag Manager"
-step 3 "GTM" "Free tag container — one GTM ID wires up Meta Pixel, Google Ads, TikTok with zero future code changes."
+banner "Step 2 of 3 — Google Tag Manager"
+step 2 "GTM" "Free tag container — one GTM ID wires up Meta Pixel, Google Ads, TikTok with zero future code changes."
 echo ""
 echo -e "  ${DIM}The GTM CLI will handle everything: create container, set up all triggers${RESET}"
 echo -e "  ${DIM}and placeholder tags, publish, and print your GTM-XXXXXXX ID.${RESET}"
@@ -382,10 +221,10 @@ else
 fi
 
 # =============================================================================
-# STEP 4 — Dodo GTM toggle
+# STEP 3 — Dodo GTM toggle
 # =============================================================================
-banner "Step 4 of 4 — Wire GTM into Dodo Checkout"
-step 4 "Dodo → GTM" "Enables GTM on Dodo's hosted checkout page so ad conversions fire when customers pay."
+banner "Step 3 of 3 — Wire GTM into Dodo Checkout"
+step 3 "Dodo → GTM" "Enables GTM on Dodo's hosted checkout page so ad conversions fire when customers pay."
 echo ""
 echo -e "  ${DIM}This is a one-toggle change in the Dodo dashboard — 30 seconds.${RESET}"
 echo ""
@@ -423,7 +262,7 @@ echo ""
 divider
 log "Current analytics values in .env:"
 echo ""
-grep -E "^LIVECLAW_(POSTHOG|UMAMI|GTM)" "$ENV_FILE" | while IFS= read -r line; do
+grep -E "^LIVECLAW_(POSTHOG|GTM)" "$ENV_FILE" | while IFS= read -r line; do
     key="${line%%=*}"
     val="${line#*=}"
     if [[ -z "$val" ]]; then

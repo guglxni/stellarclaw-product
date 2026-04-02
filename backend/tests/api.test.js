@@ -235,16 +235,23 @@ describe('GET /admin/dashboard-live', () => {
         expect(res.body).toHaveProperty('health');
         expect(res.body).toHaveProperty('traffic');
         expect(res.body).toHaveProperty('system');
-        expect(res.body).toHaveProperty('bots');
-        expect(res.body).toHaveProperty('subscriptions');
-        expect(res.body).toHaveProperty('revenue');
-        expect(res.body).toHaveProperty('instances');
-        expect(res.body).toHaveProperty('events');
+        expect(res.body).toHaveProperty('agents');
+        expect(res.body).toHaveProperty('billing');
+        expect(res.body).toHaveProperty('recentEvents');
 
-        expect(res.body.traffic).toHaveProperty('1m');
-        expect(res.body.traffic['1m']).toHaveProperty('reqPerSec');
-        expect(Array.isArray(res.body.instances)).toBe(true);
-        expect(Array.isArray(res.body.payments)).toBe(true);
+        expect(res.body.health).toHaveProperty('overall');
+        expect(res.body.health).toHaveProperty('checks');
+        expect(res.body.traffic).toHaveProperty('last1m');
+        expect(res.body.traffic.last1m).toHaveProperty('reqPerSec');
+        expect(res.body.traffic).toHaveProperty('sinceStartTotal');
+        expect(Array.isArray(res.body.agents.instances)).toBe(true);
+        expect(res.body.billing).toHaveProperty('payments');
+        expect(res.body.billing).toHaveProperty('subscriptions');
+        expect(res.body.billing).toHaveProperty('llm');
+        expect(Array.isArray(res.body.billing.payments.recent)).toBe(true);
+        expect(res.body.system).toHaveProperty('uptimeSeconds');
+        expect(res.body.system).toHaveProperty('os');
+        expect(res.body.system).toHaveProperty('node');
     });
 });
 

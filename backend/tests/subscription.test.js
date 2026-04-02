@@ -66,22 +66,17 @@ const TEST_USER_2 = 'test-sub-user-002';
 // GET /pricing
 // ═══════════════════════════════════════════════════════════════════════════
 describe('GET /pricing', () => {
-    it('returns 200 with trial, standard, and earlyClaw plans', async () => {
+    it('returns 200 with standard and earlyClaw plans', async () => {
         const res = await request(app)
             .get('/pricing')
             .expect(200);
 
         expect(res.body.plans).toBeDefined();
-        expect(res.body.trialEligible).toBe(true);
         expect(Array.isArray(res.body.models)).toBe(true);
         expect(res.body.models.length).toBeGreaterThanOrEqual(6);
 
-        // Trial plan
-        expect(res.body.plans.trial).toBeDefined();
-        expect(res.body.plans.trial.id).toBe('trial');
-        expect(res.body.plans.trial.price).toBe(0.75);
-        expect(res.body.plans.trial.interval).toBe('one-time');
-        expect(Array.isArray(res.body.plans.trial.features)).toBe(true);
+        // No trial plan
+        expect(res.body.plans.trial).toBeUndefined();
 
         // Standard plan
         expect(res.body.plans.standard).toBeDefined();
@@ -92,32 +87,10 @@ describe('GET /pricing', () => {
 
         // Early Claw plan
         expect(res.body.plans.earlyClaw).toBeDefined();
-        expect(res.body.plans.earlyClaw.price).toBe(6.99);
+        expect(res.body.plans.earlyClaw.price).toBe(9.99);
+        expect(res.body.plans.earlyClaw.firstMonthPrice).toBe(7.49);
         expect(res.body.plans.earlyClaw.promoCode).toBe('EARLYCLAW');
         expect(typeof res.body.plans.earlyClaw.spotsRemaining).toBe('number');
-    });
-
-    it('reports trial ineligible when user has used trial', async () => {
-        // Seed a used trial
-        await stmtSubs.upsert({
-            user_id: 'trial-used-user',
-            dodo_customer_id: null,
-            dodo_subscription_id: null,
-            plan: 'trial',
-            status: 'cancelled',
-            current_period_start: null,
-            current_period_end: null,
-        });
-        await db.run(
-            "UPDATE subscriptions SET trial_ends_at = datetime('now', '-1 hour') WHERE user_id = ?",
-            ['trial-used-user']
-        );
-
-        const res = await request(app)
-            .get('/pricing?userId=trial-used-user')
-            .expect(200);
-
-        expect(res.body.trialEligible).toBe(false);
     });
 });
 

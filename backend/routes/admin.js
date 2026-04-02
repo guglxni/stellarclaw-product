@@ -327,34 +327,69 @@ function createAdminRouter(deps) {
 
         const mrrCents = (activeSubs.c * 1299);
         const arrCents = mrrCents * 12;
+        const paidUsd = parseFloat((paidRevenue.c / 100).toFixed(2));
+        const activeSubsTotal = activeSubs.c + trialingSubs.c;
+        const arpuUsd = activeSubsTotal > 0 ? parseFloat((paidUsd / activeSubsTotal).toFixed(2)) : 0;
+
+        // Aggregate LLM spend from VK usage data
+        const trackedVks = instances.filter(i => i.llmSpentUsd != null);
+        const totalLlmSpentUsd = trackedVks.reduce((sum, i) => sum + (i.llmSpentUsd || 0), 0);
 
         return res.json({
             ts: new Date().toISOString(),
-            health: { db: dbOk, bifrost: bifrostOk },
-            bots: {
+            health: {
+                overall: (dbOk && bifrostOk) ? 'ok' : (dbOk ? 'degraded' : 'critical'),
+                checks: { db: dbOk, bifrost: bifrostOk },
+            },
+            agents: {
                 total: botCount.c,
                 running: runningCount.c,
                 stopped: stoppedCount.c,
                 crashed: crashedCount.c,
                 maxConcurrent: MAX_CONCURRENT_BOTS,
                 capacityPct: runningCount.c > 0 ? Math.round((runningCount.c / MAX_CONCURRENT_BOTS) * 100) : 0,
+                instances,
             },
-            subscriptions: {
-                active: activeSubs.c,
-                trialing: trialingSubs.c,
-                pastDue: pastDueSubs.c,
-                cancelled: cancelledSubs.c,
-                trialEndingSoon: trialEndingSoonCount.c,
-                earlyBird: earlyBirdCount.c,
-            },
-            revenue: {
-                totalPayments: totalPayments.c,
-                paidCents: paidRevenue.c,
-                paidUsd: (paidRevenue.c / 100).toFixed(2),
-                mrrCents,
-                mrrUsd: (mrrCents / 100).toFixed(2),
-                arrCents,
-                arrUsd: (arrCents / 100).toFixed(2),
+            billing: {
+                subscriptions: {
+                    active: activeSubs.c,
+                    trialing: trialingSubs.c,
+                    pastDue: pastDueSubs.c,
+                    cancelled: cancelledSubs.c,
+                    trialEndingSoon: trialEndingSoonCount.c,
+                    earlyBird: earlyBirdCount.c,
+                },
+                payments: {
+                    totalCount: totalPayments.c,
+                    paidCents: paidRevenue.c,
+                    paidRevenueUsd: paidUsd,
+                    mrrCents,
+                    mrrUsd: parseFloat((mrrCents / 100).toFixed(2)),
+                    arrCents,
+                    arrUsd: parseFloat((arrCents / 100).toFixed(2)),
+                    arpuUsd,
+                    recent: paymentRows.map(p => ({
+                        createdAt: p.created_at,
+                        userId: p.user_id,
+                        paymentId: p.dodo_payment_id,
+                        plan: p.plan,
+                        status: p.status,
+                        amountUsd: parseFloat((p.amount_cents / 100).toFixed(2)),
+                        currency: p.currency,
+                    })),
+                },
+                llm: {
+                    totalSpentUsd: totalLlmSpentUsd,
+                    activeVkCount: trackedVks.length,
+                },
+                beta: {
+                    total: betaTotalRow.count,
+                    used: betaUsedRow.count,
+                    available: betaTotalRow.count - betaUsedRow.count,
+                    recentRedemptions: betaAllRows
+                        .filter(r => r.redeemed_by)
+                        .map(r => ({ code: r.code, redeemedBy: r.redeemed_by, redeemedAt: r.redeemed_at, ip: r.redeemed_ip })),
+                },
             },
             betaCodes: {
                 total: betaTotalRow.count,
@@ -362,16 +397,24 @@ function createAdminRouter(deps) {
                 available: betaTotalRow.count - betaUsedRow.count,
                 codes: betaAllRows,
             },
-            instances,
-            payments: paymentRows,
-            events: eventRows,
+            recentEvents: eventRows,
             system: {
-                uptime: Math.round(process.uptime()),
-                memory: { totalMB: totalMemMB, freeMB: freeMemMB, usedPct: Math.round(((totalMemMB - freeMemMB) / totalMemMB) * 100) },
-                loadAvg: { '1m': parseFloat(loadAvg[0].toFixed(2)), '5m': parseFloat(loadAvg[1].toFixed(2)), '15m': parseFloat(loadAvg[2].toFixed(2)) },
-                disk,
+                uptimeSeconds: Math.round(process.uptime()),
+                os: {
+                    memory: { totalMB: totalMemMB, freeMB: freeMemMB, usedPct: Math.round(((totalMemMB - freeMemMB) / totalMemMB) * 100) },
+                    loadAvg: { '1m': parseFloat(loadAvg[0].toFixed(2)), '5m': parseFloat(loadAvg[1].toFixed(2)), '15m': parseFloat(loadAvg[2].toFixed(2)) },
+                    disk,
+                },
+                node: {
+                    version: process.version,
+                    pid: process.pid,
+                },
             },
-            traffic: { '1m': live1m, '5m': live5m },
+            traffic: {
+                last1m: live1m,
+                last5m: live5m,
+                sinceStartTotal: requestTelemetry.total,
+            },
         });
     }));
 
@@ -946,16 +989,21 @@ function createAdminRouter(deps) {
         try { process.kill(bot.pid, 'SIGTERM'); } catch (_) { /* best-effort */ }
 
         try {
-            const decryptedToken = decryptToken(bot.telegram_token);
             const decryptedVk = decryptToken(bot.bifrost_vk);
-            const newPid = spawnPicobot(bot.user_id, decryptedToken, decryptedVk, bot.model);
+            const channelOpts = {
+                telegramToken: bot.telegram_token ? decryptToken(bot.telegram_token) : undefined,
+                discordToken: bot.discord_token ? decryptToken(bot.discord_token) : undefined,
+                slackAppToken: bot.slack_app_token ? decryptToken(bot.slack_app_token) : undefined,
+                slackBotToken: bot.slack_bot_token ? decryptToken(bot.slack_bot_token) : undefined,
+            };
+            const newPid = await spawnPicobot(bot.user_id, decryptedVk, bot.model, channelOpts);
             await stmt.updatePid(newPid, 'running', userId);
             logEvent(userId, 'admin_bot_restarted', { oldPid: bot.pid, newPid });
             return res.json({ success: true, userId, oldPid: bot.pid, newPid });
         } catch (err) {
             await stmt.updateStatus('crashed', userId);
             logEvent(userId, 'admin_bot_restart_failed', { error: err.message });
-            return res.status(500).json({ error: 'Restart failed: ' + err.message });
+            return res.status(500).json({ error: 'Restart failed' });
         }
     }));
 
