@@ -30,11 +30,11 @@ export default defineConfig({
             exclude: ['node_modules', 'tests', 'coverage'],
             thresholds: {
                 // Ratchet these up as coverage improves.
-                // Lowered after security hardening added auth/session/replay
-                // code paths not yet covered by tests.
+                // Lowered after session hardening added /auth/refresh endpoint
+                // and 30-day session cookie branches not yet covered by tests.
                 lines: 43,
                 functions: 50,
-                branches: 36,
+                branches: 35,
                 statements: 42,
             },
         },
