@@ -325,7 +325,7 @@ function createAdminRouter(deps) {
         const live1m = calcRequestWindowStats(60 * 1000);
         const live5m = calcRequestWindowStats(5 * 60 * 1000);
 
-        const mrrCents = (activeSubs.c * 1299);
+        const mrrCents = (activeSubs.c * 999);
         const arrCents = mrrCents * 12;
         const paidUsd = parseFloat((paidRevenue.c / 100).toFixed(2));
         const activeSubsTotal = activeSubs.c + trialingSubs.c;
