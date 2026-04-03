@@ -86,6 +86,31 @@ function createAdminRouter(deps) {
 
     const router = express.Router();
 
+    // ─── Dodo MRR cache (5-minute TTL) ──────────────────────────────────────
+    // Fetches real payment/subscription data from Dodo API instead of using
+    // count × price, which inflates MRR for code-redeemed (free-month) subs.
+    const mrrCache = { payments: null, contracted: null, ts: 0 };
+    const MRR_CACHE_TTL_MS = 5 * 60 * 1000;
+
+    async function getDodoMRR() {
+        const now = Date.now();
+        if (mrrCache.payments !== null && (now - mrrCache.ts) < MRR_CACHE_TTL_MS) {
+            return mrrCache;
+        }
+        try {
+            const [payments, contracted] = await Promise.all([
+                dodo.getPaymentsMRR(),
+                dodo.getContractedMRR(),
+            ]);
+            mrrCache.payments = payments;
+            mrrCache.contracted = contracted;
+            mrrCache.ts = now;
+        } catch (_) {
+            // Dodo API unavailable — return stale cache or null
+        }
+        return mrrCache;
+    }
+
     // ─── POST /admin/login — Exchange TOTP code for a short-lived JWT ────
     router.post('/login', adminLoginLimiter, asyncHandler(async (req, res) => {
         const { code } = req.body || {};
@@ -325,8 +350,15 @@ function createAdminRouter(deps) {
         const live1m = calcRequestWindowStats(60 * 1000);
         const live5m = calcRequestWindowStats(5 * 60 * 1000);
 
-        const mrrCents = (activeSubs.c * 999);
-        const arrCents = mrrCents * 12;
+        // Real MRR from Dodo API: actual subscription payments received in last 30 days.
+        // Code-redeemed subs (100% discount) contribute $0 until they're actually charged.
+        // Contracted MRR: what active subs will pay next cycle (base price, pre-discount).
+        // Falls back to count × $9.99 if Dodo API is unavailable.
+        const dodoMrr = await getDodoMRR();
+        const mrrCents = dodoMrr.payments !== null ? dodoMrr.payments : (activeSubs.c * 999);
+        const contractedMrrCents = dodoMrr.contracted !== null ? dodoMrr.contracted : (activeSubs.c * 999);
+        const mrrSource = dodoMrr.payments !== null ? 'dodo_api' : 'estimated';
+        const arrCents = contractedMrrCents * 12; // ARR uses contracted (forward-looking)
         const paidUsd = parseFloat((paidRevenue.c / 100).toFixed(2));
         const activeSubsTotal = activeSubs.c + trialingSubs.c;
         const arpuUsd = activeSubsTotal > 0 ? parseFloat((paidUsd / activeSubsTotal).toFixed(2)) : 0;
@@ -363,8 +395,13 @@ function createAdminRouter(deps) {
                     totalCount: totalPayments.c,
                     paidCents: paidRevenue.c,
                     paidRevenueUsd: paidUsd,
+                    // mrrCents = actual payments received in last 30 days (real cash MRR)
                     mrrCents,
                     mrrUsd: parseFloat((mrrCents / 100).toFixed(2)),
+                    mrrSource,
+                    // contractedMrrCents = base recurring amounts for active subs (forward MRR)
+                    contractedMrrCents,
+                    contractedMrrUsd: parseFloat((contractedMrrCents / 100).toFixed(2)),
                     arrCents,
                     arrUsd: parseFloat((arrCents / 100).toFixed(2)),
                     arpuUsd,

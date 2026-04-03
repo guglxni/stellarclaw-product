@@ -222,6 +222,62 @@ async function retrieveDiscountByCode(code) {
     return dodo.discounts.retrieveByCode(code);
 }
 
+/**
+ * Fetch actual MRR from Dodo Payments API.
+ *
+ * MRR = sum of actual subscription payments received in the last 30 days.
+ * Uses real Dodo API data (not count × price) so:
+ *   - Beta-code subscriptions (100% discount) → $0 contribution this month
+ *   - Discounted first month → actual discounted amount
+ *   - Regular subscribers → $9.99
+ *
+ * Handles pagination. Returns cents (integer).
+ */
+async function getPaymentsMRR() {
+    const dodo = getClient();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+        .toISOString().slice(0, 10); // YYYY-MM-DD
+
+    let mrrCents = 0;
+
+    // Use async iterator — SDK handles pagination automatically
+    for await (const payment of dodo.payments.list({
+        status: 'succeeded',
+        created_at_gte: thirtyDaysAgo,
+        page_size: 100,
+    })) {
+        // Only count subscription payments (not one-time credits)
+        if (payment.subscription_id) {
+            mrrCents += payment.total_amount || 0;
+        }
+    }
+
+    return mrrCents;
+}
+
+/**
+ * Fetch contracted MRR from Dodo Payments API.
+ *
+ * Contracted MRR = sum of recurring_pre_tax_amount × quantity for all active subscriptions.
+ * This is the "forward-looking" MRR: what we expect to collect next cycle.
+ * For discounted first-month subs, this shows the FULL price (next billing will be full price).
+ *
+ * Returns cents (integer).
+ */
+async function getContractedMRR() {
+    const dodo = getClient();
+    let mrrCents = 0;
+
+    for await (const sub of dodo.subscriptions.list({
+        status: 'active',
+        page_size: 100,
+    })) {
+        mrrCents += (sub.recurring_pre_tax_amount || 0) * (sub.quantity || 1);
+    }
+
+    return mrrCents;
+}
+
 // ─── Exports ────────────────────────────────────────────────────────────────
 module.exports = {
     createCheckoutSession,
@@ -232,6 +288,8 @@ module.exports = {
     verifyWebhookEvent,
     createBetaDiscount,
     retrieveDiscountByCode,
+    getPaymentsMRR,
+    getContractedMRR,
     PRODUCT_ID,
     CREDITS_PRODUCT_ID,
     PLAN_BUDGET,

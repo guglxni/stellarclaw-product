@@ -2,13 +2,21 @@
  * Dodo Payments — Database Sync Module
  *
  * Syncs payments, customers, subscriptions, and licences from Dodo Payments
- * into a local database using the `dodo-sync` package.
+ * into a dedicated database using the `dodo-sync` package.
  *
- * Supports MongoDB, PostgreSQL, MySQL, and ClickHouse.
+ * ⚠️  IMPORTANT: dodo-sync creates tables named Subscriptions, Payments,
+ *     Customers, Licenses (PostgreSQL lowercases to subscriptions, payments, etc.)
+ *     which CONFLICT with our app tables. The sync database MUST be a SEPARATE
+ *     database from the main app database (DATABASE_URL).
+ *
+ *     Setup on DigitalOcean managed PostgreSQL:
+ *       psql "$DATABASE_URL" -c "CREATE DATABASE liveclaw_dodo_sync;"
+ *     Then set in .env:
+ *       DODO_SYNC_DATABASE_URI=postgresql://user:pass@host:25061/liveclaw_dodo_sync?sslmode=require
  *
  * Usage:
- *   Standalone:  node sync.js              (one-shot sync)
- *   Continuous:  node sync.js --interval   (repeating sync loop)
+ *   Standalone:   node sync.js              (one-shot sync)
+ *   Continuous:   node sync.js --interval   (repeating sync loop)
  *   Programmatic: require('./sync').startSync()
  */
 
@@ -26,13 +34,28 @@ const DODO_API_KEY = process.env.DODO_API_KEY || '';
 const DODO_ENV = process.env.NODE_ENV === 'production' ? 'live_mode' : 'test_mode';
 
 /**
+ * dodo-sync uses pg.Client directly without SSL cert validation options.
+ * DigitalOcean managed PostgreSQL uses self-signed certs in the chain.
+ * We set NODE_TLS_REJECT_UNAUTHORIZED=0 here for the sync connection —
+ * consistent with our main pool's PG_SSL_REJECT_UNAUTHORIZED=false setting.
+ * This only affects pg connections (not HTTPS), and our server is private.
+ */
+function prepareSyncEnv() {
+    if (SYNC_DATABASE_URI && SYNC_DATABASE_URI.includes('ondigitalocean.com')) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+}
+
+/**
  * Run a single one-shot sync.
  */
 async function runOnce() {
     if (!SYNC_DATABASE_URI) {
         console.warn('[dodo-sync] DODO_SYNC_DATABASE_URI not set — skipping sync');
+        console.warn('[dodo-sync] Create a separate database and set DODO_SYNC_DATABASE_URI in .env');
         return;
     }
+    prepareSyncEnv();
     const sync = new DodoSync({
         database: SYNC_DATABASE,
         databaseURI: SYNC_DATABASE_URI,
@@ -53,8 +76,10 @@ async function runOnce() {
 async function startSync() {
     if (!SYNC_DATABASE_URI) {
         console.warn('[dodo-sync] DODO_SYNC_DATABASE_URI not set — skipping sync');
+        console.warn('[dodo-sync] Create a separate database and set DODO_SYNC_DATABASE_URI in .env');
         return null;
     }
+    prepareSyncEnv();
     const sync = new DodoSync({
         interval: SYNC_INTERVAL,
         database: SYNC_DATABASE,

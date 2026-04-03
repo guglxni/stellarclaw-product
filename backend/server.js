@@ -1888,6 +1888,19 @@ if (config.nodeEnv !== 'test') {
         log.startup.info('Queue orchestration worker started', { pollMs: config.scaleQueuePollMs });
     }
 
+    // ─── Dodo Payments Sync ──────────────────────────────────────────────────
+    // Syncs payments/subscriptions/customers into a SEPARATE database for
+    // analytics. Requires DODO_SYNC_DATABASE_URI pointing to a dedicated DB
+    // (must NOT be the same database as DATABASE_URL — table name conflicts).
+    if (process.env.DODO_SYNC_DATABASE_URI && config.dodoApiKey) {
+        const { startSync: startDodoSync } = require('./sync');
+        startDodoSync().then(() => {
+            log.startup.info('Dodo Payments sync started', { interval: process.env.DODO_SYNC_INTERVAL || '600s' });
+        }).catch(err => {
+            log.startup.warn('Dodo Payments sync failed to start (non-fatal)', { error: err.message });
+        });
+    }
+
     // ─── Startup Bot Recovery ────────────────────────────────────────────────
     // After each deploy the orchestrator restarts and graceful shutdown marks all
     // bots as 'stopped'. On startup, re-spawn any bot with an active subscription

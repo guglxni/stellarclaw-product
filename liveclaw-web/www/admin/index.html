@@ -667,8 +667,9 @@
                 <div class="section-header"><span class="section-title">Revenue KPIs</span></div>
                 <div class="stats-grid">
                     <div class="stat-card"><span class="stat-label">Paid Revenue (All time)</span><span class="stat-value emerald" id="pay-revenue">—</span></div>
-                    <div class="stat-card"><span class="stat-label">MRR</span><span class="stat-value blue" id="pay-mrr">—</span></div>
-                    <div class="stat-card"><span class="stat-label">ARR</span><span class="stat-value" id="pay-arr">—</span></div>
+                    <div class="stat-card"><span class="stat-label">MRR (Actual, 30d)</span><span class="stat-value blue" id="pay-mrr">—</span><span class="stat-sub" id="pay-mrr-source">—</span></div>
+                    <div class="stat-card"><span class="stat-label">Contracted MRR</span><span class="stat-value" id="pay-contracted-mrr">—</span><span class="stat-sub">next billing cycle</span></div>
+                    <div class="stat-card"><span class="stat-label">ARR</span><span class="stat-value" id="pay-arr">—</span><span class="stat-sub">based on contracted MRR</span></div>
                     <div class="stat-card"><span class="stat-label">ARPU</span><span class="stat-value" id="pay-arpu">—</span><span class="stat-sub">per active subscriber</span></div>
                     <div class="stat-card"><span class="stat-label">Total Payments</span><span class="stat-value" id="pay-count">—</span></div>
                     <div class="stat-card"><span class="stat-label">LLM Spend Total</span><span class="stat-value amber" id="pay-llm-spend">—</span><span class="stat-sub" id="pay-llm-vk">— VKs tracked</span></div>
@@ -910,7 +911,7 @@
             ['Error Rate (1m)', pct(d.traffic.last1m.errorRatePct), d.traffic.last1m.errorRatePct > 1 ? 'red' : 'emerald', d.traffic.last1m.count + ' requests sampled'],
             ['P95 Latency (1m)', d.traffic.last1m.p95LatencyMs + 'ms', d.traffic.last1m.p95LatencyMs > 1500 ? 'red' : 'blue', 'avg ' + d.traffic.last1m.avgLatencyMs + 'ms'],
             ['Agents Running', d.agents.running + ' / ' + d.agents.total, 'emerald', d.agents.crashed + ' crashed'],
-            ['MRR', usd(d.billing.payments.mrrUsd), 'blue', 'ARR ' + usd(d.billing.payments.arrUsd)],
+            ['MRR (Actual)', usd(d.billing.payments.mrrUsd), 'blue', 'Contracted ' + usd(d.billing.payments.contractedMrrUsd || d.billing.payments.mrrUsd)],
             ['LLM Spend', llmSpent != null ? '$' + llmSpent.toFixed(4) : '—', 'amber', (d.billing.llm ? d.billing.llm.activeVkCount : '—') + ' VKs tracked'],
             ['Requests', d.traffic.sinceStartTotal, '', 'since process start'],
         ];
@@ -984,6 +985,8 @@
 
         $('pay-revenue').textContent = usd(pay.paidRevenueUsd);
         $('pay-mrr').textContent = usd(pay.mrrUsd);
+        $('pay-mrr-source').textContent = pay.mrrSource === 'dodo_api' ? 'live from Dodo API' : 'estimated (Dodo API unavailable)';
+        $('pay-contracted-mrr').textContent = usd(pay.contractedMrrUsd != null ? pay.contractedMrrUsd : pay.mrrUsd);
         $('pay-arr').textContent = usd(pay.arrUsd);
         $('pay-arpu').textContent = usd(pay.arpuUsd || 0);
         $('pay-count').textContent = pay.totalCount;
