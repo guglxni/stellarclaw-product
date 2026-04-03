@@ -95,6 +95,8 @@ function createWebhookRouter(deps) {
         asyncHandler,
         webhookLimiter,
         deactivateVirtualKeyWithRetry,
+        spawnPicobot,
+        decryptToken,
     } = deps;
 
     const router = express.Router();
@@ -186,6 +188,33 @@ function createWebhookRouter(deps) {
                     }
 
                     logEvent(target, 'subscription_activated', { subId, eventType });
+
+                    // ── Auto-restart bot on renewal if it was running/stopped ──
+                    // On renewal: if user had a bot deployed (token in DB), restart it.
+                    // On new activation: bot hasn't been deployed yet (no token in DB) —
+                    // user will manually click Deploy after first setup.
+                    if (eventType === 'subscription.renewed') {
+                        try {
+                            const bot = await stmt.getBot(target);
+                            if (bot && bot.telegram_token && bot.bifrost_vk) {
+                                const decryptedVk = decryptToken(bot.bifrost_vk);
+                                const channelOpts = {
+                                    telegramToken: bot.telegram_token ? decryptToken(bot.telegram_token) : undefined,
+                                    discordToken: bot.discord_token ? decryptToken(bot.discord_token) : undefined,
+                                    slackAppToken: bot.slack_app_token ? decryptToken(bot.slack_app_token) : undefined,
+                                    slackBotToken: bot.slack_bot_token ? decryptToken(bot.slack_bot_token) : undefined,
+                                };
+                                // Kill old process if somehow still alive
+                                try { process.kill(bot.pid, 'SIGTERM'); } catch (_) {}
+                                const newPid = await spawnPicobot(target, decryptedVk, bot.model, channelOpts);
+                                await stmt.updatePid(newPid, 'running', target);
+                                logEvent(target, 'bot_auto_restarted_on_renewal', { newPid });
+                                log.webhook.info('Bot auto-restarted on subscription renewal', { userId: target, newPid });
+                            }
+                        } catch (err) {
+                            log.webhook.error('Auto-restart on renewal failed', { userId: target, error: err.message });
+                        }
+                    }
 
                     // ── Transactional email ──────────────────────────────────
                     const customerEmail = data?.customer?.email;

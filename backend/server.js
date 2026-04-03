@@ -701,6 +701,7 @@ stmtOrch = {
         db, stmt, stmtSubs, logEvent, log, dodo, bifrost,
         asyncHandler, webhookLimiter,
         deactivateVirtualKeyWithRetry,
+        spawnPicobot, decryptToken,
     });
     webhookRouterPlaceholder.use(webhookRouter);
 
@@ -1904,9 +1905,12 @@ if (config.nodeEnv !== 'test') {
 
             // ── Crashed-bot detection & restart ────────────────────────────
             const bots = await stmt.runningBots();
+            // Build the set of actual picobot PIDs from pgrep — immune to PID reuse.
+            // process.kill(pid, 0) would return true if a *different* process claimed
+            // the same PID after picobot died, causing a silent false-positive.
+            const livePicobotPids = new Set(listPicobotPids());
             for (const bot of bots) {
-                let alive = false;
-                try { process.kill(bot.pid, 0); alive = true; } catch (_) { /* not running */ }
+                const alive = livePicobotPids.has(bot.pid);
 
                 if (!alive) {
                     // Skip restart if subscription is no longer active
