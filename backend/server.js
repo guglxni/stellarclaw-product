@@ -1852,6 +1852,42 @@ if (config.nodeEnv !== 'test') {
         log.startup.info('Queue orchestration worker started', { pollMs: config.scaleQueuePollMs });
     }
 
+    // ─── Startup Bot Recovery ────────────────────────────────────────────────
+    // After each deploy the orchestrator restarts and graceful shutdown marks all
+    // bots as 'stopped'. On startup, re-spawn any bot with an active subscription
+    // that was running before the restart (updated within the last 2 hours).
+    setTimeout(async () => {
+        try {
+            const stoppedBots = await db.all(
+                `SELECT b.* FROM bots b
+                 JOIN subscriptions s ON s.user_id = b.user_id
+                 WHERE b.status = 'stopped'
+                   AND s.status IN ('active', 'trialing', 'past_due')
+                   AND b.updated_at > datetime('now', '-2 hours')`
+            );
+            for (const bot of stoppedBots) {
+                if (!bot.bifrost_vk || !bot.telegram_token) continue;
+                try {
+                    const decryptedVk = decryptToken(bot.bifrost_vk);
+                    const channelOpts = {
+                        telegramToken: bot.telegram_token ? decryptToken(bot.telegram_token) : undefined,
+                        discordToken: bot.discord_token ? decryptToken(bot.discord_token) : undefined,
+                        slackAppToken: bot.slack_app_token ? decryptToken(bot.slack_app_token) : undefined,
+                        slackBotToken: bot.slack_bot_token ? decryptToken(bot.slack_bot_token) : undefined,
+                    };
+                    const newPid = await spawnPicobot(bot.user_id, decryptedVk, bot.model, channelOpts);
+                    await stmt.updatePid(newPid, 'running', bot.user_id);
+                    logEvent(bot.user_id, 'bot_restarted_after_deploy', { newPid });
+                    log.startup.info('Bot auto-restarted after deploy', { userId: bot.user_id, newPid });
+                } catch (err) {
+                    log.startup.error('Failed to auto-restart bot after deploy', { userId: bot.user_id, error: err.message });
+                }
+            }
+        } catch (err) {
+            log.startup.error('Startup bot recovery failed', { error: err.message });
+        }
+    }, 5000); // Wait 5s for DB connections to stabilize
+
     // ─── Bot Watchdog ───────────────────────────────────────────────────────
     // Periodically checks running bots and auto-restarts crashed ones.
     // Also expires beta trial subscriptions whose trial_ends_at has passed.
