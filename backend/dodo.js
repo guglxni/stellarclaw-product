@@ -236,7 +236,7 @@ async function retrieveDiscountByCode(code) {
 async function getPaymentsMRR() {
     const dodo = getClient();
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        .toISOString().slice(0, 10); // YYYY-MM-DD
+        .toISOString(); // Full ISO 8601 timestamp
 
     let mrrCents = 0;
 
