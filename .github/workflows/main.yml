@@ -377,6 +377,9 @@ jobs:
               cp -r /opt/liveclaw/backend/server.js /opt/liveclaw/backend/dodo.js \
                     /opt/liveclaw/backend/bifrost.js /opt/liveclaw/backend/package.json \
                     /opt/liveclaw/backend/package-lock.json "$RELEASE_DIR/" 2>/dev/null || true
+              for mcp in vision-mcp.js telegram-file-mcp.js sync.js; do
+                [ -f "/opt/liveclaw/backend/$mcp" ] && cp "/opt/liveclaw/backend/$mcp" "$RELEASE_DIR/" 2>/dev/null || true
+              done
               if [ -d /opt/liveclaw/backend/routes ]; then
                 cp -r /opt/liveclaw/backend/routes "$RELEASE_DIR/" 2>/dev/null || true
               fi
@@ -479,6 +482,10 @@ jobs:
               if [ -d "$RELEASE_DIR" ] && [ -f "$RELEASE_DIR/server.js" ]; then
                 cp "$RELEASE_DIR"/server.js "$RELEASE_DIR"/dodo.js \
                    "$RELEASE_DIR"/bifrost.js /opt/liveclaw/backend/ 2>/dev/null || true
+                # Restore MCP servers if present in snapshot
+                for mcp in vision-mcp.js telegram-file-mcp.js sync.js; do
+                  [ -f "$RELEASE_DIR/$mcp" ] && cp "$RELEASE_DIR/$mcp" /opt/liveclaw/backend/ 2>/dev/null || true
+                done
                 # Restore route modules if present in snapshot
                 if [ -d "$RELEASE_DIR/routes" ]; then
                   cp -r "$RELEASE_DIR/routes" /opt/liveclaw/backend/ 2>/dev/null || true
