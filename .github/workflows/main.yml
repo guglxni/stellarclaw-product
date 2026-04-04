@@ -598,58 +598,32 @@ jobs:
     needs: [deploy-backend, deploy-frontend]
     if: always() && (needs.deploy-backend.result == 'success' || needs.deploy-frontend.result == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     steps:
-      - name: Verify production endpoints
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install jq
+        run: which jq || (apt-get update -qq && apt-get install -y -qq jq)
+
+      - name: Run smoke tests
         run: |
+          chmod +x scripts/smoke-test.sh
+          # Run and capture output — always write to summary regardless of exit code
+          set +e
+          OUTPUT=$(bash scripts/smoke-test.sh 2>&1)
+          EXIT_CODE=$?
+          set -e
+
           echo "### Production Smoke Tests" >> "$GITHUB_STEP_SUMMARY"
-          PASS=0
-          FAIL=0
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-          # Backend health
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://api.liveclaw.xyz/health || echo "000")
-          if [ "$HTTP" = "200" ]; then
-            echo "- ✅ Backend health: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
-            PASS=$((PASS+1))
-          else
-            echo "- ❌ Backend health: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
-            FAIL=$((FAIL+1))
+          echo "$OUTPUT"
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "::warning::Smoke tests failed — check deployment"
           fi
-
-          # Backend pricing endpoint
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://api.liveclaw.xyz/pricing || echo "000")
-          if [ "$HTTP" = "200" ]; then
-            echo "- ✅ Pricing API: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
-            PASS=$((PASS+1))
-          else
-            echo "- ❌ Pricing API: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
-            FAIL=$((FAIL+1))
-          fi
-
-          # Bifrost gateway (via health endpoint JSON)
-          BIFROST=$(curl -s --max-time 10 https://api.liveclaw.xyz/health | python3 -c "import sys,json; print(json.load(sys.stdin).get('checks',{}).get('bifrost',False))" 2>/dev/null || echo "False")
-          if [ "$BIFROST" = "True" ]; then
-            echo "- ✅ Bifrost gateway: healthy" >> "$GITHUB_STEP_SUMMARY"
-            PASS=$((PASS+1))
-          else
-            echo "- ❌ Bifrost gateway: unhealthy" >> "$GITHUB_STEP_SUMMARY"
-            FAIL=$((FAIL+1))
-          fi
-
-          # Frontend
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://liveclaw.xyz/ || echo "000")
-          if [ "$HTTP" = "200" ]; then
-            echo "- ✅ Frontend: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
-            PASS=$((PASS+1))
-          else
-            echo "- ❌ Frontend: HTTP $HTTP" >> "$GITHUB_STEP_SUMMARY"
-            FAIL=$((FAIL+1))
-          fi
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Result: ${PASS} passed, ${FAIL} failed**" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$FAIL" -gt 0 ]; then
-            echo "::warning::${FAIL} smoke test(s) failed — check deployment"
-          fi
+          exit $EXIT_CODE

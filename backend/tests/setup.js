@@ -14,6 +14,7 @@ process.env.TOKEN_ENCRYPTION_KEY = 'a'.repeat(64);  // 32 bytes hex
 process.env.BIFROST_GATEWAY_URL = 'http://localhost:19999';  // Non-existent; mocked in tests
 process.env.TURNSTILE_SECRET_KEY = '1x0000000000000000000000000000000AA'; // Cloudflare test key
 process.env.DODO_PRODUCT_ID = 'pdt_test_standard';
+process.env.DODO_CREDITS_PRODUCT_ID = 'pdt_credits_test';
 process.env.DODO_API_KEY = 'test_dodo_api_key';
 process.env.DODO_WEBHOOK_SECRET = 'test_dodo_webhook_secret';
 process.env.TELEGRAM_MASTER_BOT_TOKEN = '000000000:AABBccddEEffGGhhIIjjKKllMMnnOOppQQr';

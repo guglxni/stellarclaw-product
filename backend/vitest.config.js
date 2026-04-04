@@ -26,15 +26,14 @@ export default defineConfig({
             provider: 'v8',
             reporter: ['text', 'text-summary', 'lcov', 'json-summary'],
             reportsDirectory: './coverage',
-            include: ['server.js', 'bifrost.js'],
+            include: ['server.js', 'bifrost.js', 'dodo.js'],
             exclude: ['node_modules', 'tests', 'coverage'],
             thresholds: {
-                // Ratchet these up as coverage improves.
-                // Lowered after telegram-file MCP + SOUL.md changes added uncovered branches.
-                lines: 40,
-                functions: 48,
-                branches: 33,
-                statements: 40,
+                // Ratchet up as coverage improves.
+                lines: 42,
+                functions: 50,
+                branches: 34,
+                statements: 42,
             },
         },
 
