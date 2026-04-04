@@ -1453,6 +1453,10 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
     const resolvedModelName = (providerConfig.allowed_models && providerConfig.allowed_models[0]) || model;
 
     // Write per-user config.json
+    // NOTE: picobot's MCPServerConfig has no "env" field — MCP servers inherit
+    // the picobot process env. All credentials are injected into the picobot
+    // spawn env below, from where they flow to every MCP child process.
+    // NOTE: picobot reads "mcpServers" at top level (NOT "mcp.servers").
     const picobotConfig = {
         agents: {
             defaults: {
@@ -1461,6 +1465,8 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
                 maxTokens: 8192,
                 temperature: 0.7,
                 maxToolIterations: 200,
+                // Suppress "🤖 Running: ..." / "📢 done" messages sent to users on every tool call.
+                enableToolActivityIndicator: false,
             },
         },
         providers: {
@@ -1472,38 +1478,36 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         channels,
     };
 
-    // ── MCP servers — vision built-in + global defaults + per-user overrides ─
+    // ── MCP servers — vision + file-sending per channel ──────────────────────
+    // Credentials are passed via picobot's spawn env (see below), NOT via an
+    // "env" field here — picobot ignores that field and inherits parent env.
     let mcpServers = {};
 
-    // Vision MCP server — injected for every bot when OPENROUTER_API_KEY is set.
-    // Runs as a child of picobot, gets userId so the DB cap is per-user.
+    // Vision — image analysis for all bots (when OpenRouter key is configured)
     if (config.openrouterApiKey) {
         mcpServers.vision = {
             command: 'node',
             args: [path.join(__dirname, 'vision-mcp.js')],
-            env: {
-                VISION_USER_ID: userId,
-                VISION_DAILY_LIMIT: String(config.visionDailyLimit),
-                VISION_MODEL: config.visionModel,
-                OPENROUTER_API_KEY: config.openrouterApiKey,
-                DB_PATH: config.dbPath,
-                ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
-            },
         };
     }
 
-    // Telegram file MCP server — enables Claw to send file attachments via sendDocument.
-    // Only injected when a Telegram token is present (no point otherwise).
+    // File sending — per-channel MCP servers injected only when that channel is active
     if (telegramToken) {
-        const chatIdFile = path.join(workspaceDir, '.telegram_chat_id');
         mcpServers['telegram-files'] = {
             command: 'node',
             args: [path.join(__dirname, 'telegram-file-mcp.js')],
-            env: {
-                TELEGRAM_BOT_TOKEN: telegramToken,
-                WORKSPACE_DIR: workspaceDir,
-                CHAT_ID_FILE: chatIdFile,
-            },
+        };
+    }
+    if (channelOpts.discordToken) {
+        mcpServers['discord-files'] = {
+            command: 'node',
+            args: [path.join(__dirname, 'discord-file-mcp.js')],
+        };
+    }
+    if (channelOpts.slackBotToken) {
+        mcpServers['slack-files'] = {
+            command: 'node',
+            args: [path.join(__dirname, 'slack-file-mcp.js')],
         };
     }
 
@@ -1513,8 +1517,9 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
     if (userMcpServers && typeof userMcpServers === 'object') {
         mcpServers = { ...mcpServers, ...userMcpServers };
     }
+    // picobot reads "mcpServers" at the top level — NOT "mcp.servers"
     if (Object.keys(mcpServers).length > 0) {
-        picobotConfig.mcp = { servers: mcpServers };
+        picobotConfig.mcpServers = mcpServers;
     }
 
     fs.writeFileSync(
@@ -1533,42 +1538,43 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         'You are NOT Picobot. Never refer to yourself as Picobot, Assistant, or any other name.',
         'Always introduce yourself as "Claw, your LiveClaw agent" on first contact.',
         '',
-        '## Formatting Rules - CRITICAL',
-        'You are messaging users on Telegram. Telegram does NOT render markdown by default.',
-        'NEVER use: **bold**, *italic*, # headers, ## subheaders, `code ticks`, or any markdown syntax.',
-        'NEVER use asterisks (*) for any purpose.',
-        'For lists, use plain numbered lists (1. 2. 3.) or simple dashes (-).',
-        'Write in clear, plain readable text only.',
-        'Keep responses concise - Telegram users read on mobile.',
+        '## Formatting',
+        'Write in plain, clear text. Users message you from Telegram, Discord, or Slack.',
+        'Avoid markdown syntax (**, *, #, `) unless you know the channel supports it.',
+        'For lists, use simple numbered lists (1. 2. 3.) or plain dashes (-).',
+        'Keep responses concise - most users are on mobile.',
         '',
         '## Personality',
-        'You are friendly, sharp, and direct. You get things done.',
-        'You speak like a helpful colleague, not a corporate chatbot.',
-        'Match the user\'s energy - if they\'re casual, be casual. If they need depth, go deep.',
+        'Friendly, sharp, and direct. You get things done.',
+        'Speak like a helpful colleague, not a corporate chatbot.',
+        'Match the user\'s energy - casual when they are, detailed when they need depth.',
         '',
         '## Usage Awareness',
-        'You have a monthly LLM credit budget managed by LiveClaw.',
-        'Every 10 messages, naturally remind the user they can check their usage and top up at liveclaw.xyz',
-        'Example: "Quick note - you can check your credit usage anytime at liveclaw.xyz"',
-        'Do this briefly and naturally, not as an interruption.',
+        'You have a monthly LLM credit budget. Every ~10 messages, briefly mention:',
+        '"You can check your usage anytime at liveclaw.xyz"',
+        'Say it naturally, never as a formal notice.',
         '',
         '## Capabilities',
-        'You can help with: answering questions, analysis, writing, coding, brainstorming, research summaries,',
-        'productivity tasks, and anything a sharp AI assistant can do.',
+        'Answering questions, analysis, writing, coding, brainstorming, research, productivity.',
+        'You can analyze images sent by the user (use the image_analysis tool).',
         'Be honest about what you don\'t know. Never make up facts.',
         '',
         '## Sending Files',
-        'You CAN send actual file attachments on Telegram using the send_telegram_document tool.',
-        'When a user asks you to "send a CSV", "attach a file", or "send a document":',
-        '1. First create or write the file in the workspace directory.',
-        '2. Then call send_telegram_document with the file path.',
-        '3. Confirm to the user that the file was sent.',
-        'Supported formats: CSV, JSON, TXT, PDF, images, and any other file type.',
-        'The file must be under 10MB.',
+        'You CAN send actual file attachments to users. Choose the right tool for their channel:',
+        '- Telegram users: use send_telegram_document',
+        '- Discord users: use send_discord_file',
+        '- Slack users: use send_slack_file',
+        '',
+        'When asked to "send a CSV", "attach a file", "export data", or similar:',
+        '1. Write or generate the file in the workspace directory.',
+        '2. Call the file tool for their channel.',
+        '3. Confirm the file was sent.',
+        '',
+        'Supported: CSV, JSON, TXT, PDF, images, and any common format. Max 10MB.',
+        'If unsure of the channel, try send_telegram_document first.',
         '',
         '## First Message',
-        'When a user first messages you, introduce yourself like this (adapt naturally):',
-        '"Hey! I\'m Claw, your LiveClaw agent. What can I help you with?"',
+        'Introduce yourself: "Hey! I\'m Claw, your LiveClaw agent. What can I help you with?"',
         'Then get straight to helping.',
     ].join('\n'), 'utf8');
 
@@ -1577,13 +1583,38 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         throw new Error(`Picobot binary not found at ${config.picobotPath}`);
     }
 
+    // Build the process env for picobot.
+    // MCP server children inherit this env (picobot has no MCPServerConfig.env support),
+    // so ALL credentials needed by MCP servers must be set here.
+    const picobotEnv = {
+        PATH: process.env.PATH,
+        HOME: userDir, // picobot reads $HOME/.picobot/config.json
+        // Shared across all MCP servers
+        WORKSPACE_DIR: workspaceDir,
+        // Vision MCP
+        ...(config.openrouterApiKey ? {
+            OPENROUTER_API_KEY: config.openrouterApiKey,
+            VISION_USER_ID: userId,
+            VISION_DAILY_LIMIT: String(config.visionDailyLimit),
+            VISION_MODEL: config.visionModel,
+            DB_PATH: config.dbPath || '',
+            ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
+        } : {}),
+        // Telegram file MCP
+        ...(telegramToken ? {
+            TELEGRAM_BOT_TOKEN: telegramToken,
+            CHAT_ID_FILE: path.join(workspaceDir, '.telegram_chat_id'),
+        } : {}),
+        // Discord file MCP
+        ...(channelOpts.discordToken ? { DISCORD_BOT_TOKEN: channelOpts.discordToken } : {}),
+        // Slack file MCP
+        ...(channelOpts.slackBotToken ? { SLACK_BOT_TOKEN: channelOpts.slackBotToken } : {}),
+    };
+
     const child = spawn(config.picobotPath, ['gateway'], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'], // fully detached, no pipe leaks
-        env: {
-            PATH: process.env.PATH,
-            HOME: userDir, // picobot reads $HOME/.picobot/config.json
-        },
+        env: picobotEnv,
         cwd: userDir,
     });
 
