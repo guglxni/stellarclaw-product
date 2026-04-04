@@ -15,6 +15,8 @@
 'use strict';
 
 const express = require('express');
+const fs      = require('fs');
+const path    = require('path');
 
 /**
  * Creates the bot router with all dependencies injected.
@@ -218,6 +220,13 @@ function createBotRouter(deps) {
 
         await stmt.updateChatId(String(chatId), userId);
         logEvent(userId, 'chat_id_registered', { chatId: String(chatId) });
+
+        // Write chat ID to workspace file so telegram-file-mcp can read it without a DB query.
+        // Path mirrors the one in spawnPicobot(): {botsDir}/{userId}/.picobot/workspace/.telegram_chat_id
+        try {
+            const chatIdFile = path.join(config.botsDir, userId, '.picobot', 'workspace', '.telegram_chat_id');
+            fs.writeFileSync(chatIdFile, String(chatId), 'utf8');
+        } catch (_) { /* workspace may not exist yet — not fatal */ }
 
         return res.json({ success: true });
     }));

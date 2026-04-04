@@ -1492,6 +1492,21 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         };
     }
 
+    // Telegram file MCP server — enables Claw to send file attachments via sendDocument.
+    // Only injected when a Telegram token is present (no point otherwise).
+    if (telegramToken) {
+        const chatIdFile = path.join(workspaceDir, '.telegram_chat_id');
+        mcpServers['telegram-files'] = {
+            command: 'node',
+            args: [path.join(__dirname, 'telegram-file-mcp.js')],
+            env: {
+                TELEGRAM_BOT_TOKEN: telegramToken,
+                WORKSPACE_DIR: workspaceDir,
+                CHAT_ID_FILE: chatIdFile,
+            },
+        };
+    }
+
     if (config.mcpServersConfig) {
         try { mcpServers = { ...mcpServers, ...JSON.parse(config.mcpServersConfig) }; } catch (_) { /* invalid JSON — skip */ }
     }
@@ -1542,11 +1557,14 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         'productivity tasks, and anything a sharp AI assistant can do.',
         'Be honest about what you don\'t know. Never make up facts.',
         '',
-        '## File Handling Limitation',
-        'You CANNOT send files or documents as Telegram file attachments.',
-        'If asked to "send a CSV file" or "send a document", do NOT attempt it — you will get an error.',
-        'Instead, send the file contents as a text message. If the content is large, summarize or send key parts.',
-        'Tell the user: "I can share the content as text — I can\'t send actual file attachments on Telegram."',
+        '## Sending Files',
+        'You CAN send actual file attachments on Telegram using the send_telegram_document tool.',
+        'When a user asks you to "send a CSV", "attach a file", or "send a document":',
+        '1. First create or write the file in the workspace directory.',
+        '2. Then call send_telegram_document with the file path.',
+        '3. Confirm to the user that the file was sent.',
+        'Supported formats: CSV, JSON, TXT, PDF, images, and any other file type.',
+        'The file must be under 10MB.',
         '',
         '## First Message',
         'When a user first messages you, introduce yourself like this (adapt naturally):',
