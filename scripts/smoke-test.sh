@@ -11,7 +11,7 @@
 # Exit code: 0 = all passed, 1 = one or more failures
 # ─────────────────────────────────────────────────────────────────────────────
 
-set -euo pipefail
+set -uo pipefail
 
 API_URL="${API_URL:-https://api.liveclaw.xyz}"
 FRONTEND_URL="${FRONTEND_URL:-https://liveclaw.xyz}"
@@ -28,10 +28,12 @@ WARN=0
 
 # ─── Helper functions ─────────────────────────────────────────────────────────
 
+# Check only HTTP status (for non-200 endpoints like 401, 404)
 check_status() {
   local name="$1" url="$2" expected_status="$3"
   local http
-  http=$(curl -sf --max-time "$TIMEOUT" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  # Note: no -f flag — we want the real status code even for 4xx/5xx
+  http=$(curl -s --max-time "$TIMEOUT" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
   if [ "$http" = "$expected_status" ]; then
     echo -e "${GREEN}PASS${NC} [$name] HTTP $http — $url"
     PASS=$((PASS+1))
@@ -41,12 +43,15 @@ check_status() {
   fi
 }
 
+# Fetch JSON body; assert a jq expression equals expected_val
 check_json() {
   local name="$1" url="$2" jq_expr="$3" expected_val="${4:-true}"
-  local body http response
-  response=$(curl -sf --max-time "$TIMEOUT" -w "\n%{http_code}" "$url" 2>/dev/null || echo -e "\n000")
-  http=$(echo "$response" | tail -1)
-  body=$(echo "$response" | head -n -1)
+  local tmpfile http body val
+
+  tmpfile=$(mktemp)
+  http=$(curl -s --max-time "$TIMEOUT" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  body=$(cat "$tmpfile")
+  rm -f "$tmpfile"
 
   if [ "$http" != "200" ]; then
     echo -e "${RED}FAIL${NC} [$name] HTTP $http (expected 200) — $url"
@@ -54,9 +59,8 @@ check_json() {
     return
   fi
 
-  local val
-  val=$(echo "$body" | jq -r "$jq_expr" 2>/dev/null || echo "__jq_error__")
-  if [ "$val" = "$expected_val" ] || [ "$val" = "true" ] && [ "$expected_val" = "true" ]; then
+  val=$(printf '%s' "$body" | jq -r "$jq_expr" 2>/dev/null || echo "__jq_error__")
+  if [ "$val" = "$expected_val" ]; then
     echo -e "${GREEN}PASS${NC} [$name] $jq_expr = $val"
     PASS=$((PASS+1))
   else
@@ -65,12 +69,15 @@ check_json() {
   fi
 }
 
+# Assert a jq expression is non-null/non-empty (field presence check)
 check_json_not_null() {
   local name="$1" url="$2" jq_expr="$3"
-  local body http response
-  response=$(curl -sf --max-time "$TIMEOUT" -w "\n%{http_code}" "$url" 2>/dev/null || echo -e "\n000")
-  http=$(echo "$response" | tail -1)
-  body=$(echo "$response" | head -n -1)
+  local tmpfile http body val
+
+  tmpfile=$(mktemp)
+  http=$(curl -s --max-time "$TIMEOUT" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  body=$(cat "$tmpfile")
+  rm -f "$tmpfile"
 
   if [ "$http" != "200" ]; then
     echo -e "${RED}FAIL${NC} [$name] HTTP $http — $url"
@@ -78,8 +85,7 @@ check_json_not_null() {
     return
   fi
 
-  local val
-  val=$(echo "$body" | jq -r "$jq_expr" 2>/dev/null || echo "null")
+  val=$(printf '%s' "$body" | jq -r "$jq_expr" 2>/dev/null || echo "null")
   if [ "$val" != "null" ] && [ "$val" != "__jq_error__" ] && [ -n "$val" ]; then
     echo -e "${GREEN}PASS${NC} [$name] $jq_expr present: $val"
     PASS=$((PASS+1))
@@ -89,16 +95,18 @@ check_json_not_null() {
   fi
 }
 
+# Non-blocking version — logs warning instead of failing
 warn_json() {
   local name="$1" url="$2" jq_expr="$3" expected_val="${4:-true}"
-  local body http response
-  response=$(curl -sf --max-time "$TIMEOUT" -w "\n%{http_code}" "$url" 2>/dev/null || echo -e "\n000")
-  http=$(echo "$response" | tail -1)
-  body=$(echo "$response" | head -n -1)
+  local tmpfile http body val
 
-  local val
-  val=$(echo "$body" | jq -r "$jq_expr" 2>/dev/null || echo "__jq_error__")
-  if [ "$val" = "$expected_val" ] || [ "$val" = "true" ]; then
+  tmpfile=$(mktemp)
+  http=$(curl -s --max-time "$TIMEOUT" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  body=$(cat "$tmpfile")
+  rm -f "$tmpfile"
+
+  val=$(printf '%s' "$body" | jq -r "$jq_expr" 2>/dev/null || echo "__jq_error__")
+  if [ "$val" = "$expected_val" ]; then
     echo -e "${GREEN}PASS${NC} [$name] $jq_expr = $val"
     PASS=$((PASS+1))
   else
@@ -143,8 +151,8 @@ warn_json "bifrost-health" "$API_URL/health" '.checks.bifrost' "true"
 echo ""
 echo "=== Results ==="
 echo -e "  Passed: ${GREEN}${PASS}${NC}"
-[ "$WARN" -gt 0 ] && echo -e "  Warned: ${YELLOW}${WARN}${NC}"
-[ "$FAIL" -gt 0 ] && echo -e "  Failed: ${RED}${FAIL}${NC}"
+[ "$WARN" -gt 0 ] && echo -e "  Warned: ${YELLOW}${WARN}${NC}" || true
+[ "$FAIL" -gt 0 ] && echo -e "  Failed: ${RED}${FAIL}${NC}" || true
 
 if [ "$FAIL" -gt 0 ]; then
   echo -e "\n${RED}SMOKE TESTS FAILED — $FAIL check(s) failed${NC}"
