@@ -40,11 +40,14 @@ if (!WORKSPACE) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Cached chat ID — avoids repeated file reads or API calls
+let cachedChatId = null;
+
 /**
- * Read the Telegram chat ID from the per-user file written by register-chat.
- * Returns null if not yet registered.
+ * Read the Telegram chat ID from the per-user file written by register-chat
+ * or the orchestrator at deploy time. Returns null if not yet available.
  */
-function readChatId() {
+function readChatIdFromFile() {
     const filePath = CHAT_ID_FILE || path.join(WORKSPACE, '.telegram_chat_id');
     try {
         const raw = fs.readFileSync(filePath, 'utf8').trim();
@@ -52,6 +55,60 @@ function readChatId() {
     } catch (_) {
         return null;
     }
+}
+
+/**
+ * Discover the chat ID by calling Telegram's getUpdates API.
+ * Uses offset=-1, limit=1, timeout=0 for a non-blocking peek at the
+ * most recent update. This is safe even when picobot is long-polling
+ * because picobot acknowledges updates with offsets, and we only peek.
+ *
+ * On success, writes the chat ID to the file so future reads are instant.
+ */
+async function discoverChatIdFromTelegram() {
+    try {
+        const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-1&limit=1&timeout=0`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const updates = data.result || [];
+        if (updates.length === 0) return null;
+
+        const update = updates[0];
+        const chatId = update.message?.chat?.id
+            || update.callback_query?.message?.chat?.id
+            || update.edited_message?.chat?.id;
+        if (!chatId) return null;
+
+        // Persist to file for future reads
+        const filePath = CHAT_ID_FILE || path.join(WORKSPACE, '.telegram_chat_id');
+        try { fs.writeFileSync(filePath, String(chatId), 'utf8'); } catch (_) {}
+
+        return String(chatId);
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
+ * Get the Telegram chat ID — tries file first, then Telegram API discovery.
+ */
+async function getChatId() {
+    if (cachedChatId) return cachedChatId;
+
+    // Try the file first (instant, no API call)
+    const fromFile = readChatIdFromFile();
+    if (fromFile) {
+        cachedChatId = fromFile;
+        return fromFile;
+    }
+
+    // Fall back to Telegram API discovery
+    const discovered = await discoverChatIdFromTelegram();
+    if (discovered) {
+        cachedChatId = discovered;
+    }
+    return discovered;
 }
 
 /**
@@ -130,12 +187,12 @@ Returns success or an error message if the file cannot be sent.`,
             ),
         },
         async ({ file_path, caption }) => {
-            const chatId = readChatId();
+            const chatId = await getChatId();
             if (!chatId) {
                 return {
                     content: [{
                         type: 'text',
-                        text: 'Cannot send file: no Telegram chat ID registered yet. The user needs to send a message to the bot first.',
+                        text: 'Cannot send file: unable to determine Telegram chat ID. The user may need to send a message to the bot first.',
                     }],
                     isError: true,
                 };

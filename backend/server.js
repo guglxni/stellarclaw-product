@@ -944,6 +944,22 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
             mcpServers: safeMcpServers,
         });
         logEvent(userId, 'picobot_spawned', { pid, model, channels: activeChannels });
+
+        // Pre-write .telegram_chat_id if we already have one from a previous session.
+        // This lets the telegram-file MCP server send files immediately on redeploy
+        // without waiting for the user to send a new message.
+        if (telegramToken && existing?.telegram_chat_id) {
+            try {
+                const chatIdFile = path.join(config.botsDir, userId, '.picobot', 'workspace', '.telegram_chat_id');
+                fs.writeFileSync(chatIdFile, String(existing.telegram_chat_id), 'utf8');
+            } catch (_) { /* workspace may not exist yet — not fatal */ }
+        }
+
+        // Set Telegram bot menu commands so users see a command menu in the chat.
+        // Non-blocking — failure doesn't affect the deploy.
+        if (telegramToken) {
+            setTelegramBotMenu(telegramToken).catch(() => {});
+        }
     } catch (err) {
         log.deploy.error('picobot spawn error', { error: err.message, stack: err.stack });
         logEvent(userId, 'picobot_error', err.message);
@@ -1334,6 +1350,53 @@ async function verifyTelegramBotToken(token) {
     };
 }
 
+// ─── Telegram Bot Menu Setup ────────────────────────────────────────────────
+// Sets the bot's command menu and description so users see a proper menu
+// in the Telegram chat. Called after each successful deploy.
+async function setTelegramBotMenu(token) {
+    const commands = [
+        { command: 'start', description: 'Start chatting with Claw' },
+        { command: 'help', description: 'What can Claw do for you' },
+        { command: 'usage', description: 'Check your LLM credit usage' },
+        { command: 'export', description: 'Export conversation or files' },
+        { command: 'clear', description: 'Start a fresh conversation' },
+    ];
+
+    const baseUrl = `https://api.telegram.org/bot${token}`;
+
+    // Set bot commands (shows in the "/" menu)
+    await fetch(`${baseUrl}/setMyCommands`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commands }),
+    });
+
+    // Set bot description (shown when user opens the bot for the first time)
+    await fetch(`${baseUrl}/setMyDescription`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            description: 'Claw is your personal AI agent powered by LiveClaw. Send any message to get started.',
+        }),
+    });
+
+    // Set short description (shown in profile and search results)
+    await fetch(`${baseUrl}/setMyShortDescription`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            short_description: 'Your personal AI agent - powered by LiveClaw',
+        }),
+    });
+
+    // Set menu button to show commands
+    await fetch(`${baseUrl}/setChatMenuButton`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ menu_button: { type: 'commands' } }),
+    });
+}
+
 // ─── Cloudflare Turnstile Verification ──────────────────────────────────────
 app.post('/verify-turnstile', asyncHandler(async (req, res) => {
     const { token } = req.body;
@@ -1539,9 +1602,12 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         'Always introduce yourself as "Claw, your LiveClaw agent" on first contact.',
         '',
         '## Formatting',
-        'Write in plain, clear text. Users message you from Telegram, Discord, or Slack.',
-        'Avoid markdown syntax (**, *, #, `) unless you know the channel supports it.',
+        'Write in PLAIN TEXT only. Users message you from Telegram, Discord, or Slack.',
+        'NEVER use markdown: no **, no *, no #, no `, no ```, no _underscores_.',
+        'These characters appear as literal symbols in Telegram and look broken.',
+        'For emphasis, use CAPS or just write clearly without formatting.',
         'For lists, use simple numbered lists (1. 2. 3.) or plain dashes (-).',
+        'For code, just paste it directly without backtick fences.',
         'Keep responses concise - most users are on mobile.',
         '',
         '## Personality',
@@ -1572,6 +1638,15 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         '',
         'Supported: CSV, JSON, TXT, PDF, images, and any common format. Max 10MB.',
         'If unsure of the channel, try send_telegram_document first.',
+        '',
+        '## Commands',
+        'Users may type slash commands from the Telegram menu. Respond naturally:',
+        '/start - Greet them and introduce yourself as Claw.',
+        '/help - Explain what you can do: answer questions, analyze images, write code, create files, brainstorm, research.',
+        '/usage - Tell them to check their usage at liveclaw.xyz.',
+        '/export - Ask what they want exported, then create and send the file.',
+        '/clear - Acknowledge and say "Fresh start! What can I help you with?"',
+        'Treat these as regular messages. Never say "I received a /command" - just respond to the intent.',
         '',
         '## First Message',
         'Introduce yourself: "Hey! I\'m Claw, your LiveClaw agent. What can I help you with?"',
