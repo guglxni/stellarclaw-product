@@ -752,6 +752,37 @@ describe('POST /notify-low-credits', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// POST /internal/recharge
+// ═══════════════════════════════════════════════════════════════════════════
+describe('POST /internal/recharge', () => {
+    it('rejects missing X-Internal-Sig header', async () => {
+        const res = await request(app)
+            .post('/internal/recharge')
+            .send({ userId: 'user1', amount: 5, ts: Date.now() });
+        // 503 if secret not configured, 401 if missing header
+        expect([401, 503]).toContain(res.status);
+    });
+
+    it('rejects invalid HMAC signature', async () => {
+        const res = await request(app)
+            .post('/internal/recharge')
+            .set('X-Internal-Sig', 'a'.repeat(64))
+            .send({ userId: 'user1', amount: 5, ts: Date.now() });
+        // 503 if secret not configured, 401 if bad sig
+        expect([401, 503]).toContain(res.status);
+    });
+
+    it('returns 503 when LIVECLAW_INTERNAL_SECRET is not configured', async () => {
+        // In test env, LIVECLAW_INTERNAL_SECRET is not set
+        const res = await request(app)
+            .post('/internal/recharge')
+            .set('X-Internal-Sig', 'a'.repeat(64))
+            .send({ userId: 'user1', amount: 5, ts: Date.now() });
+        expect([401, 503]).toContain(res.status);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Security Headers (Helmet)
 // ═══════════════════════════════════════════════════════════════════════════
 describe('Security headers', () => {

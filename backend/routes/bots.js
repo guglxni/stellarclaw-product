@@ -17,6 +17,7 @@
 const express = require('express');
 const fs      = require('fs');
 const path    = require('path');
+const crypto  = require('crypto');
 
 /**
  * Creates the bot router with all dependencies injected.
@@ -34,6 +35,7 @@ function createBotRouter(deps) {
         logEvent,
         log,
         bifrost,
+        dodo,
         asyncHandler,
         authMiddleware,
         adminAuth,
@@ -284,6 +286,97 @@ function createBotRouter(deps) {
 
         log.system.error('Telegram API error', { error: data.description });
         return res.status(502).json({ error: 'Failed to send notification', detail: data.description });
+    }));
+
+    // ─── POST /internal/recharge — Create credits checkout from MCP server ────────
+    // Called by liveclaw-mcp.js running inside picobot processes.
+    // Authentication: HMAC-SHA256 over the JSON body, signed with LIVECLAW_INTERNAL_SECRET.
+    // Replay protection: timestamp must be within 60 seconds of server time.
+    // Rate-limited to prevent abuse even if the secret leaks.
+    router.post('/internal/recharge', webhookLimiter, asyncHandler(async (req, res) => {
+        const secret = config.liveClawInternalSecret;
+        if (!secret) {
+            return res.status(503).json({ error: 'Recharge not configured on this server' });
+        }
+
+        // ── Signature verification ──────────────────────────────────────────
+        const sig = req.headers['x-internal-sig'];
+        if (!sig || typeof sig !== 'string') {
+            return res.status(401).json({ error: 'Missing X-Internal-Sig header' });
+        }
+
+        // rawBody is available when express.json uses the verify callback (set in server.js)
+        const rawBody = req.rawBody || JSON.stringify(req.body);
+        const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        // Constant-time comparison to prevent timing attacks
+        let sigsMatch = false;
+        try {
+            sigsMatch = crypto.timingSafeEqual(
+                Buffer.from(sig, 'hex'),
+                Buffer.from(expected, 'hex')
+            );
+        } catch (_) { /* mismatched lengths → not equal */ }
+
+        if (!sigsMatch) {
+            log.system.warn('Internal recharge: invalid HMAC signature');
+            return res.status(401).json({ error: 'Invalid signature' });
+        }
+
+        // ── Payload extraction & validation ──────────────────────────────────
+        const { userId, amount, ts } = req.body;
+
+        // Replay protection: reject requests older than 60 seconds
+        if (!ts || typeof ts !== 'number' || Math.abs(Date.now() - ts) > 60_000) {
+            return res.status(400).json({ error: 'Request expired or timestamp invalid' });
+        }
+
+        if (!userId || typeof userId !== 'string' || userId.length > 128) {
+            return res.status(400).json({ error: 'userId is required' });
+        }
+
+        const amountNum = typeof amount === 'number' ? amount : parseFloat(amount);
+        if (!Number.isFinite(amountNum) || amountNum < 1 || amountNum > 50) {
+            return res.status(400).json({ error: 'amount must be between 1 and 50 USD' });
+        }
+
+        // Round to 2 decimal places server-side — never trust client rounding
+        const creditsToAdd  = Math.round(amountNum * 100) / 100;
+        const totalCharged  = Math.round(creditsToAdd * 1.1 * 100) / 100; // 10% service fee
+
+        // ── Validate user exists and has an active subscription ──────────────
+        const bot = await stmt.getBot(userId);
+        if (!bot) {
+            return res.status(404).json({ error: 'No bot found for this user' });
+        }
+
+        // ── Look up customer email for Dodo checkout ──────────────────────────
+        let email = `${userId.replace(/[^a-z0-9]/gi, '')}@liveclaw.xyz`; // safe fallback
+        const sub = await stmtSubs.getByUserId(userId);
+        if (sub?.dodo_customer_id) {
+            try {
+                const customer = await dodo.getCustomer(sub.dodo_customer_id);
+                if (customer?.email) email = customer.email;
+            } catch (_) { /* use fallback email — checkout still works */ }
+        }
+
+        // ── Create Dodo checkout ──────────────────────────────────────────────
+        // quantity = creditsToAdd (integer units of $1 credits)
+        // The 10% service fee is NOT passed to Dodo; it's the margin between what the
+        // user pays and what Dodo processes. The product price in Dodo must be $1.10/unit
+        // for the math to work out, OR we pass the full totalCharged as quantity (rounded).
+        // We use creditsToAdd as the metadata credit_amount_usd so the webhook adds
+        // the correct amount to Bifrost (not the fee-inclusive total).
+        const quantity = Math.round(creditsToAdd); // Dodo only accepts integer quantities
+        const { checkoutUrl } = await dodo.createCreditsCheckout(
+            userId,
+            email,
+            quantity,
+            `https://liveclaw.xyz?checkout=credits-success&amount=${creditsToAdd}`
+        );
+
+        logEvent(userId, 'recharge_checkout_created', { creditsToAdd, totalCharged, quantity });
+
+        return res.json({ checkoutUrl, creditsAdded: creditsToAdd, totalCharged });
     }));
 
     return router;

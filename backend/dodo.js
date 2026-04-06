@@ -212,6 +212,17 @@ async function createBetaDiscount(code) {
 }
 
 /**
+ * Retrieve a Dodo customer by their customer ID.
+ *
+ * @param {string} dodoCustomerId - Dodo customer ID (cus_...)
+ * @returns {Promise<object>} Customer object with { customer_id, email, name, ... }
+ */
+async function getCustomer(dodoCustomerId) {
+    const dodo = getClient();
+    return dodo.customers.retrieve(dodoCustomerId);
+}
+
+/**
  * Look up a discount by its code in Dodo.
  *
  * @param {string} code - The discount code
@@ -287,6 +298,7 @@ module.exports = {
     cancelSubscription,
     verifyWebhookEvent,
     createBetaDiscount,
+    getCustomer,
     retrieveDiscountByCode,
     getPaymentsMRR,
     getContractedMRR,
