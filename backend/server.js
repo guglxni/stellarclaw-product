@@ -687,6 +687,7 @@ stmtOrch = {
         decryptToken, spawnPicobot, encryptToken,
         deactivateVirtualKeyWithRetry,
         MAX_CONCURRENT_BOTS,
+        setTelegramBotMenu,
     });
     adminRouterPlaceholder.use(adminRouter);
 
@@ -1354,12 +1355,23 @@ async function verifyTelegramBotToken(token) {
 // Sets the bot's command menu and description so users see a proper menu
 // in the Telegram chat. Called after each successful deploy.
 async function setTelegramBotMenu(token) {
+    // Telegram allows max 100 commands, max 32 chars per command, 256 chars per description.
     const commands = [
-        { command: 'start', description: 'Start chatting with Claw' },
-        { command: 'help', description: 'What can Claw do for you' },
-        { command: 'usage', description: 'Check your LLM credit usage' },
-        { command: 'export', description: 'Export conversation or files' },
-        { command: 'clear', description: 'Start a fresh conversation' },
+        // ── Core ─────────────────────────────────────────────────────────────
+        { command: 'start',    description: 'Say hi and get started with Claw' },
+        { command: 'help',     description: 'What Claw can do — full capabilities list' },
+        { command: 'status',   description: 'Bot status: model, MCP servers, uptime' },
+        // ── Memory ───────────────────────────────────────────────────────────
+        { command: 'memory',   description: 'View your long-term memory notes' },
+        { command: 'remember', description: 'Quickly save a note (e.g. /remember buy milk)' },
+        // ── Skills & Automation ───────────────────────────────────────────────
+        { command: 'skills',   description: 'List your saved skills and workflows' },
+        { command: 'schedule', description: 'List scheduled/recurring tasks' },
+        // ── Files & Export ────────────────────────────────────────────────────
+        { command: 'export',   description: 'Export memory, skills, or files as a ZIP' },
+        // ── Session ──────────────────────────────────────────────────────────
+        { command: 'clear',    description: 'Clear conversation history, fresh start' },
+        { command: 'usage',    description: 'Check LLM credit usage → liveclaw.xyz' },
     ];
 
     const baseUrl = `https://api.telegram.org/bot${token}`;
@@ -1640,13 +1652,19 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         'If unsure of the channel, try send_telegram_document first.',
         '',
         '## Commands',
-        'Users may type slash commands from the Telegram menu. Respond naturally:',
-        '/start - Greet them and introduce yourself as Claw.',
-        '/help - Explain what you can do: answer questions, analyze images, write code, create files, brainstorm, research.',
-        '/usage - Tell them to check their usage at liveclaw.xyz.',
-        '/export - Ask what they want exported, then create and send the file.',
-        '/clear - Acknowledge and say "Fresh start! What can I help you with?"',
-        'Treat these as regular messages. Never say "I received a /command" - just respond to the intent.',
+        'Telegram users have a menu of slash commands. Discord and Slack users can type the same words as regular messages.',
+        'Respond naturally to each:',
+        '/start   - Greet them: "Hey! I\'m Claw, your LiveClaw agent. What can I help you with?"',
+        '/help    - List capabilities plainly: answering questions, analysis, writing, coding, brainstorming, research, image analysis, sending files, scheduled reminders, saving notes to memory, running custom skills.',
+        '/status  - State current model and say MCP tools are active (file sending, image analysis, scheduling).',
+        '/memory  - Use the filesystem tool to read workspace/memory/MEMORY.md and workspace/memory/today\'s date file. Show the user their notes.',
+        '/remember <text> - Append the text to workspace/memory/ today\'s date file (YYYY-MM-DD.md). Confirm saved.',
+        '/skills  - List files in workspace/skills/. Show skill names and one-line descriptions from each SKILL.md.',
+        '/schedule - Use the cron tool with action "list" to show pending scheduled tasks.',
+        '/export  - Create a summary file of memory + key conversation points, then send it as a file attachment.',
+        '/clear   - Say "Fresh start! What can I help you with?" (picobot manages session history internally).',
+        '/usage   - Say "Check your usage and manage your plan at liveclaw.xyz".',
+        'Treat these as regular conversation. Never say "I received a /command" - just respond to the intent.',
         '',
         '## First Message',
         'Introduce yourself: "Hey! I\'m Claw, your LiveClaw agent. What can I help you with?"',
@@ -2052,6 +2070,11 @@ if (config.nodeEnv !== 'test') {
                     await stmt.updatePid(newPid, 'running', bot.user_id);
                     logEvent(bot.user_id, 'bot_restarted_after_deploy', { newPid });
                     log.startup.info('Bot auto-restarted after deploy', { userId: bot.user_id, newPid });
+
+                    // Apply Telegram bot menu on restart (non-blocking)
+                    if (channelOpts.telegramToken) {
+                        setTelegramBotMenu(channelOpts.telegramToken).catch(() => {});
+                    }
                 } catch (err) {
                     log.startup.error('Failed to auto-restart bot after deploy', { userId: bot.user_id, error: err.message });
                 }

@@ -82,6 +82,7 @@ function createAdminRouter(deps) {
         encryptToken,
         deactivateVirtualKeyWithRetry,
         MAX_CONCURRENT_BOTS,
+        setTelegramBotMenu,
     } = deps;
 
     const router = express.Router();
@@ -1175,6 +1176,28 @@ function createAdminRouter(deps) {
             total: allCodes.length,
             codes: allCodes,
         });
+    }));
+
+    // ─── POST /admin/bots/apply-menus — Apply Telegram Bot Menu to All Running Bots ─
+    // Pushes setMyCommands + description to every running bot with a Telegram token.
+    // Run this once after deploying a new menu update.
+    router.post('/bots/apply-menus', adminAuth, asyncHandler(async (req, res) => {
+        const bots = await db.all(
+            `SELECT user_id, telegram_token FROM bots WHERE status = 'running' AND telegram_token IS NOT NULL AND telegram_token != ''`
+        );
+        let applied = 0;
+        let failed = 0;
+        for (const bot of bots) {
+            try {
+                const token = decryptToken(bot.telegram_token);
+                await setTelegramBotMenu(token);
+                applied++;
+            } catch (_) {
+                failed++;
+            }
+        }
+        logEvent('system', 'admin_bot_menus_applied', { applied, failed, total: bots.length });
+        return res.json({ success: true, applied, failed, total: bots.length });
     }));
 
     // ─── GET /admin/beta-codes — List All Beta Codes with Analytics ─────────────
