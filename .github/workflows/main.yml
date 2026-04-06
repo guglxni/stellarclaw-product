@@ -411,8 +411,23 @@ jobs:
             DODO_WEBHOOK_SECRET=your_dodo_webhook_secret
             DODO_PRODUCT_ID=your_dodo_product_id
             MCP_SERVERS_CONFIG=
+            LIVECLAW_INTERNAL_SECRET=CHANGE_ME_run_openssl_rand_hex_32
+            ORCHESTRATOR_URL=http://localhost:3000
             ENVEOF
               echo "  Created .env with placeholders — SSH in and edit!"
+            fi
+
+            # ── Migrate existing .env: append any new vars that are missing ──────
+            # LIVECLAW_INTERNAL_SECRET — HMAC key for liveclaw-mcp → /internal/recharge
+            if ! grep -q '^LIVECLAW_INTERNAL_SECRET=' .env; then
+              GENERATED_SECRET=$(openssl rand -hex 32)
+              echo "LIVECLAW_INTERNAL_SECRET=${GENERATED_SECRET}" >> .env
+              echo "  Auto-generated LIVECLAW_INTERNAL_SECRET (saved to .env)"
+            fi
+            # ORCHESTRATOR_URL — base URL for internal MCP callbacks (always localhost)
+            if ! grep -q '^ORCHESTRATOR_URL=' .env; then
+              echo "ORCHESTRATOR_URL=http://localhost:3000" >> .env
+              echo "  Added ORCHESTRATOR_URL=http://localhost:3000"
             fi
 
             echo "=== 3/7 Start Bifrost gateway (critical) ==="
