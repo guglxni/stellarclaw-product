@@ -323,37 +323,6 @@ function createWebhookRouter(deps) {
                     } catch (_) { /* duplicate payment_id — idempotent */ }
                     logEvent(paymentUserId, 'payment_succeeded', { paymentId, amountCents, currency, plan });
 
-                    // ── Activate 48-hour trial if this was a trial product payment ──
-                    if (plan === 'trial') {
-                        const trialEndsAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-                        await stmtSubs.upsert({
-                            user_id: paymentUserId,
-                            dodo_customer_id: data?.customer?.customer_id || null,
-                            dodo_subscription_id: null,
-                            plan: 'standard',
-                            status: 'trialing',
-                            current_period_start: new Date().toISOString(),
-                            current_period_end: trialEndsAt,
-                        });
-                        await db.run(
-                            'UPDATE subscriptions SET trial_ends_at = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
-                            [trialEndsAt, paymentUserId]
-                        );
-
-                        // Resolve which beta code (if any) was claimed by this user and record it
-                        const betaCodeRecord = await db.get(
-                            'SELECT code FROM beta_codes WHERE redeemed_by = ?',
-                            [paymentUserId]
-                        );
-                        if (betaCodeRecord) {
-                            await stmtSubs.setBetaCodeUsed(betaCodeRecord.code, paymentUserId);
-                            logEvent(paymentUserId, 'trial_activated', { trialEndsAt, paymentId, betaCode: betaCodeRecord.code });
-                        } else {
-                            logEvent(paymentUserId, 'trial_activated', { trialEndsAt, paymentId });
-                        }
-                        break;
-                    }
-
                     // ── Credits top-up: add budget to user's Bifrost VK ──
                     if (plan === 'credits') {
                         const creditAmountUsd = parseFloat(data?.metadata?.credit_amount_usd || '0');

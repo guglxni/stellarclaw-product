@@ -55,7 +55,7 @@ const lines = [
     `# Generated: ${new Date().toISOString()}`,
     '# Format: XXXX-XXXX-XXXX (12 alphanumeric chars)',
     '# Total: 100 codes',
-    '# Usage: Enter at liveclaw.xyz to get 24h free trial ($0.00 via Dodo checkout)',
+    '# Usage: Enter at liveclaw.xyz to get first month for $0.99 (via Dodo checkout)',
     '#',
     '# WARNING: These codes are NOT synced to Dodo Payments by this script.',
     '# Register them via POST /admin/beta-codes/import before production use.',

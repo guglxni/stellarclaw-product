@@ -229,14 +229,14 @@ describe('verifyWebhookEvent()', () => {
 
 // ── createBetaDiscount ─────────────────────────────────────────────────────
 describe('createBetaDiscount()', () => {
-    it('creates 100% discount restricted to the standard product', async () => {
+    it('creates 90.09% discount ($0.99 first month) restricted to the standard product', async () => {
         mockDiscountsCreate.mockResolvedValue({ discount_id: 'disc_123', code: 'BETA-TEST' });
 
         const result = await dodo.createBetaDiscount('BETA-TEST');
 
         expect(result).toEqual({ discountId: 'disc_123', code: 'BETA-TEST' });
         const params = mockDiscountsCreate.mock.calls[0][0];
-        expect(params.amount).toBe(10000);
+        expect(params.amount).toBe(9009);
         expect(params.usage_limit).toBe(1);
         expect(params.subscription_cycles).toBe(1);
         expect(params.restricted_to).toContain('pdt_test_standard');

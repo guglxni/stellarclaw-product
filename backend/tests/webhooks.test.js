@@ -8,7 +8,6 @@
  *   - subscription.updated                        → period sync
  *   - subscription.plan_changed                   → logged, plan unchanged
  *   - payment.succeeded (plan=credits)            → credit top-up via Bifrost
- *   - payment.succeeded (plan=trial)              → trial activation
  *   - payment.failed                              → logged
  *   - Deduplication via webhook-id               → 200 but skips processing
  *   - Missing rawBody                             → 400
@@ -314,39 +313,6 @@ describe('payment.succeeded plan=credits → Bifrost top-up', () => {
         const res = await makeWebhookReq(app, event);
         expect(res.status).toBe(200);
         expect(mockFns.topUpCredits).not.toHaveBeenCalled();
-    });
-});
-
-// ─── payment.succeeded (trial activation) ─────────────────────────────────
-describe('payment.succeeded plan=trial → trial activation', () => {
-    it('creates trialing subscription with 48-hour window', async () => {
-        const userId = `trial-user-${Date.now()}`;
-
-        const event = {
-            type: 'payment.succeeded',
-            data: {
-                payment_id: `pay_trial_${Date.now()}`,
-                customer: { customer_id: 'cus_trial', email: 'trial@example.com' },
-                total_amount: 75,
-                currency: 'USD',
-                metadata: { liveclaw_user_id: userId, plan: 'trial' },
-            },
-        };
-        mockFns.verifyWebhookEvent.mockReturnValueOnce(event);
-
-        const res = await makeWebhookReq(app, event);
-        expect(res.status).toBe(200);
-
-        const sub = await stmtSubs.getByUserId(userId);
-        expect(sub).toBeDefined();
-        expect(sub.status).toBe('trialing');
-        expect(sub.plan).toBe('standard');
-
-        // Trial ends ~48h from now
-        const trialEnd = new Date(sub.trial_ends_at || sub.current_period_end);
-        const hoursRemaining = (trialEnd - Date.now()) / 3600000;
-        expect(hoursRemaining).toBeGreaterThan(47);
-        expect(hoursRemaining).toBeLessThan(49);
     });
 });
 
