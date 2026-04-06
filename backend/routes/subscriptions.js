@@ -261,8 +261,8 @@ function createSubscriptionRouter(deps) {
 
     // ─── POST /redeem-beta — Redeem a Beta Access Code via Dodo Checkout ────────
     // Validates the beta code in our DB, then creates a standard checkout with
-    // the code as a 90.09% discount coupon ($0.99 first month via subscription_cycles: 1).
-    // Dodo handles billing ($9.99 - 90.09% ≈ $0.99 first month), then charges normally.
+    // the code as a 100% discount coupon (first month free via subscription_cycles: 1).
+    // Dodo handles billing ($9.99 - 100% = $0.00 first month), then charges normally.
     router.post('/redeem-beta', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
         const { betaCode } = req.body;
         const userId = req.verifiedUserId || req.body?.userId;

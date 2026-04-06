@@ -202,7 +202,7 @@ async function createBetaDiscount(code) {
     const discount = await dodo.discounts.create({
         name: `Beta Code ${code}`,
         type: 'percentage',
-        amount: 9009, // 90.09% in basis points → $0.99 first month on $9.99 plan
+        amount: 10000, // 100.00% in basis points → first month free
         code,
         usage_limit: 1,
         restricted_to: [PRODUCT_ID],
