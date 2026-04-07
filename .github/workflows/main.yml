@@ -387,6 +387,32 @@ jobs:
               echo "  Snapshot saved to $RELEASE_DIR"
             fi
 
+            echo "=== 1b/7 Update picobot binary ==="
+            cd /opt/liveclaw/backend
+            CURRENT_VER=""
+            [ -f ".picobot-version" ] && CURRENT_VER=$(cat .picobot-version 2>/dev/null || echo "")
+            LATEST_VER=$(curl -sf https://api.github.com/repos/louisho5/picobot/releases/latest \
+              | grep -o '"tag_name":\s*"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+
+            if [ -n "$LATEST_VER" ] && [ "$CURRENT_VER" != "$LATEST_VER" ]; then
+              echo "  Updating picobot: ${CURRENT_VER:-none} → ${LATEST_VER}"
+              curl -fSL --retry 3 -o picobot.tmp \
+                "https://github.com/louisho5/picobot/releases/download/${LATEST_VER}/picobot_linux_amd64" 2>/dev/null
+              if [ -s picobot.tmp ]; then
+                # Stop running picobot processes gracefully before replacing binary
+                pkill -SIGTERM picobot 2>/dev/null || true
+                sleep 1
+                mv picobot.tmp picobot && chmod +x picobot
+                echo "$LATEST_VER" > .picobot-version
+                echo "  Picobot updated to $LATEST_VER — enableToolActivityIndicator will now work"
+              else
+                rm -f picobot.tmp
+                echo "  Warning: picobot download failed, keeping current version ${CURRENT_VER}"
+              fi
+            else
+              echo "  Picobot already at latest: ${CURRENT_VER:-unknown}"
+            fi
+
             echo "=== 2/7 Install dependencies ==="
             cd /opt/liveclaw/backend
             npm install --omit=dev --loglevel warn
