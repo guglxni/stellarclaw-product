@@ -783,6 +783,42 @@ describe('POST /internal/recharge', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// POST /purchase-credits
+// ═══════════════════════════════════════════════════════════════════════════
+describe('POST /purchase-credits', () => {
+    it('rejects missing userId', async () => {
+        const res = await request(app)
+            .post('/purchase-credits')
+            .send({ email: 'test@example.com', amount: 5 });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/userId/i);
+    });
+
+    it('rejects amount below minimum', async () => {
+        const res = await request(app)
+            .post('/purchase-credits')
+            .send({ userId: 'user1', email: 'test@example.com', amount: 0 });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/amount/i);
+    });
+
+    it('rejects amount above maximum', async () => {
+        const res = await request(app)
+            .post('/purchase-credits')
+            .send({ userId: 'user1', email: 'test@example.com', amount: 51 });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/amount/i);
+    });
+
+    it('rejects non-numeric amount', async () => {
+        const res = await request(app)
+            .post('/purchase-credits')
+            .send({ userId: 'user1', email: 'test@example.com', amount: 'five' });
+        expect(res.status).toBe(400);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Security Headers (Helmet)
 // ═══════════════════════════════════════════════════════════════════════════
 describe('Security headers', () => {
