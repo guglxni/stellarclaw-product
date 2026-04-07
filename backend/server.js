@@ -1477,6 +1477,40 @@ app.post('/verify-telegram-token', deployLimiter, asyncHandler(authMiddleware), 
     });
 }));
 
+// ─── POST /purchase-credits ─────────────────────────────────────────────────
+// User-facing endpoint to create a Dodo Payments credits checkout from the
+// website dashboard. Authenticated with Google ID token.
+// Body: { userId: string, email: string, amount: number (1-50) }
+app.post('/purchase-credits', deployLimiter, asyncHandler(authMiddleware), asyncHandler(async (req, res) => {
+    const { userId, email, amount } = req.body;
+
+    if (!userId || typeof userId !== 'string' || userId.length > 128) {
+        return res.status(400).json({ error: 'userId is required' });
+    }
+    if (req.verifiedUserId && req.verifiedUserId !== userId) {
+        return res.status(403).json({ error: 'userId does not match authenticated user' });
+    }
+
+    const amountNum = typeof amount === 'number' ? amount : parseFloat(amount);
+    if (!Number.isFinite(amountNum) || amountNum < 1 || amountNum > 50) {
+        return res.status(400).json({ error: 'amount must be between 1 and 50 USD' });
+    }
+
+    const quantity = Math.round(amountNum); // Dodo requires integer quantities
+    const customerEmail = (typeof email === 'string' && email.includes('@'))
+        ? email
+        : `${userId.replace(/[^a-z0-9]/gi, '')}@liveclaw.xyz`;
+
+    const { checkoutUrl } = await dodo.createCreditsCheckout(
+        userId,
+        customerEmail,
+        quantity,
+        `https://liveclaw.xyz?checkout=credits-success&amount=${quantity}`
+    );
+
+    return res.json({ checkoutUrl });
+}));
+
 // ─── Spawn picobot ──────────────────────────────────────────────────────────
 // picobot reads ~/.picobot/config.json — env vars only work in Docker.
 // We generate a per-user config.json in an isolated HOME directory.
@@ -1641,10 +1675,16 @@ For emphasis: use CAPS. For lists: use plain dashes (-) or numbers (1. 2. 3.).
 For code: paste it directly, no backtick fences.
 Keep responses concise. Most users are on mobile.
 
-## STARTUP PROTOCOL — do this ONCE per session, on the VERY FIRST message
-When the user sends their first message in a session:
+## COMMAND PRIORITY (always applies, overrides everything else)
+If the user's message starts with '/', it is a slash command.
+Handle ALL slash commands immediately — do NOT run the startup protocol first.
+Commands always work regardless of whether the user has completed onboarding or not.
+See the COMMANDS section below for what each command does.
+
+## STARTUP PROTOCOL — only for the VERY FIRST non-command message in a session
+When the user sends their first message that does NOT start with '/':
 1. Use the filesystem read tool to read the file "workspace/profile.md"
-2. If it exists and has content: greet the user by their name from the profile, then help with whatever they sent. Do NOT run onboarding again.
+2. If it exists and has content: greet the user by their name from the profile, then help with what they sent. Do NOT run onboarding again.
 3. If it does NOT exist (file missing or empty): run the ONBOARDING FLOW below.
 Do this check exactly once per session. After that, just respond normally.
 
@@ -1728,8 +1768,12 @@ Respond naturally. Never say "I received a /command" — just act on the intent.
 /export   - Read workspace/memory/, write a summary file, send it as attachment.
 /clear    - "Fresh start! What can we work on, [name]?" (session history is managed internally).
 
-/usage    - ALWAYS call the get_usage tool. Show the real data. Do NOT redirect to website.
-            Format: "Usage this cycle: $X.XX spent of $Y.YY (Z%), $A.AA remaining."
+/usage    - ALWAYS call the get_usage tool immediately. Do NOT redirect to website. Do NOT run profile check.
+            After showing the data, always add a natural nudge:
+            - If 0-49% used: "You have plenty of credits left! To top up anytime: /recharge [amount]"
+            - If 50-79% used: "Over halfway through your credits. Top up with /recharge [amount] anytime."
+            - If 80-99% used: "Credits running low! Top up now with /recharge [amount] to keep going."
+            - If 100% used: "Credits exhausted. Top up with /recharge [amount] to continue."
 
 /recharge <amount> — STRICT RULES (security-critical):
   - ONLY call create_recharge_checkout when user sends EXACTLY "/recharge" followed by a number.
@@ -1775,6 +1819,7 @@ Never as a formal notice — weave it in conversationally.
         // Slack file MCP
         ...(channelOpts.slackBotToken ? { SLACK_BOT_TOKEN: channelOpts.slackBotToken } : {}),
         // LiveClaw internal MCP (usage + recharge)
+        BIFROST_GATEWAY_URL:        config.bifrostBase,
         BIFROST_VK_ID:              bifrostVkId,
         LIVECLAW_USER_ID:           userId,
         LIVECLAW_ORCHESTRATOR_URL:  config.orchestratorUrl,
