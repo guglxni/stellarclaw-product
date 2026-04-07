@@ -88,7 +88,7 @@ function createSubscriptionRouter(deps) {
                 });
             }
             earlyBird = true;
-            discountCode = 'EARLYCLAW'; // Dodo applies 25% off first month → $7.49, then $9.99/mo
+            discountCode = 'EARLYCLAW'; // Dodo applies 30% off first month → $6.99, then $9.99/mo
             logEvent(userId, 'promo_code_applied', { code: 'EARLYCLAW', spotsRemaining: 500 - usedCount });
         }
 
@@ -238,7 +238,7 @@ function createSubscriptionRouter(deps) {
                 earlyClaw: {
                     id: 'standard',
                     name: 'Early Claw',
-                    firstMonthPrice: 7.49,
+                    firstMonthPrice: 6.99,
                     price: 9.99,
                     currency: 'usd',
                     interval: 'month',
@@ -247,7 +247,7 @@ function createSubscriptionRouter(deps) {
                     promoCode: 'EARLYCLAW',
                     spotsRemaining: Math.max(0, 500 - earlyBirdUsed),
                     features: [
-                        'First month $7.49, then $9.99/mo',
+                        'First month $6.99, then $9.99/mo',
                         '24/7 AI agent on Telegram, Discord, Slack & WhatsApp',
                         '6 AI models — MiniMax, MiMo, GLM-5, DeepSeek & more',
                         'Custom personality (SOUL.md)',

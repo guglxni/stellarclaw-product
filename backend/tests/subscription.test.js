@@ -88,7 +88,7 @@ describe('GET /pricing', () => {
         // Early Claw plan
         expect(res.body.plans.earlyClaw).toBeDefined();
         expect(res.body.plans.earlyClaw.price).toBe(9.99);
-        expect(res.body.plans.earlyClaw.firstMonthPrice).toBe(7.49);
+        expect(res.body.plans.earlyClaw.firstMonthPrice).toBe(6.99);
         expect(res.body.plans.earlyClaw.promoCode).toBe('EARLYCLAW');
         expect(typeof res.body.plans.earlyClaw.spotsRemaining).toBe('number');
     });

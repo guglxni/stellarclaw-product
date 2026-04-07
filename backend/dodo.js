@@ -44,7 +44,7 @@ function getClient() {
 
 // ─── Product IDs ─────────────────────────────────────────────────────────────
 // Standard plan: $9.99/mo
-// Apply EARLYCLAW promo code → 25% off first month → $7.49 first month, then $9.99/mo (first 500)
+// Apply EARLYCLAW promo code → 30% off first month → $6.99 first month, then $9.99/mo (first 500)
 const PRODUCT_ID = process.env.DODO_PRODUCT_ID || '';
 // Credits: one-time purchase to top up LLM budget via Bifrost VK
 const CREDITS_PRODUCT_ID = process.env.DODO_CREDITS_PRODUCT_ID || '';
@@ -202,7 +202,7 @@ async function createBetaDiscount(code) {
     const discount = await dodo.discounts.create({
         name: `Beta Code ${code}`,
         type: 'percentage',
-        amount: 10000, // 100.00% in basis points → first month free
+        amount: 9009, // 90.09% in basis points → $0.99 first month ($9.99 × 0.0991 ≈ $0.99)
         code,
         usage_limit: 1,
         restricted_to: [PRODUCT_ID],

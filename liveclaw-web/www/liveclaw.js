@@ -794,7 +794,7 @@
             const slotsLeft = earlyClaw ? Math.max(0, earlyClaw.spotsRemaining) : 0;
             const slotColor = slotsLeft < 50 ? '#f87171' : slotsLeft < 150 ? '#fb923c' : '#38bdf8';
             const slotSpan = slotsLeft > 0
-                ? ` <span style="color:${slotColor}; font-weight:500;">🦞 Early Claw: $7.49 first month (25% off) \u2014 ${slotsLeft} of 500 spots left</span>`
+                ? ` <span style="color:${slotColor}; font-weight:500;">🦞 Early Claw: $6.99 first month (30% off) \u2014 ${slotsLeft} of 500 spots left</span>`
                 : '';
 
             var hasChannelForPricing = state.telegramToken || state.discordToken || (state.slackAppToken && state.slackBotToken);
@@ -1312,7 +1312,7 @@
                     <span style="font-size:0.75rem;color:${spotsLeft < 50 ? '#f87171' : '#a1a1aa'};font-weight:500;white-space:nowrap;">${spotsLeft} spots left</span>
                 </div>`;
 
-            // Early Claw card (left) - 25% off first month ($7.49), then $9.99/mo
+            // Early Claw card (left) - 30% off first month ($6.99), then $9.99/mo
             const earlyClawCardHtml = showEarlyClaw ? `
                 <div style="flex:1;min-width:0;position:relative;border-radius:0.75rem;border:1px solid rgba(245,158,11,0.4);background:rgba(255,255,255,0.03);padding:1.25rem;display:flex;flex-direction:column;gap:0.625rem;">
                     <span style="position:absolute;top:-0.625rem;left:50%;transform:translateX(-50%);background:#f59e0b;color:#fff;font-size:0.7rem;font-weight:600;padding:0.125rem 0.625rem;border-radius:9999px;white-space:nowrap;">25% Off - First 500</span>
