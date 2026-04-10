@@ -522,7 +522,7 @@ jobs:
 
             # ── Server-side nginx watchdog (uses the version uploaded via SCP)
             chmod +x /opt/liveclaw/scripts/nginx-watchdog.sh 2>/dev/null || true
-            (crontab -l 2>/dev/null | grep -v nginx-watchdog; \
+            ({ crontab -l 2>/dev/null || true; } | grep -v nginx-watchdog; \
              echo "*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh") | crontab -
             echo "  Nginx watchdog cron installed"
 
@@ -659,7 +659,7 @@ jobs:
 
             # ── Install nginx watchdog cron (SCP already uploaded scripts/ here)
             chmod +x /opt/liveclaw/scripts/nginx-watchdog.sh 2>/dev/null || true
-            (crontab -l 2>/dev/null | grep -v nginx-watchdog; \
+            ({ crontab -l 2>/dev/null || true; } | grep -v nginx-watchdog; \
              echo "*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh") | crontab -
             echo "  Nginx watchdog cron installed"
 
