@@ -274,6 +274,19 @@ jobs:
             ufw allow 'Nginx Full'
 
             systemctl enable --now docker
+            systemctl enable nginx  # ensure nginx starts on every reboot
+
+            # ── Systemd auto-restart for nginx (survives crashes without a deploy)
+            mkdir -p /etc/systemd/system/nginx.service.d/
+            cat > /etc/systemd/system/nginx.service.d/restart.conf << 'SYSD'
+[Service]
+Restart=always
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+SYSD
+            systemctl daemon-reload
+
             # Install docker compose plugin if missing
             if ! docker compose version &>/dev/null; then
               DOCKER_CONFIG=${DOCKER_CONFIG:-/usr/local/lib/docker}
@@ -496,15 +509,52 @@ jobs:
               pm2 start server.js --name "liveclaw-orchestrator" --max-memory-restart 512M
             fi
             pm2 save
-            pm2 startup 2>/dev/null | tail -n 1 | bash 2>/dev/null || true
 
-            echo "=== 6/7 Nginx ==="
+            echo "=== 6/7 Nginx + service hardening ==="
+            # Ensure nginx is enabled at boot and has auto-restart on crash (idempotent)
+            mkdir -p /etc/systemd/system/nginx.service.d/
+            cat > /etc/systemd/system/nginx.service.d/restart.conf << 'SYSD'
+[Service]
+Restart=always
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+SYSD
+            systemctl daemon-reload
+            systemctl enable nginx
+
             nginx -t
             if systemctl is-active --quiet nginx; then
               systemctl reload nginx && echo "Nginx reloaded"
             else
               systemctl start nginx && echo "Nginx started (was inactive)"
             fi
+
+            # ── Server-side nginx watchdog (last line of defence if systemd restart fails)
+            mkdir -p /opt/liveclaw/scripts
+            cat > /opt/liveclaw/scripts/nginx-watchdog.sh << 'WATCHDOG'
+#!/bin/bash
+# Nginx watchdog — runs every 2 min via cron, restarts nginx if it ever goes down
+if ! systemctl is-active --quiet nginx; then
+  logger -t liveclaw-watchdog "WARN: nginx not active — attempting restart"
+  systemctl start nginx
+  sleep 3
+  if systemctl is-active --quiet nginx; then
+    logger -t liveclaw-watchdog "OK: nginx restarted successfully"
+  else
+    logger -t liveclaw-watchdog "ERROR: nginx failed to restart — check journalctl -u nginx"
+  fi
+fi
+WATCHDOG
+            chmod +x /opt/liveclaw/scripts/nginx-watchdog.sh
+            # Install cron entry (idempotent)
+            (crontab -l 2>/dev/null | grep -v nginx-watchdog; \
+             echo "*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh") | crontab -
+            echo "  Nginx watchdog cron installed"
+
+            # ── Ensure PM2 survives reboots (idempotent startup hook)
+            pm2 startup 2>/dev/null | grep "sudo\|bash -c" | tail -n 1 | bash 2>/dev/null || true
+            pm2 save --force 2>/dev/null || pm2 save
 
             echo "=== 7/7 Health check with retry ==="
             HEALTHY=false
@@ -604,13 +654,13 @@ jobs:
             exit 1
           fi
 
-      - name: Upload frontend
+      - name: Upload frontend + scripts
         uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.DO_FRONTEND_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
-          source: "liveclaw-web/www/"
+          source: "liveclaw-web/www/,scripts/"
           target: /opt/liveclaw
           overwrite: true
           strip_components: 0
@@ -625,6 +675,41 @@ jobs:
           script: |
             set -euo pipefail
             rsync -a --delete /opt/liveclaw/liveclaw-web/www/ /opt/liveclaw/frontend/
+
+            # ── Service hardening (idempotent — runs on every deploy)
+            mkdir -p /etc/systemd/system/nginx.service.d/
+            cat > /etc/systemd/system/nginx.service.d/restart.conf << 'SYSD'
+[Service]
+Restart=always
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+SYSD
+            systemctl daemon-reload
+            systemctl enable nginx  # ensure nginx starts on every reboot
+
+            # ── Install nginx watchdog cron (catches crashes systemd drop-in misses)
+            mkdir -p /opt/liveclaw/scripts
+            cat > /opt/liveclaw/scripts/nginx-watchdog.sh << 'WATCHDOG'
+#!/bin/bash
+# Nginx watchdog — runs every 2 min via cron, restarts nginx if it ever goes down
+if ! systemctl is-active --quiet nginx; then
+  logger -t liveclaw-watchdog "WARN: nginx not active — attempting restart"
+  systemctl start nginx
+  sleep 3
+  if systemctl is-active --quiet nginx; then
+    logger -t liveclaw-watchdog "OK: nginx restarted successfully"
+  else
+    logger -t liveclaw-watchdog "ERROR: nginx failed to restart — check journalctl -u nginx"
+  fi
+fi
+WATCHDOG
+            chmod +x /opt/liveclaw/scripts/nginx-watchdog.sh
+            (crontab -l 2>/dev/null | grep -v nginx-watchdog; \
+             echo "*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh") | crontab -
+            echo "  Nginx watchdog cron installed"
+
+            # ── Start or reload nginx
             nginx -t
             if systemctl is-active --quiet nginx; then
               systemctl reload nginx
@@ -634,7 +719,7 @@ jobs:
               echo "Nginx started (was inactive)"
             fi
 
-            # Verify frontend is serving (follow redirects; 80→443 redirect is fine)
+            # ── Verify frontend is serving (follow redirects; 80→443 is fine)
             sleep 2
             HTTP_CODE=$(curl -sL -o /dev/null -w "%{http_code}" http://localhost/ || echo "000")
             echo "Frontend health: HTTP $HTTP_CODE"
