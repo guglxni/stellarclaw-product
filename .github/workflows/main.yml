@@ -522,8 +522,9 @@ jobs:
 
             # ── Server-side nginx watchdog (uses the version uploaded via SCP)
             chmod +x /opt/liveclaw/scripts/nginx-watchdog.sh 2>/dev/null || true
-            ({ crontab -l 2>/dev/null || true; } | grep -v nginx-watchdog; \
-             echo "*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh") | crontab -
+            _existing_cron=$(crontab -l 2>/dev/null || true)
+            _filtered=$(printf '%s\n' "$_existing_cron" | grep -v nginx-watchdog || true)
+            printf '%s\n*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh\n' "$_filtered" | crontab -
             echo "  Nginx watchdog cron installed"
 
             # ── Ensure PM2 survives reboots (idempotent startup hook)
@@ -659,8 +660,9 @@ jobs:
 
             # ── Install nginx watchdog cron (SCP already uploaded scripts/ here)
             chmod +x /opt/liveclaw/scripts/nginx-watchdog.sh 2>/dev/null || true
-            ({ crontab -l 2>/dev/null || true; } | grep -v nginx-watchdog; \
-             echo "*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh") | crontab -
+            _existing_cron=$(crontab -l 2>/dev/null || true)
+            _filtered=$(printf '%s\n' "$_existing_cron" | grep -v nginx-watchdog || true)
+            printf '%s\n*/2 * * * * /opt/liveclaw/scripts/nginx-watchdog.sh\n' "$_filtered" | crontab -
             echo "  Nginx watchdog cron installed"
 
             # ── Start or reload nginx
