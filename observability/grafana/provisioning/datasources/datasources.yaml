@@ -21,7 +21,7 @@ datasources:
       lokiSearch:
         datasourceUid: ""
 
-  # Prometheus — Bifrost native metrics + OTel-derived metrics
+  # Prometheus — Bifrost native metrics + OTel-derived metrics + uptime probes
   - name: Prometheus
     type: prometheus
     access: proxy
@@ -32,3 +32,12 @@ datasources:
       exemplarTraceIdDestinations:
         - name: traceID
           datasourceUid: tempo
+
+  # Alertmanager — alert management UI datasource
+  - name: Alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    uid: alertmanager
+    jsonData:
+      implementation: prometheus

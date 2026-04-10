@@ -1,0 +1,83 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LiveClaw Uptime Alert Rules
+# Evaluated by Prometheus; routed to email via Alertmanager
+# ─────────────────────────────────────────────────────────────────────────────
+groups:
+  - name: liveclaw-uptime
+    interval: 30s
+    rules:
+
+      # ── Endpoint Down ──────────────────────────────────────────────────────
+      # Fires when any probed endpoint fails for > 2 minutes.
+      # 2m grace avoids flapping alerts from transient network hiccups.
+      - alert: EndpointDown
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: liveclaw
+        annotations:
+          summary: "🔴 {{ $labels.instance }} is DOWN"
+          description: >
+            The endpoint {{ $labels.instance }} has been unreachable for
+            more than 2 minutes. Probe module: {{ $labels.module }}.
+            Check Nginx, PM2, and Docker on the affected server.
+
+      # ── High Response Time ─────────────────────────────────────────────────
+      # Fires when p50 response time stays above 3 seconds for 5 minutes.
+      - alert: SlowResponseTime
+        expr: probe_duration_seconds > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: liveclaw
+        annotations:
+          summary: "🟡 Slow response on {{ $labels.instance }}"
+          description: >
+            {{ $labels.instance }} is responding slowly ({{ $value | printf "%.2f" }}s,
+            threshold: 3s) for 5+ minutes. May indicate high load or a memory leak.
+
+      # ── SSL Certificate Expiry ─────────────────────────────────────────────
+      # Warning 14 days before expiry; critical 3 days before.
+      - alert: SSLCertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels:
+          severity: warning
+          team: liveclaw
+        annotations:
+          summary: "🔒 SSL cert expiring in {{ $value | printf \"%.0f\" }} days — {{ $labels.instance }}"
+          description: >
+            SSL certificate for {{ $labels.instance }} expires in
+            {{ $value | printf "%.0f" }} days. Renew via Certbot / Let's Encrypt.
+
+      - alert: SSLCertExpiringCritical
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 3
+        for: 30m
+        labels:
+          severity: critical
+          team: liveclaw
+        annotations:
+          summary: "🚨 SSL cert expires in {{ $value | printf \"%.0f\" }} days — {{ $labels.instance }}"
+          description: >
+            URGENT: SSL certificate for {{ $labels.instance }} expires in
+            {{ $value | printf "%.0f" }} days. Site will show security errors.
+            Run: certbot renew --force-renewal
+
+  - name: liveclaw-api
+    interval: 30s
+    rules:
+
+      # ── API Health Degraded ────────────────────────────────────────────────
+      # Fires when the health endpoint returns a non-"ok" body
+      - alert: APIHealthDegraded
+        expr: probe_success{module="http_api_health"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: liveclaw
+        annotations:
+          summary: "🔴 API health check failing — {{ $labels.instance }}"
+          description: >
+            The LiveClaw API health endpoint {{ $labels.instance }} is not
+            returning {"status":"ok"}. Check PM2 logs: pm2 logs liveclaw-orchestrator

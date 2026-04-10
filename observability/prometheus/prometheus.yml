@@ -5,12 +5,26 @@
 #   1. Bifrost /metrics          — LLM request metrics (tokens, cost, latency)
 #   2. OTel Collector /metrics   — Collector-derived metrics from OTLP pipeline
 #   3. OTel Collector internal   — Collector health metrics
+#   4. Blackbox Exporter         — External HTTP endpoint probes (uptime)
+#
+# Alerts routed to Alertmanager → email via Gmail SMTP
 # ═══════════════════════════════════════════════════════════════════════════
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
   scrape_timeout: 10s
+
+# ── Alert rule files ──────────────────────────────────────────────────────────
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+# ── Alertmanager integration ──────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+      timeout: 10s
 
 scrape_configs:
   # Bifrost native Prometheus metrics
@@ -39,3 +53,40 @@ scrape_configs:
       - targets: ["otel-collector:8888"]
         labels:
           component: "collector-health"
+
+  # ── Blackbox Exporter — external endpoint probes (uptime) ─────────────────
+  # Each target is probed from inside Docker → internet → back.
+  # probe_success=1 = reachable + expected HTTP status + body check (for API).
+
+  - job_name: "blackbox-frontend"
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - "https://liveclaw.xyz"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "blackbox:9115"
+    scrape_interval: 30s
+
+  - job_name: "blackbox-api"
+    metrics_path: /probe
+    params:
+      module: [http_api_health]
+    static_configs:
+      - targets:
+          - "https://api.liveclaw.xyz/health"
+          - "https://api.liveclaw.xyz/readyz"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "blackbox:9115"
+    scrape_interval: 30s

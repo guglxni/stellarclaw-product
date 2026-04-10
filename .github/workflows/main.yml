@@ -464,6 +464,27 @@ jobs:
               echo "ORCHESTRATOR_URL=http://localhost:3000" >> .env
               echo "  Added ORCHESTRATOR_URL=http://localhost:3000"
             fi
+            # GMAIL_APP_PASSWORD — used by Alertmanager + Grafana for email notifications
+            # Set via: echo "GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx" >> /opt/liveclaw/backend/.env
+            # Get App Password at: https://myaccount.google.com/apppasswords
+            if ! grep -q '^GMAIL_APP_PASSWORD=' .env; then
+              echo "GMAIL_APP_PASSWORD=SET_THIS_gmail_app_password_16chars" >> .env
+              echo "  Added GMAIL_APP_PASSWORD placeholder — set it in .env to enable email alerts!"
+            fi
+
+            # Inject Gmail App Password into Alertmanager config at deploy time
+            # (avoids storing credentials in git)
+            _gmail_pw=$(grep '^GMAIL_APP_PASSWORD=' /opt/liveclaw/backend/.env | cut -d= -f2- | sed 's/[\/&]/\\&/g')
+            if [ -n "$_gmail_pw" ] && [ "$_gmail_pw" != "SET_THIS_gmail_app_password_16chars" ]; then
+              sed "s/GMAIL_APP_PASSWORD_PLACEHOLDER/$_gmail_pw/g" \
+                /opt/liveclaw/observability/alertmanager/alertmanager.yml \
+                > /tmp/alertmanager-rendered.yml
+              mv /tmp/alertmanager-rendered.yml \
+                /opt/liveclaw/observability/alertmanager/alertmanager.yml
+              echo "  Alertmanager config updated with Gmail credentials"
+            else
+              echo "  WARN: GMAIL_APP_PASSWORD not set — email alerts disabled until configured"
+            fi
 
             echo "=== 3/7 Start Bifrost gateway (critical) ==="
             cd /opt/liveclaw
@@ -493,6 +514,7 @@ jobs:
             (
               set +e
               export GF_ADMIN_PASSWORD="${GF_ADMIN_PASSWORD:-changeme-generate-a-real-password}"
+              export GMAIL_APP_PASSWORD=$(grep '^GMAIL_APP_PASSWORD=' /opt/liveclaw/backend/.env | cut -d= -f2- || true)
               docker compose -f docker-compose.observability.yml up -d 2>&1
               echo "  Observability stack launched"
             ) || echo "  Warning: observability stack failed (non-blocking)"
