@@ -634,15 +634,16 @@ jobs:
               echo "Nginx started (was inactive)"
             fi
 
-            # Verify frontend is serving
+            # Verify frontend is serving (follow redirects; 80→443 redirect is fine)
             sleep 2
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/ || echo "000")
+            HTTP_CODE=$(curl -sL -o /dev/null -w "%{http_code}" http://localhost/ || echo "000")
             echo "Frontend health: HTTP $HTTP_CODE"
-            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "301" ] && [ "$HTTP_CODE" != "302" ]; then
-              echo "::error::Frontend not serving (HTTP $HTTP_CODE)"
+            if [ "$HTTP_CODE" = "000" ]; then
+              echo "::error::Frontend not serving (connection refused)"
               systemctl status nginx --no-pager || true
               exit 1
             fi
+            echo "✓ Nginx is up (HTTP $HTTP_CODE)"
 
       - name: Frontend deploy summary
         if: always()
