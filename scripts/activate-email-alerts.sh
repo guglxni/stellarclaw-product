@@ -83,6 +83,10 @@ echo -e "  ${GREEN}✓ SSH connection OK${NC}"
 $SSH_CMD bash <<EOF
 set -euo pipefail
 
+# Create directory + file if they don't exist yet
+mkdir -p "$(dirname "${ENV_FILE}")"
+touch "${ENV_FILE}"
+
 # Remove any existing GMAIL_APP_PASSWORD line then append the new one
 sed -i '/^GMAIL_APP_PASSWORD=/d' "${ENV_FILE}"
 echo "GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD}" >> "${ENV_FILE}"
