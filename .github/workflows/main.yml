@@ -499,7 +499,12 @@ jobs:
             pm2 startup 2>/dev/null | tail -n 1 | bash 2>/dev/null || true
 
             echo "=== 6/7 Nginx ==="
-            nginx -t && systemctl reload nginx || echo "Nginx config unchanged"
+            nginx -t
+            if systemctl is-active --quiet nginx; then
+              systemctl reload nginx && echo "Nginx reloaded"
+            else
+              systemctl start nginx && echo "Nginx started (was inactive)"
+            fi
 
             echo "=== 7/7 Health check with retry ==="
             HEALTHY=false
@@ -620,11 +625,24 @@ jobs:
           script: |
             set -euo pipefail
             rsync -a --delete /opt/liveclaw/liveclaw-web/www/ /opt/liveclaw/frontend/
-            nginx -t && systemctl reload nginx || echo "Nginx unchanged"
+            nginx -t
+            if systemctl is-active --quiet nginx; then
+              systemctl reload nginx
+              echo "Nginx reloaded"
+            else
+              systemctl start nginx
+              echo "Nginx started (was inactive)"
+            fi
 
             # Verify frontend is serving
+            sleep 2
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/ || echo "000")
             echo "Frontend health: HTTP $HTTP_CODE"
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "301" ] && [ "$HTTP_CODE" != "302" ]; then
+              echo "::error::Frontend not serving (HTTP $HTTP_CODE)"
+              systemctl status nginx --no-pager || true
+              exit 1
+            fi
 
       - name: Frontend deploy summary
         if: always()
