@@ -468,6 +468,16 @@ jobs:
               echo "ORCHESTRATOR_URL=http://localhost:3000" >> .env
               echo "  Added ORCHESTRATOR_URL=http://localhost:3000"
             fi
+            # OCR_MODEL — dedicated document OCR model (separate from VISION_MODEL for tuning)
+            if ! grep -q '^OCR_MODEL=' .env; then
+              echo "OCR_MODEL=qwen/qwen3-vl-32b-instruct" >> .env
+              echo "  Added OCR_MODEL=qwen/qwen3-vl-32b-instruct"
+            fi
+            # VISION_MODEL — general image analysis (separate from OCR)
+            if ! grep -q '^VISION_MODEL=' .env; then
+              echo "VISION_MODEL=google/gemini-2.0-flash-lite-001" >> .env
+              echo "  Added VISION_MODEL=google/gemini-2.0-flash-lite-001"
+            fi
             # GMAIL_APP_PASSWORD — used by Alertmanager + Grafana for email notifications
             # Set via: echo "GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx" >> /opt/liveclaw/backend/.env
             # Get App Password at: https://myaccount.google.com/apppasswords

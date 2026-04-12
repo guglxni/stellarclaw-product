@@ -220,7 +220,10 @@ async function downloadTelegramFile(fileId, fileName) {
 
 // Vision model config — inherited from picobot spawn env
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const VISION_MODEL       = process.env.VISION_MODEL || 'google/gemini-2.0-flash-001';
+// OCR_MODEL: dedicated document understanding model (Qwen3-VL, purpose-built for OCR/text extraction)
+// VISION_MODEL: general image analysis (used by vision-mcp.js for photos)
+const OCR_MODEL    = process.env.OCR_MODEL    || 'qwen/qwen3-vl-32b-instruct';
+const VISION_MODEL = process.env.VISION_MODEL || 'google/gemini-2.0-flash-lite-001';
 
 /**
  * Extract text from a PDF file using pdftotext (poppler-utils).
@@ -269,10 +272,17 @@ function pdfToImages(pdfPath, maxPages = 3, dpi = 150) {
  * Sends images as base64 data URLs — no HTTPS hosting required.
  * Caps at 3 pages and truncates to keep token usage reasonable.
  */
+/**
+ * OCR a set of image files via the dedicated OCR model (Qwen3-VL-32B by default).
+ * Uses OCR_MODEL env var — separate from VISION_MODEL so they can be tuned independently.
+ * Qwen3-VL is purpose-built for document understanding, better + cheaper for dense text than Gemini.
+ *
+ * Sends pages as base64 data URLs — no HTTPS hosting required.
+ */
 async function ocrImagesViaVision(imagePaths) {
     if (!OPENROUTER_API_KEY || imagePaths.length === 0) return null;
 
-    // Build content blocks: one per image
+    // Build one content block per page image
     const imageContent = imagePaths.slice(0, 3).map(imgPath => {
         const ext = path.extname(imgPath).slice(1).toLowerCase() || 'png';
         const mimeType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
@@ -289,7 +299,7 @@ async function ocrImagesViaVision(imagePaths) {
             ...imageContent,
             {
                 type: 'text',
-                text: 'Extract all text from these PDF page images. Output only the raw text content, preserving structure where helpful. Do not add commentary.',
+                text: 'Extract all text from these PDF page images. Output only the raw text content, preserving structure (headings, tables, lists) where present. Do not add commentary, summaries, or formatting symbols not in the original.',
             },
         ],
     }];
@@ -302,7 +312,7 @@ async function ocrImagesViaVision(imagePaths) {
                 'Content-Type': 'application/json',
                 'X-Title': 'LiveClaw PDF OCR',
             },
-            body: JSON.stringify({ model: VISION_MODEL, messages, max_tokens: 4096 }),
+            body: JSON.stringify({ model: OCR_MODEL, messages, max_tokens: 4096 }),
         });
         if (!res.ok) return null;
         const data = await res.json();
@@ -422,44 +432,41 @@ Always call this tool first before telling the user you cannot read their file.`
                 const localPath = await downloadTelegramFile(doc.file_id, doc.file_name);
                 const fileName = path.basename(localPath);
 
-                // For PDFs: pdftotext first (fast, text-based PDFs), then vision OCR fallback (scanned/image PDFs)
+                // For PDFs: vision OCR is primary (Qwen3-VL-32B, purpose-built for documents).
+                // pdftotext runs in parallel as a fast free path — whichever gives better output wins.
                 const isPdf = (doc.mime_type || '').includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
                 if (isPdf) {
                     const fileSizeKb = Math.round((doc.file_size || 0) / 1024);
 
-                    // 1. Try pdftotext (instant, handles text-embedded PDFs)
-                    const textContent = await extractPdfText(localPath);
-                    if (textContent) {
+                    // Run vision OCR (primary) and pdftotext (free fast path) in parallel
+                    const pageImages = await pdfToImages(localPath, 3, 150);
+                    const [ocrText, pdfText] = await Promise.all([
+                        ocrImagesViaVision(pageImages),
+                        extractPdfText(localPath),
+                    ]);
+                    // Clean up temp page images
+                    for (const img of pageImages) { try { fs.unlinkSync(img); } catch (_) {} }
+
+                    // Prefer vision OCR result (higher quality for layout/tables/scanned content).
+                    // Fall back to pdftotext if OCR failed but pdftext succeeded.
+                    const text     = ocrText || pdfText;
+                    const method   = ocrText ? `vision OCR via ${OCR_MODEL}` : 'pdftotext';
+                    const pageNote = pageImages.length > 0 ? ` — ${pageImages.length} page${pageImages.length > 1 ? 's' : ''} analysed` : '';
+
+                    if (text) {
                         return {
                             content: [{
                                 type: 'text',
-                                text: `PDF received: "${fileName}" (${fileSizeKb}KB)\n\nExtracted text:\n\n${textContent.slice(0, 8000)}${textContent.length > 8000 ? '\n\n[Content truncated at 8000 chars — full file saved to workspace]' : ''}`,
+                                text: `PDF received: "${fileName}" (${fileSizeKb}KB, ${method}${pageNote})\n\nExtracted text:\n\n${text.slice(0, 8000)}${text.length > 8000 ? '\n\n[Truncated at 8000 chars — full file saved to workspace]' : ''}`,
                             }],
                         };
                     }
 
-                    // 2. Scanned/image PDF — convert pages to images then OCR via vision model
-                    const pageImages = await pdfToImages(localPath, 3, 150);
-                    if (pageImages.length > 0) {
-                        const ocrText = await ocrImagesViaVision(pageImages);
-                        // Clean up temp page images
-                        for (const img of pageImages) { try { fs.unlinkSync(img); } catch (_) {} }
-
-                        if (ocrText) {
-                            return {
-                                content: [{
-                                    type: 'text',
-                                    text: `PDF received: "${fileName}" (${fileSizeKb}KB, scanned — OCR applied to first ${pageImages.length} page${pageImages.length > 1 ? 's' : ''})\n\nOCR text:\n\n${ocrText.slice(0, 8000)}${ocrText.length > 8000 ? '\n\n[Content truncated — full file saved to workspace]' : ''}`,
-                                }],
-                            };
-                        }
-                    }
-
-                    // 3. All extraction failed
+                    // Both paths failed
                     return {
                         content: [{
                             type: 'text',
-                            text: `PDF received: "${fileName}" (${fileSizeKb}KB) but text could not be extracted (may be a protected or highly complex scanned PDF). File saved to workspace. Ask the user to paste the key text or send photos of the important pages.`,
+                            text: `PDF received: "${fileName}" (${fileSizeKb}KB) but text could not be extracted (protected or corrupted PDF). File saved to workspace. Ask the user to paste the key text or send screenshots of the important pages.`,
                         }],
                     };
                 }

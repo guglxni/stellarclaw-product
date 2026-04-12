@@ -101,7 +101,11 @@ const config = Object.freeze({
     // Vision MCP — image analysis tool injected into every picobot instance
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     visionDailyLimit: parseInt(process.env.VISION_DAILY_LIMIT || '80', 10),
-    visionModel: process.env.VISION_MODEL || 'google/gemini-2.0-flash-001',
+    // General image analysis — flash-lite is 25% cheaper than flash-001, same quality for vision
+    visionModel: process.env.VISION_MODEL || 'google/gemini-2.0-flash-lite-001',
+    // Dedicated OCR model — Qwen3-VL-32B is purpose-built for document understanding ($0.104/M tokens)
+    // Cheaper + better quality than gemini-flash for scanned PDFs and dense text layouts
+    ocrModel: process.env.OCR_MODEL || 'qwen/qwen3-vl-32b-instruct',
     // LiveClaw internal MCP — usage + recharge (HMAC-authenticated internal endpoint)
     liveClawInternalSecret: process.env.LIVECLAW_INTERNAL_SECRET || '',
     // Public-facing base URL used by internal MCP server for callbacks
@@ -1815,6 +1819,7 @@ Never as a formal notice — weave it in conversationally.
             VISION_USER_ID: userId,
             VISION_DAILY_LIMIT: String(config.visionDailyLimit),
             VISION_MODEL: config.visionModel,
+            OCR_MODEL: config.ocrModel,
             DB_PATH: config.dbPath || '',
             ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
         } : {}),

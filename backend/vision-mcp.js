@@ -11,7 +11,7 @@
  * Required env vars (injected by orchestrator):
  *   VISION_USER_ID      — LiveClaw user ID (for cap tracking)
  *   OPENROUTER_API_KEY  — server's OpenRouter key
- *   VISION_MODEL        — OpenRouter model ID (default: qwen/qwen2.5-vl-72b-instruct:free)
+ *   VISION_MODEL        — OpenRouter model ID for general image analysis (default: google/gemini-2.0-flash-lite-001)
  *   VISION_DAILY_LIMIT  — max image analyses per user per UTC day (default: 20)
  *   DB_PATH             — SQLite DB path (set when not using PostgreSQL)
  *   DATABASE_URL        — PostgreSQL connection string (set in production)
@@ -28,7 +28,8 @@ const { createDatabase }     = require('./database.js');
 
 const USER_ID     = process.env.VISION_USER_ID || '';
 const API_KEY     = process.env.OPENROUTER_API_KEY || '';
-const MODEL       = process.env.VISION_MODEL || 'qwen/qwen2.5-vl-72b-instruct:free';
+// flash-lite-001: $0.075/M tokens — 25% cheaper than flash-001, verified available, strong vision
+const MODEL       = process.env.VISION_MODEL || 'google/gemini-2.0-flash-lite-001';
 const DAILY_LIMIT = parseInt(process.env.VISION_DAILY_LIMIT || '20', 10);
 const DB_PATH     = process.env.DB_PATH;
 const DATABASE_URL = process.env.DATABASE_URL || '';
