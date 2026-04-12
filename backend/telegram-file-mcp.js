@@ -19,6 +19,7 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { z }                    = require('zod');
 const fs                       = require('fs');
 const path                     = require('path');
+const { execFile }             = require('child_process');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -163,6 +164,73 @@ async function sendDocument(chatId, filePath, caption) {
     }
 }
 
+// ─── Telegram file download helpers ─────────────────────────────────────────
+
+/**
+ * Get the most recent document/file sent by the user in this Telegram chat.
+ * Uses getUpdates?offset=-1 to peek at recent updates without consuming them —
+ * picobot only confirms updates by calling getUpdates with a higher offset, so
+ * peeking here doesn't discard anything.
+ *
+ * Returns the most recent document update (any file type), or null if none found.
+ */
+async function peekLatestDocument() {
+    // Peek at last 10 updates without consuming them
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-10&limit=10&timeout=0`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const updates = (data.result || []).reverse(); // most recent first
+    for (const update of updates) {
+        const msg = update.message || update.edited_message;
+        if (!msg) continue;
+        if (msg.document) return { type: 'document', file_id: msg.document.file_id, file_name: msg.document.file_name, mime_type: msg.document.mime_type, file_size: msg.document.file_size };
+        if (msg.photo) {
+            const largest = msg.photo[msg.photo.length - 1];
+            return { type: 'photo', file_id: largest.file_id, file_name: 'photo.jpg', mime_type: 'image/jpeg', file_size: largest.file_size };
+        }
+    }
+    return null;
+}
+
+/**
+ * Download a Telegram file by file_id to the workspace directory.
+ * Returns the local path where the file was saved.
+ */
+async function downloadTelegramFile(fileId, fileName) {
+    // Step 1: Get the file path from Telegram
+    const infoRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
+    if (!infoRes.ok) throw new Error(`getFile failed: ${infoRes.status}`);
+    const info = await infoRes.json();
+    if (!info.ok) throw new Error(`getFile error: ${JSON.stringify(info)}`);
+    const filePath = info.result.file_path;
+
+    // Step 2: Download the actual file
+    const downloadUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+    const fileRes = await fetch(downloadUrl);
+    if (!fileRes.ok) throw new Error(`Download failed: ${fileRes.status}`);
+
+    // Sanitize filename
+    const safeName = (fileName || 'received_file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const localPath = path.join(WORKSPACE, safeName);
+    const buffer = Buffer.from(await fileRes.arrayBuffer());
+    fs.writeFileSync(localPath, buffer);
+    return localPath;
+}
+
+/**
+ * Extract text from a PDF file using pdftotext (poppler-utils).
+ * Returns extracted text, or null if pdftotext is not available or fails.
+ */
+function extractPdfText(pdfPath) {
+    return new Promise((resolve) => {
+        execFile('pdftotext', ['-layout', pdfPath, '-'], { timeout: 15000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+            if (err) { resolve(null); return; }
+            resolve(stdout.trim() || null);
+        });
+    });
+}
+
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
 async function main() {
@@ -237,6 +305,70 @@ Returns success or an error message if the file cannot be sent.`,
             } catch (e) {
                 return {
                     content: [{ type: 'text', text: `Failed to send file: ${e.message}` }],
+                    isError: true,
+                };
+            }
+        }
+    );
+
+    server.tool(
+        'get_telegram_document',
+        `Retrieve the most recent document or file that the user sent to you in Telegram.
+Use this when the user's message appears empty or they mention sending a file/document.
+Picobot cannot pass document contents directly, so call this tool to retrieve and process them.
+For PDFs: extracts text automatically using pdftotext. Returns the text content.
+For other files (images, etc.): downloads to workspace and returns the file path.
+Returns an error if no recent document was found.`,
+        {},
+        async () => {
+            try {
+                const doc = await peekLatestDocument();
+                if (!doc) {
+                    return {
+                        content: [{ type: 'text', text: 'No recent document found. The user may not have sent a file, or the file was sent too long ago. Ask the user to resend the document.' }],
+                        isError: true,
+                    };
+                }
+
+                if (doc.file_size && doc.file_size > MAX_FILE_BYTES) {
+                    return {
+                        content: [{ type: 'text', text: `File is too large (${Math.round(doc.file_size / 1024 / 1024)}MB). Maximum supported size is 10MB.` }],
+                        isError: true,
+                    };
+                }
+
+                const localPath = await downloadTelegramFile(doc.file_id, doc.file_name);
+                const fileName = path.basename(localPath);
+
+                // For PDFs: attempt text extraction
+                const isPdf = (doc.mime_type || '').includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+                if (isPdf) {
+                    const text = await extractPdfText(localPath);
+                    if (text) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: `PDF received: "${fileName}" (${Math.round((doc.file_size || 0) / 1024)}KB)\n\nExtracted text:\n\n${text.slice(0, 8000)}${text.length > 8000 ? '\n\n[Content truncated — full file saved to workspace]' : ''}`,
+                            }],
+                        };
+                    }
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: `PDF received: "${fileName}" but text extraction failed (may be a scanned/image-only PDF). File saved to workspace at "${fileName}". Ask the user to paste the key text content or send screenshots of the important pages.`,
+                        }],
+                    };
+                }
+
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `File received: "${fileName}" (${doc.mime_type || 'unknown type'}, ${Math.round((doc.file_size || 0) / 1024)}KB). Saved to workspace. You can now read or process it from the workspace directory.`,
+                    }],
+                };
+            } catch (e) {
+                return {
+                    content: [{ type: 'text', text: `Failed to retrieve document: ${e.message}` }],
                     isError: true,
                 };
             }
