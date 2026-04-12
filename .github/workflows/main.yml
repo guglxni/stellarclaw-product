@@ -468,17 +468,16 @@ jobs:
               echo "ORCHESTRATOR_URL=http://localhost:3000" >> .env
               echo "  Added ORCHESTRATOR_URL=http://localhost:3000"
             fi
-            # OCR_MODEL — dedicated document OCR model (separate from VISION_MODEL for tuning)
-            if ! grep -q '^OCR_MODEL=' .env; then
-              echo "OCR_MODEL=qwen/qwen3-vl-32b-instruct" >> .env
-              echo "  Added OCR_MODEL=qwen/qwen3-vl-32b-instruct"
-            fi
-            # VISION_MODEL — general image analysis (separate from OCR, used by vision-mcp.js)
-            # bytedance-seed/seed-1.6-flash: same price as Gemini flash-lite, 262K context, image-capable
-            if ! grep -q '^VISION_MODEL=' .env; then
-              echo "VISION_MODEL=bytedance-seed/seed-1.6-flash" >> .env
-              echo "  Added VISION_MODEL=bytedance-seed/seed-1.6-flash"
-            fi
+            # OCR_MODEL — dedicated document OCR model (Qwen3-VL-32B, purpose-built for text extraction)
+            # Always enforce — write/overwrite so the correct model is always set
+            sed -i '/^OCR_MODEL=/d' .env
+            echo "OCR_MODEL=qwen/qwen3-vl-32b-instruct" >> .env
+            echo "  Set OCR_MODEL=qwen/qwen3-vl-32b-instruct"
+            # VISION_MODEL — general photo/image analysis (ByteDance Seed 1.6 Flash, same price as Gemini)
+            # Always enforce — overwrite old google/gemini-* values if present
+            sed -i '/^VISION_MODEL=/d' .env
+            echo "VISION_MODEL=bytedance-seed/seed-1.6-flash" >> .env
+            echo "  Set VISION_MODEL=bytedance-seed/seed-1.6-flash"
             # GMAIL_APP_PASSWORD — used by Alertmanager + Grafana for email notifications
             # Set via: echo "GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx" >> /opt/liveclaw/backend/.env
             # Get App Password at: https://myaccount.google.com/apppasswords
