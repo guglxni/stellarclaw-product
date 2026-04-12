@@ -227,19 +227,6 @@ const OCR_MODEL    = process.env.OCR_MODEL    || 'qwen/qwen3-vl-32b-instruct';
 const VISION_MODEL = process.env.VISION_MODEL || 'bytedance-seed/seed-1.6-flash';
 
 /**
- * Extract text from a PDF file using pdftotext (poppler-utils).
- * Returns extracted text, or null if pdftotext is not available or fails.
- */
-function extractPdfText(pdfPath) {
-    return new Promise((resolve) => {
-        execFile('pdftotext', ['-layout', pdfPath, '-'], { timeout: 15000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
-            if (err) { resolve(null); return; }
-            resolve(stdout.trim() || null);
-        });
-    });
-}
-
-/**
  * Convert first N pages of a PDF to PNG images via pdftoppm (poppler-utils).
  * Returns array of absolute file paths for each page image.
  */
@@ -267,59 +254,74 @@ function pdfToImages(pdfPath, maxPages = 3, dpi = 150) {
 }
 
 /**
- * OCR a set of image files via the OpenRouter vision model.
- * Returns extracted text from all pages concatenated, or null if unavailable.
+ * OCR PDF page images via Qwen3-VL-32B (OCR_MODEL env var).
+ * Qwen3-VL is purpose-built for document understanding — handles scanned pages,
+ * dense tables, mixed layouts, and multi-language content correctly.
  *
- * Sends images as base64 data URLs — no HTTPS hosting required.
- * Caps at 3 pages and truncates to keep token usage reasonable.
- */
-/**
- * OCR a set of image files via the dedicated OCR model (Qwen3-VL-32B by default).
- * Uses OCR_MODEL env var — separate from VISION_MODEL so they can be tuned independently.
- * Qwen3-VL is purpose-built for document understanding, better + cheaper for dense text than Gemini.
+ * Implements exponential backoff retry (3 attempts: immediate → 1s → 2s) for
+ * transient failures (rate limits, gateway timeouts). Throws on permanent failure
+ * so the caller can surface a clear error rather than silently returning garbage.
  *
- * Sends pages as base64 data URLs — no HTTPS hosting required.
+ * Pages sent as base64 data URLs — no external hosting required.
  */
 async function ocrImagesViaVision(imagePaths) {
-    if (!OPENROUTER_API_KEY || imagePaths.length === 0) return null;
+    if (!OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY not configured');
+    if (imagePaths.length === 0) throw new Error('No page images to OCR');
 
-    // Build one content block per page image
     const imageContent = imagePaths.slice(0, 3).map(imgPath => {
         const ext = path.extname(imgPath).slice(1).toLowerCase() || 'png';
         const mimeType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
         const b64 = fs.readFileSync(imgPath).toString('base64');
-        return {
-            type: 'image_url',
-            image_url: { url: `data:${mimeType};base64,${b64}` },
-        };
+        return { type: 'image_url', image_url: { url: `data:${mimeType};base64,${b64}` } };
     });
 
     const messages = [{
         role: 'user',
         content: [
             ...imageContent,
-            {
-                type: 'text',
-                text: 'Extract all text from these PDF page images. Output only the raw text content, preserving structure (headings, tables, lists) where present. Do not add commentary, summaries, or formatting symbols not in the original.',
-            },
+            { type: 'text', text: 'Extract all text from these PDF page images. Output only the raw text, preserving structure (headings, tables, lists) where present. No commentary.' },
         ],
     }];
 
-    try {
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                'Content-Type': 'application/json',
-                'X-Title': 'LiveClaw PDF OCR',
-            },
-            body: JSON.stringify({ model: OCR_MODEL, messages, max_tokens: 4096 }),
-        });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return data.choices?.[0]?.message?.content?.trim() || null;
-    } catch (_) {
-        return null;
+    const MAX_ATTEMPTS = 3;
+    const BACKOFF_MS   = [0, 1000, 2000]; // immediate, 1s, 2s
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        if (BACKOFF_MS[attempt] > 0) {
+            await new Promise(r => setTimeout(r, BACKOFF_MS[attempt]));
+        }
+        try {
+            const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                    'Content-Type': 'application/json',
+                    'X-Title': 'LiveClaw PDF OCR',
+                },
+                body: JSON.stringify({ model: OCR_MODEL, messages, max_tokens: 4096 }),
+                signal: AbortSignal.timeout(30000), // hard 30s timeout per attempt
+            });
+
+            // Retry on transient server errors (429 rate limit, 5xx gateway errors)
+            if (res.status === 429 || res.status >= 500) {
+                if (attempt < MAX_ATTEMPTS - 1) continue;
+                throw new Error(`OCR API returned ${res.status} after ${MAX_ATTEMPTS} attempts`);
+            }
+
+            if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                throw new Error(`OCR API error ${res.status}: ${body.slice(0, 200)}`);
+            }
+
+            const data = await res.json();
+            const text = data.choices?.[0]?.message?.content?.trim();
+            if (!text) throw new Error('OCR model returned empty response');
+            return text;
+
+        } catch (err) {
+            if (attempt === MAX_ATTEMPTS - 1) throw err; // re-throw on final attempt
+            // Retry on network errors and timeouts
+        }
     }
 }
 
@@ -408,8 +410,7 @@ Returns success or an error message if the file cannot be sent.`,
         `Retrieve the most recent document or file that the user sent to you in Telegram.
 Use this when the user's message appears empty or they mention sending a file/document/PDF.
 Picobot cannot pass document contents directly — this tool fetches and processes them.
-For text-based PDFs: extracts text via pdftotext instantly.
-For scanned/image PDFs: automatically runs OCR via vision model (converts pages to images first).
+For PDFs: runs full vision OCR via Qwen3-VL-32B (handles text, scanned, tables, mixed layouts).
 For other files: downloads to workspace and returns the file path.
 Always call this tool first before telling the user you cannot read their file.`,
         {},
@@ -433,43 +434,36 @@ Always call this tool first before telling the user you cannot read their file.`
                 const localPath = await downloadTelegramFile(doc.file_id, doc.file_name);
                 const fileName = path.basename(localPath);
 
-                // For PDFs: vision OCR is primary (Qwen3-VL-32B, purpose-built for documents).
-                // pdftotext runs in parallel as a fast free path — whichever gives better output wins.
+                // PDF path — vision OCR only (Qwen3-VL-32B).
+                // No parallel pdftotext: OCR is strictly superior in quality for all PDF types
+                // (scanned, text-embedded, mixed layouts, tables). pdftotext degrades quality.
+                // Resilience is handled via retry/backoff inside ocrImagesViaVision, not fallback.
                 const isPdf = (doc.mime_type || '').includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
                 if (isPdf) {
                     const fileSizeKb = Math.round((doc.file_size || 0) / 1024);
-
-                    // Run vision OCR (primary) and pdftotext (free fast path) in parallel
                     const pageImages = await pdfToImages(localPath, 3, 150);
-                    const [ocrText, pdfText] = await Promise.all([
-                        ocrImagesViaVision(pageImages),
-                        extractPdfText(localPath),
-                    ]);
-                    // Clean up temp page images
-                    for (const img of pageImages) { try { fs.unlinkSync(img); } catch (_) {} }
 
-                    // Prefer vision OCR result (higher quality for layout/tables/scanned content).
-                    // Fall back to pdftotext if OCR failed but pdftext succeeded.
-                    const text     = ocrText || pdfText;
-                    const method   = ocrText ? `vision OCR via ${OCR_MODEL}` : 'pdftotext';
-                    const pageNote = pageImages.length > 0 ? ` — ${pageImages.length} page${pageImages.length > 1 ? 's' : ''} analysed` : '';
-
-                    if (text) {
+                    try {
+                        const ocrText = await ocrImagesViaVision(pageImages);
+                        const pageNote = pageImages.length > 0 ? `, ${pageImages.length} page${pageImages.length > 1 ? 's' : ''} analysed` : '';
                         return {
                             content: [{
                                 type: 'text',
-                                text: `PDF received: "${fileName}" (${fileSizeKb}KB, ${method}${pageNote})\n\nExtracted text:\n\n${text.slice(0, 8000)}${text.length > 8000 ? '\n\n[Truncated at 8000 chars — full file saved to workspace]' : ''}`,
+                                text: `PDF received: "${fileName}" (${fileSizeKb}KB${pageNote})\n\nExtracted text:\n\n${ocrText.slice(0, 8000)}${ocrText.length > 8000 ? '\n\n[Truncated at 8000 chars — full file saved to workspace]' : ''}`,
                             }],
                         };
+                    } catch (ocrErr) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: `PDF received: "${fileName}" (${fileSizeKb}KB) — OCR failed: ${ocrErr.message}. The file is saved to workspace. Please ask the user to paste the key text or resend later.`,
+                            }],
+                            isError: true,
+                        };
+                    } finally {
+                        // Always clean up temp page images
+                        for (const img of pageImages) { try { fs.unlinkSync(img); } catch (_) {} }
                     }
-
-                    // Both paths failed
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: `PDF received: "${fileName}" (${fileSizeKb}KB) but text could not be extracted (protected or corrupted PDF). File saved to workspace. Ask the user to paste the key text or send screenshots of the important pages.`,
-                        }],
-                    };
                 }
 
                 return {
