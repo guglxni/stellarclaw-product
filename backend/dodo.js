@@ -92,7 +92,7 @@ async function createCheckoutSession(plan, userId, email, returnUrl, discountCod
         allowed_payment_method_types: [
             'credit', 'debit',
             'apple_pay', 'google_pay',
-            'upi_autopay', 'upi_collect',
+            'upi_collect', 'upi_intent',
         ],
     };
 

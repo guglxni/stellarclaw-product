@@ -283,8 +283,13 @@ function createSubscriptionRouter(deps) {
 
         const code = betaCode.toUpperCase().trim();
 
-        // Validate format: XXXX-XXXX-XXXX (12 alphanumeric chars in 3 groups)
-        if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+        // Two valid formats:
+        // - XXXX-XXXX-XXXX → DB-tracked beta code (90.09% off first month)
+        // - 16-char alphanum → direct Dodo discount code (e.g. founder 100% off codes)
+        const isDbBetaCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code);
+        const isDirectDodoCode = /^[A-Z0-9]{16}$/.test(code);
+
+        if (!isDbBetaCode && !isDirectDodoCode) {
             return res.status(400).json({ error: 'Invalid beta code format' });
         }
 
@@ -297,38 +302,41 @@ function createSubscriptionRouter(deps) {
             });
         }
 
-        // Validate the beta code exists and is unclaimed in our DB
-        const record = await stmtBeta.getByCode(code);
-        if (!record) {
-            return res.status(404).json({ error: 'Beta code not found' });
-        }
-        if (record.redeemed_by) {
-            return res.status(410).json({ error: 'Beta code has already been used' });
-        }
+        // DB-tracked beta codes: validate existence + atomic claim
+        if (isDbBetaCode) {
+            const record = await stmtBeta.getByCode(code);
+            if (!record) {
+                return res.status(404).json({ error: 'Beta code not found' });
+            }
+            if (record.redeemed_by) {
+                return res.status(410).json({ error: 'Beta code has already been used' });
+            }
 
-        // Atomically claim the code in our DB (prevents double-use)
-        const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-        const ua = (req.headers['user-agent'] || '').slice(0, 256);
-        const changes = (await stmtBeta.redeem(userId, ip, ua, code)).changes;
-        if (changes === 0) {
-            return res.status(410).json({ error: 'Beta code has already been used' });
+            const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+            const ua = (req.headers['user-agent'] || '').slice(0, 256);
+            const changes = (await stmtBeta.redeem(userId, ip, ua, code)).changes;
+            if (changes === 0) {
+                return res.status(410).json({ error: 'Beta code has already been used' });
+            }
         }
+        // Direct Dodo codes: Dodo enforces usage_limit=1 on their end — no DB check needed
 
-        // Create a standard Dodo checkout with the beta code as a 100% first-month discount
+        // Create a standard Dodo checkout with the code as a discount
         try {
             const session = await dodo.createCheckoutSession(
                 'beta',
                 userId,
                 email || `${userId}@liveclaw.xyz`,
                 'https://liveclaw.xyz?checkout=success',
-                code  // beta code = Dodo discount code (100% off first month)
+                code  // Dodo validates and applies the discount
             );
 
-            // Track that this user used this beta code
-            await db.run(
-                'UPDATE subscriptions SET beta_code_used = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
-                [code, userId]
-            );
+            if (isDbBetaCode) {
+                await db.run(
+                    'UPDATE subscriptions SET beta_code_used = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
+                    [code, userId]
+                );
+            }
 
             logEvent(userId, 'beta_code_redeemed', { code, sessionId: session.sessionId });
 
@@ -336,15 +344,17 @@ function createSubscriptionRouter(deps) {
                 success: true,
                 checkoutUrl: session.checkoutUrl,
                 sessionId: session.sessionId,
-                message: 'Complete checkout to activate your free first month.',
+                message: 'Complete checkout to activate your discounted first month.',
             });
         } catch (err) {
             log.checkout.error('Beta redeem checkout error', { error: err.message });
-            // Roll back the DB claim so user can retry
-            await db.run(
-                'UPDATE beta_codes SET redeemed_by = NULL, redeemed_at = NULL, redeemed_ip = NULL, user_agent = NULL WHERE code = ? AND redeemed_by = ?',
-                [code, userId]
-            );
+            if (isDbBetaCode) {
+                // Roll back the DB claim so user can retry
+                await db.run(
+                    'UPDATE beta_codes SET redeemed_by = NULL, redeemed_at = NULL, redeemed_ip = NULL, user_agent = NULL WHERE code = ? AND redeemed_by = ?',
+                    [code, userId]
+                );
+            }
             return res.status(502).json({ error: 'Failed to create checkout session' });
         }
     }));

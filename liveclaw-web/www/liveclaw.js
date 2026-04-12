@@ -1440,8 +1440,8 @@
             const container = document.getElementById('pricing-plans');
             if (!code) return;
 
-            // Beta code format: XXXX-XXXX-XXXX
-            if (/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+            // Beta code format: XXXX-XXXX-XXXX (DB beta codes) or 16-char alphanum (direct Dodo discount codes)
+            if (/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code) || /^[A-Z0-9]{16}$/.test(code)) {
                 if (!state.userId) {
                     promoMsg.style.color = '#f87171';
                     promoMsg.textContent = 'Please sign in first to redeem a beta code.';
