@@ -28,8 +28,9 @@ const { createDatabase }     = require('./database.js');
 
 const USER_ID     = process.env.VISION_USER_ID || '';
 const API_KEY     = process.env.OPENROUTER_API_KEY || '';
-// flash-lite-001: $0.075/M tokens — 25% cheaper than flash-001, verified available, strong vision
-const MODEL       = process.env.VISION_MODEL || 'google/gemini-2.0-flash-lite-001';
+// bytedance-seed/seed-1.6-flash: $0.075/M tokens, 262K context, image-capable, ByteDance
+// Same price as Gemini flash-lite; strong general vision performance on photos/screenshots
+const MODEL       = process.env.VISION_MODEL || 'bytedance-seed/seed-1.6-flash';
 const DAILY_LIMIT = parseInt(process.env.VISION_DAILY_LIMIT || '20', 10);
 const DB_PATH     = process.env.DB_PATH;
 const DATABASE_URL = process.env.DATABASE_URL || '';

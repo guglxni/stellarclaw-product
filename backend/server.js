@@ -101,8 +101,9 @@ const config = Object.freeze({
     // Vision MCP — image analysis tool injected into every picobot instance
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     visionDailyLimit: parseInt(process.env.VISION_DAILY_LIMIT || '80', 10),
-    // General image analysis — flash-lite is 25% cheaper than flash-001, same quality for vision
-    visionModel: process.env.VISION_MODEL || 'google/gemini-2.0-flash-lite-001',
+    // General image analysis — ByteDance Seed 1.6 Flash: same price as Gemini flash-lite ($0.075/M),
+    // 262K context, confirmed vision-capable. Chinese alternative with strong multimodal performance.
+    visionModel: process.env.VISION_MODEL || 'bytedance-seed/seed-1.6-flash',
     // Dedicated OCR model — Qwen3-VL-32B is purpose-built for document understanding ($0.104/M tokens)
     // Cheaper + better quality than gemini-flash for scanned PDFs and dense text layouts
     ocrModel: process.env.OCR_MODEL || 'qwen/qwen3-vl-32b-instruct',

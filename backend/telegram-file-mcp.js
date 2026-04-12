@@ -223,7 +223,8 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 // OCR_MODEL: dedicated document understanding model (Qwen3-VL, purpose-built for OCR/text extraction)
 // VISION_MODEL: general image analysis (used by vision-mcp.js for photos)
 const OCR_MODEL    = process.env.OCR_MODEL    || 'qwen/qwen3-vl-32b-instruct';
-const VISION_MODEL = process.env.VISION_MODEL || 'google/gemini-2.0-flash-lite-001';
+// VISION_MODEL fallback here matches vision-mcp.js — used only if OCR_MODEL isn't set
+const VISION_MODEL = process.env.VISION_MODEL || 'bytedance-seed/seed-1.6-flash';
 
 /**
  * Extract text from a PDF file using pdftotext (poppler-utils).
