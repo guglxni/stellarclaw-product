@@ -1466,7 +1466,15 @@
                         body: JSON.stringify({ betaCode: code, userId: state.userId, email: state.userEmail }),
                     });
                     const data = await res.json();
-                    if (res.ok && data.checkoutUrl) {
+                    if (res.ok && data.provisioned) {
+                        // Founder code — provisioned directly, no checkout needed
+                        promoMsg.style.color = '#34d399';
+                        promoMsg.textContent = '\u2713 Founder access activated! Welcome to LiveClaw.';
+                        promoInput.disabled = true;
+                        promoBtn.textContent = 'Activated';
+                        track('founder_code_redeemed', { code });
+                        setTimeout(() => { window.location.reload(); }, 1500);
+                    } else if (res.ok && data.checkoutUrl) {
                         promoMsg.style.color = '#34d399';
                         promoMsg.textContent = '\u2713 First month free! Redirecting to checkout...';
                         promoInput.disabled = true;

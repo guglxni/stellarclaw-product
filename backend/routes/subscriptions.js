@@ -318,45 +318,71 @@ function createSubscriptionRouter(deps) {
             if (changes === 0) {
                 return res.status(410).json({ error: 'Beta code has already been used' });
             }
-        }
-        // Direct Dodo codes: Dodo enforces usage_limit=1 on their end — no DB check needed
 
-        // Create a standard Dodo checkout with the code as a discount
-        try {
-            const session = await dodo.createCheckoutSession(
-                'beta',
-                userId,
-                email || `${userId}@liveclaw.xyz`,
-                'https://liveclaw.xyz?checkout=success',
-                code  // Dodo validates and applies the discount
-            );
-
-            if (isDbBetaCode) {
+            // Create a Dodo checkout with the beta code as a discount
+            try {
+                const session = await dodo.createCheckoutSession(
+                    'beta',
+                    userId,
+                    email || `${userId}@liveclaw.xyz`,
+                    'https://liveclaw.xyz?checkout=success',
+                    code
+                );
                 await db.run(
                     'UPDATE subscriptions SET beta_code_used = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
                     [code, userId]
                 );
-            }
-
-            logEvent(userId, 'beta_code_redeemed', { code, sessionId: session.sessionId });
-
-            return res.json({
-                success: true,
-                checkoutUrl: session.checkoutUrl,
-                sessionId: session.sessionId,
-                message: 'Complete checkout to activate your discounted first month.',
-            });
-        } catch (err) {
-            log.checkout.error('Beta redeem checkout error', { error: err.message });
-            if (isDbBetaCode) {
-                // Roll back the DB claim so user can retry
+                logEvent(userId, 'beta_code_redeemed', { code, sessionId: session.sessionId });
+                return res.json({
+                    success: true,
+                    checkoutUrl: session.checkoutUrl,
+                    sessionId: session.sessionId,
+                    message: 'Complete checkout to activate your discounted first month.',
+                });
+            } catch (err) {
+                log.checkout.error('Beta redeem checkout error', { error: err.message });
                 await db.run(
                     'UPDATE beta_codes SET redeemed_by = NULL, redeemed_at = NULL, redeemed_ip = NULL, user_agent = NULL WHERE code = ? AND redeemed_by = ?',
                     [code, userId]
                 );
+                return res.status(502).json({ error: 'Failed to create checkout session' });
             }
-            return res.status(502).json({ error: 'Failed to create checkout session' });
         }
+
+        // ── Direct Dodo discount codes (16-char, e.g. founder codes) ─────────────
+        // Bypass checkout entirely — no payment info required.
+        // Usage enforcement: check our DB (since we're not going through Dodo checkout).
+        const alreadyUsed = await db.get(
+            'SELECT user_id FROM subscriptions WHERE beta_code_used = ? LIMIT 1',
+            [code]
+        );
+        if (alreadyUsed) {
+            return res.status(410).json({ error: 'This code has already been used' });
+        }
+
+        // Provision the user directly as active — perpetual access, no billing
+        const now = new Date().toISOString();
+        await stmtSubs.upsert({
+            user_id: userId,
+            dodo_customer_id: null,
+            dodo_subscription_id: `founder:${code}`,
+            plan: 'standard',
+            status: 'active',
+            current_period_start: now,
+            current_period_end: null,
+        });
+        await db.run(
+            'UPDATE subscriptions SET beta_code_used = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
+            [code, userId]
+        );
+
+        logEvent(userId, 'founder_code_redeemed', { code });
+
+        return res.json({
+            success: true,
+            provisioned: true,
+            message: 'Founder access activated! Welcome to LiveClaw.',
+        });
     }));
 
     // ─── POST /purchase-credits — Buy LLM Credits via Dodo ─────────────────────
