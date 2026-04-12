@@ -218,6 +218,10 @@ async function downloadTelegramFile(fileId, fileName) {
     return localPath;
 }
 
+// Vision model config — inherited from picobot spawn env
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const VISION_MODEL       = process.env.VISION_MODEL || 'google/gemini-2.0-flash-001';
+
 /**
  * Extract text from a PDF file using pdftotext (poppler-utils).
  * Returns extracted text, or null if pdftotext is not available or fails.
@@ -229,6 +233,83 @@ function extractPdfText(pdfPath) {
             resolve(stdout.trim() || null);
         });
     });
+}
+
+/**
+ * Convert first N pages of a PDF to PNG images via pdftoppm (poppler-utils).
+ * Returns array of absolute file paths for each page image.
+ */
+function pdfToImages(pdfPath, maxPages = 3, dpi = 150) {
+    return new Promise((resolve) => {
+        const prefix = pdfPath.replace(/\.pdf$/i, '') + '_page';
+        // -r DPI, -png, -l maxPages (last page), -f 1 (first page)
+        execFile('pdftoppm', ['-r', String(dpi), '-png', '-f', '1', '-l', String(maxPages), pdfPath, prefix],
+            { timeout: 30000 },
+            (err) => {
+                if (err) { resolve([]); return; }
+                // pdftoppm creates files like prefix-1.png, prefix-01.png, etc.
+                try {
+                    const dir = path.dirname(prefix);
+                    const base = path.basename(prefix);
+                    const files = fs.readdirSync(dir)
+                        .filter(f => f.startsWith(base) && f.endsWith('.png'))
+                        .sort()
+                        .slice(0, maxPages)
+                        .map(f => path.join(dir, f));
+                    resolve(files);
+                } catch (_) { resolve([]); }
+            });
+    });
+}
+
+/**
+ * OCR a set of image files via the OpenRouter vision model.
+ * Returns extracted text from all pages concatenated, or null if unavailable.
+ *
+ * Sends images as base64 data URLs — no HTTPS hosting required.
+ * Caps at 3 pages and truncates to keep token usage reasonable.
+ */
+async function ocrImagesViaVision(imagePaths) {
+    if (!OPENROUTER_API_KEY || imagePaths.length === 0) return null;
+
+    // Build content blocks: one per image
+    const imageContent = imagePaths.slice(0, 3).map(imgPath => {
+        const ext = path.extname(imgPath).slice(1).toLowerCase() || 'png';
+        const mimeType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+        const b64 = fs.readFileSync(imgPath).toString('base64');
+        return {
+            type: 'image_url',
+            image_url: { url: `data:${mimeType};base64,${b64}` },
+        };
+    });
+
+    const messages = [{
+        role: 'user',
+        content: [
+            ...imageContent,
+            {
+                type: 'text',
+                text: 'Extract all text from these PDF page images. Output only the raw text content, preserving structure where helpful. Do not add commentary.',
+            },
+        ],
+    }];
+
+    try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json',
+                'X-Title': 'LiveClaw PDF OCR',
+            },
+            body: JSON.stringify({ model: VISION_MODEL, messages, max_tokens: 4096 }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content?.trim() || null;
+    } catch (_) {
+        return null;
+    }
 }
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
@@ -314,11 +395,12 @@ Returns success or an error message if the file cannot be sent.`,
     server.tool(
         'get_telegram_document',
         `Retrieve the most recent document or file that the user sent to you in Telegram.
-Use this when the user's message appears empty or they mention sending a file/document.
-Picobot cannot pass document contents directly, so call this tool to retrieve and process them.
-For PDFs: extracts text automatically using pdftotext. Returns the text content.
-For other files (images, etc.): downloads to workspace and returns the file path.
-Returns an error if no recent document was found.`,
+Use this when the user's message appears empty or they mention sending a file/document/PDF.
+Picobot cannot pass document contents directly — this tool fetches and processes them.
+For text-based PDFs: extracts text via pdftotext instantly.
+For scanned/image PDFs: automatically runs OCR via vision model (converts pages to images first).
+For other files: downloads to workspace and returns the file path.
+Always call this tool first before telling the user you cannot read their file.`,
         {},
         async () => {
             try {
@@ -340,22 +422,44 @@ Returns an error if no recent document was found.`,
                 const localPath = await downloadTelegramFile(doc.file_id, doc.file_name);
                 const fileName = path.basename(localPath);
 
-                // For PDFs: attempt text extraction
+                // For PDFs: pdftotext first (fast, text-based PDFs), then vision OCR fallback (scanned/image PDFs)
                 const isPdf = (doc.mime_type || '').includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
                 if (isPdf) {
-                    const text = await extractPdfText(localPath);
-                    if (text) {
+                    const fileSizeKb = Math.round((doc.file_size || 0) / 1024);
+
+                    // 1. Try pdftotext (instant, handles text-embedded PDFs)
+                    const textContent = await extractPdfText(localPath);
+                    if (textContent) {
                         return {
                             content: [{
                                 type: 'text',
-                                text: `PDF received: "${fileName}" (${Math.round((doc.file_size || 0) / 1024)}KB)\n\nExtracted text:\n\n${text.slice(0, 8000)}${text.length > 8000 ? '\n\n[Content truncated — full file saved to workspace]' : ''}`,
+                                text: `PDF received: "${fileName}" (${fileSizeKb}KB)\n\nExtracted text:\n\n${textContent.slice(0, 8000)}${textContent.length > 8000 ? '\n\n[Content truncated at 8000 chars — full file saved to workspace]' : ''}`,
                             }],
                         };
                     }
+
+                    // 2. Scanned/image PDF — convert pages to images then OCR via vision model
+                    const pageImages = await pdfToImages(localPath, 3, 150);
+                    if (pageImages.length > 0) {
+                        const ocrText = await ocrImagesViaVision(pageImages);
+                        // Clean up temp page images
+                        for (const img of pageImages) { try { fs.unlinkSync(img); } catch (_) {} }
+
+                        if (ocrText) {
+                            return {
+                                content: [{
+                                    type: 'text',
+                                    text: `PDF received: "${fileName}" (${fileSizeKb}KB, scanned — OCR applied to first ${pageImages.length} page${pageImages.length > 1 ? 's' : ''})\n\nOCR text:\n\n${ocrText.slice(0, 8000)}${ocrText.length > 8000 ? '\n\n[Content truncated — full file saved to workspace]' : ''}`,
+                                }],
+                            };
+                        }
+                    }
+
+                    // 3. All extraction failed
                     return {
                         content: [{
                             type: 'text',
-                            text: `PDF received: "${fileName}" but text extraction failed (may be a scanned/image-only PDF). File saved to workspace at "${fileName}". Ask the user to paste the key text content or send screenshots of the important pages.`,
+                            text: `PDF received: "${fileName}" (${fileSizeKb}KB) but text could not be extracted (may be a protected or highly complex scanned PDF). File saved to workspace. Ask the user to paste the key text or send photos of the important pages.`,
                         }],
                     };
                 }

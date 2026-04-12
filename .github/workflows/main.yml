@@ -265,7 +265,7 @@ jobs:
             if ! command -v node &>/dev/null; then
               apt-get update -qq
               curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-              apt-get install -y -qq nodejs nginx docker.io ufw wget rsync
+              apt-get install -y -qq nodejs nginx docker.io ufw wget rsync poppler-utils
             fi
             command -v pm2 &>/dev/null || npm install -g pm2 --loglevel warn
 
@@ -421,6 +421,10 @@ jobs:
             else
               echo "  Picobot already at latest: ${CURRENT_VER:-unknown}"
             fi
+
+            echo "=== 1c/7 System dependencies (idempotent) ==="
+            # poppler-utils: pdftotext (text PDFs) + pdftoppm (image conversion for OCR)
+            command -v pdftotext &>/dev/null || apt-get install -y -qq poppler-utils
 
             echo "=== 2/7 Install dependencies ==="
             cd /opt/liveclaw/backend
