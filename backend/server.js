@@ -101,7 +101,7 @@ const config = Object.freeze({
     // Vision MCP — image analysis tool injected into every picobot instance
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     visionDailyLimit: parseInt(process.env.VISION_DAILY_LIMIT || '80', 10),
-    visionModel: process.env.VISION_MODEL || 'qwen/qwen2.5-vl-72b-instruct:free',
+    visionModel: process.env.VISION_MODEL || 'google/gemini-2.0-flash-001',
     // LiveClaw internal MCP — usage + recharge (HMAC-authenticated internal endpoint)
     liveClawInternalSecret: process.env.LIVECLAW_INTERNAL_SECRET || '',
     // Public-facing base URL used by internal MCP server for callbacks
@@ -2298,9 +2298,13 @@ if (config.nodeEnv !== 'test') {
             }
 
             // ── Zombie / Orphan Process Cleanup ────────────────────────────
-            // Kill picobot processes that exist on the OS but aren't tracked in DB
+            // Kill picobot processes that exist on the OS but aren't tracked in DB.
+            // Re-fetch from DB so newly-spawned PIDs (updated above) are included —
+            // otherwise the stale `bots` array would cause fresh restarts to be
+            // immediately killed as orphans.
+            const currentBots = await stmt.runningBots();
             const allPicobotPids = listPicobotPids();
-            const trackedPids = new Set(bots.map(b => b.pid));
+            const trackedPids = new Set(currentBots.map(b => b.pid));
             for (const zombiePid of allPicobotPids.filter(pid => !trackedPids.has(pid))) {
                 try {
                     process.kill(zombiePid, 'SIGTERM');
