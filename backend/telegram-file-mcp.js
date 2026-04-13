@@ -167,29 +167,55 @@ async function sendDocument(chatId, filePath, caption) {
 // ─── Telegram file download helpers ─────────────────────────────────────────
 
 /**
- * Get the most recent document/file sent by the user in this Telegram chat.
- * Uses getUpdates?offset=-1 to peek at recent updates without consuming them —
- * picobot only confirms updates by calling getUpdates with a higher offset, so
- * peeking here doesn't discard anything.
+ * Get the most recent document/file sent by the user.
  *
- * Returns the most recent document update (any file type), or null if none found.
+ * Two sources, tried in order:
+ * 1. .incoming_files.json — written by the orchestrator's file interceptor,
+ *    which polls Telegram updates in parallel with picobot and saves file
+ *    metadata before picobot acknowledges (consumes) the updates.
+ * 2. Telegram getUpdates — fallback for cases where the interceptor hasn't
+ *    saved the file yet (e.g. first message after boot).
+ *
+ * picobot uses long-polling on the same bot token, so getUpdates alone
+ * is unreliable — picobot typically acknowledges updates within 1-2s,
+ * making them invisible to subsequent getUpdates calls.
  */
 async function peekLatestDocument() {
-    // Peek at last 10 updates without consuming them
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-10&limit=10&timeout=0`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const updates = (data.result || []).reverse(); // most recent first
-    for (const update of updates) {
-        const msg = update.message || update.edited_message;
-        if (!msg) continue;
-        if (msg.document) return { type: 'document', file_id: msg.document.file_id, file_name: msg.document.file_name, mime_type: msg.document.mime_type, file_size: msg.document.file_size };
-        if (msg.photo) {
-            const largest = msg.photo[msg.photo.length - 1];
-            return { type: 'photo', file_id: largest.file_id, file_name: 'photo.jpg', mime_type: 'image/jpeg', file_size: largest.file_size };
+    // Source 1: Read from orchestrator's file interceptor (most reliable)
+    const metadataPath = path.join(WORKSPACE, '.incoming_files.json');
+    try {
+        const raw = fs.readFileSync(metadataPath, 'utf8');
+        const files = JSON.parse(raw);
+        if (Array.isArray(files) && files.length > 0) {
+            // Return the most recent file
+            const latest = files[files.length - 1];
+            // Remove it from the list so it's not re-processed
+            const remaining = files.slice(0, -1);
+            fs.writeFileSync(metadataPath, JSON.stringify(remaining, null, 2), 'utf8');
+            return latest;
         }
+    } catch (_) {
+        // File doesn't exist or is invalid — fall through to getUpdates
     }
+
+    // Source 2: Fallback — peek at Telegram updates (may fail if picobot already consumed)
+    try {
+        const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-10&limit=10&timeout=0`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const updates = (data.result || []).reverse();
+        for (const update of updates) {
+            const msg = update.message || update.edited_message;
+            if (!msg) continue;
+            if (msg.document) return { type: 'document', file_id: msg.document.file_id, file_name: msg.document.file_name, mime_type: msg.document.mime_type, file_size: msg.document.file_size };
+            if (msg.photo) {
+                const largest = msg.photo[msg.photo.length - 1];
+                return { type: 'photo', file_id: largest.file_id, file_name: 'photo.jpg', mime_type: 'image/jpeg', file_size: largest.file_size };
+            }
+        }
+    } catch (_) {}
+
     return null;
 }
 

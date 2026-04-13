@@ -1879,6 +1879,84 @@ Never as a formal notice — weave it in conversationally.
         throw new Error(`Picobot process exited immediately after spawn (pid ${child.pid})`, { cause: err });
     }
 
+    // ── Telegram File Interceptor ───────────────────────────────────────
+    // picobot polls Telegram via getUpdates and consumes all updates (including
+    // file/document metadata) before our MCP tool can see them. This interceptor
+    // polls in parallel, saving file metadata to .incoming_files.json so the
+    // get_telegram_document MCP tool can find recently sent files.
+    //
+    // Uses a separate tracking offset so it doesn't interfere with picobot's
+    // polling. Polls every 2s — fast enough to catch files before picobot
+    // acknowledges them on most requests.
+    if (telegramToken) {
+        let fileInterceptorOffset = 0;
+        const fileMetadataPath = path.join(workspaceDir, '.incoming_files.json');
+        const FILE_INTERCEPTOR_INTERVAL = 2000;
+
+        const fileInterceptor = setInterval(async () => {
+            // Stop if the picobot process died
+            try { process.kill(child.pid, 0); } catch (_) {
+                clearInterval(fileInterceptor);
+                return;
+            }
+
+            try {
+                const url = `https://api.telegram.org/bot${telegramToken}/getUpdates?offset=${fileInterceptorOffset}&limit=20&timeout=0&allowed_updates=["message"]`;
+                const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+                if (!res.ok) return;
+                const data = await res.json();
+                const updates = data.result || [];
+                if (updates.length === 0) return;
+
+                // Track the highest update_id we've seen (don't acknowledge — just track)
+                const maxId = Math.max(...updates.map(u => u.update_id));
+                fileInterceptorOffset = maxId + 1;
+
+                // Extract file metadata from updates
+                const files = [];
+                for (const update of updates) {
+                    const msg = update.message;
+                    if (!msg) continue;
+                    if (msg.document) {
+                        files.push({
+                            type: 'document',
+                            file_id: msg.document.file_id,
+                            file_name: msg.document.file_name || 'document',
+                            mime_type: msg.document.mime_type || 'application/octet-stream',
+                            file_size: msg.document.file_size || 0,
+                            ts: new Date().toISOString(),
+                            update_id: update.update_id,
+                        });
+                    }
+                    if (msg.photo && msg.photo.length > 0) {
+                        const largest = msg.photo[msg.photo.length - 1];
+                        files.push({
+                            type: 'photo',
+                            file_id: largest.file_id,
+                            file_name: 'photo.jpg',
+                            mime_type: 'image/jpeg',
+                            file_size: largest.file_size || 0,
+                            ts: new Date().toISOString(),
+                            update_id: update.update_id,
+                        });
+                    }
+                }
+
+                if (files.length > 0) {
+                    // Merge with existing file metadata (keep last 20 entries)
+                    let existing = [];
+                    try { existing = JSON.parse(fs.readFileSync(fileMetadataPath, 'utf8')); } catch (_) {}
+                    const merged = [...existing, ...files].slice(-20);
+                    fs.writeFileSync(fileMetadataPath, JSON.stringify(merged, null, 2), 'utf8');
+                }
+            } catch (_) {
+                // Non-fatal — interceptor failures should never crash the orchestrator
+            }
+        }, FILE_INTERCEPTOR_INTERVAL);
+
+        fileInterceptor.unref();
+    }
+
     return child.pid;
 }
 
