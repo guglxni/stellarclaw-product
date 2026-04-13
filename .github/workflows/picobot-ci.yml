@@ -237,10 +237,11 @@ jobs:
 
           # telegram.go — Document/Photo/Caption parsing + file_id metadata injection
           cp patches/picobot/telegram.go picobot-src/internal/channels/telegram.go
-          echo "  Applied: telegram.go"
+          echo "  Applied: telegram.go → internal/channels/"
 
-          # Future patches follow the same pattern:
-          # cp patches/picobot/foo.go picobot-src/path/to/foo.go
+          # loop.go — Wire enableToolActivityIndicator config to suppress tool messages
+          cp patches/picobot/loop.go picobot-src/internal/agent/loop.go
+          echo "  Applied: loop.go → internal/agent/"
 
           echo "=== Verifying patched source compiles ==="
           cd picobot-src && go build ./...
@@ -276,7 +277,7 @@ jobs:
           echo "| Version | \`${{ needs.resolve.outputs.patched_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Size | ${SIZE} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SHA256 | \`${SHA:0:16}...\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Patches | \`telegram.go\` (file/photo/caption) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Patches | \`telegram.go\` (file/photo/caption), \`loop.go\` (tool indicator toggle) |" >> "$GITHUB_STEP_SUMMARY"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 3: Deploy to production with rollback safety

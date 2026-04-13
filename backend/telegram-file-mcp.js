@@ -525,17 +525,71 @@ For PDFs: extracts text via vision OCR. For other files: saves to workspace for 
                     }
                 }
 
-                // Determine if image — check mime_type or file extension
+                // Image path — analyze directly via vision model (same as PDF OCR approach)
                 const isImage = (doc.mime_type || '').startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(fileName);
                 if (isImage) {
                     const stat = fs.statSync(localPath);
                     const fileSizeKb = Math.round(stat.size / 1024);
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: `Image received: "${fileName}" (${fileSizeKb}KB). Saved to workspace at "${localPath}". Use the image_analysis tool to analyze this image if needed.`,
-                        }],
-                    };
+
+                    if (!OPENROUTER_API_KEY) {
+                        return {
+                            content: [{ type: 'text', text: `Image received: "${fileName}" (${fileSizeKb}KB) but vision API not configured.` }],
+                            isError: true,
+                        };
+                    }
+
+                    try {
+                        const ext = path.extname(localPath).slice(1).toLowerCase() || 'png';
+                        const mimeType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+                        const b64 = fs.readFileSync(localPath).toString('base64');
+                        const dataUrl = `data:${mimeType};base64,${b64}`;
+
+                        const visionModel = VISION_MODEL || 'bytedance-seed/seed-1.6-flash';
+                        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                                'Content-Type': 'application/json',
+                                'X-Title': 'LiveClaw Image Analysis',
+                            },
+                            body: JSON.stringify({
+                                model: visionModel,
+                                messages: [{
+                                    role: 'user',
+                                    content: [
+                                        { type: 'image_url', image_url: { url: dataUrl } },
+                                        { type: 'text', text: 'Describe this image in detail. Include any text, objects, people, colors, and context visible.' },
+                                    ],
+                                }],
+                                max_tokens: 2048,
+                            }),
+                            signal: AbortSignal.timeout(30000),
+                        });
+
+                        if (!res.ok) {
+                            const body = await res.text().catch(() => '');
+                            throw new Error(`Vision API ${res.status}: ${body.slice(0, 200)}`);
+                        }
+
+                        const data = await res.json();
+                        const description = data.choices?.[0]?.message?.content?.trim();
+                        if (!description) throw new Error('Vision model returned empty response');
+
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: `[IMAGE ANALYSIS — use this to answer the user's question about the image]\nFile: ${fileName} (${fileSizeKb}KB)\n\n${description}`,
+                            }],
+                        };
+                    } catch (imgErr) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: `Image received: "${fileName}" (${fileSizeKb}KB) — analysis failed: ${imgErr.message}. The image is saved to workspace.`,
+                            }],
+                            isError: true,
+                        };
+                    }
                 }
 
                 return {

@@ -1776,7 +1776,8 @@ HANDLING FILES:
 
 HANDLING PHOTOS:
 1. Extract the file_id from [Photo received: file_id=XXXX].
-2. Use the image_analysis tool to analyze the photo.
+2. Call get_telegram_document with file_id — it will download and analyze the photo automatically.
+3. Do NOT try to read, copy, cat, base64, or exec on image files. The tool handles everything.
 
 EXAMPLE:
 User message: "[File received: report.pdf (application/pdf, 20172 bytes, file_id=BQACAgIAAx)]\\nAnalyse this report"
