@@ -1,147 +1,15 @@
-name: Picobot Patched Build
-
-# Builds picobot from louisho5/picobot source with LiveClaw patches applied:
-#   - Telegram file/photo/caption handling (patches/picobot/telegram.go)
-#     Injects [File received: ...] and [Photo received: ...] into message text
-#     so the LLM can see file metadata and pass file_id to MCP tools.
-#
-# Trigger manually or on changes to patches/picobot/
-
+name: '[RETIRED] Picobot Patched Build'
+# Replaced by picobot-ci.yml — unified pipeline that handles both
+# upstream release detection AND patch application in one workflow.
+# Retired 2026-04-14.
 on:
-  push:
-    paths:
-      - 'patches/picobot/**'
   workflow_dispatch:
     inputs:
-      picobot_ref:
-        description: 'Picobot git ref to build from (tag, branch, or SHA)'
-        required: false
-        default: 'v0.2.0'
-
-concurrency:
-  group: picobot-patch-build
-  cancel-in-progress: true
-
-env:
-  PICOBOT_REPO: louisho5/picobot
-  GO_VERSION: '1.22'
-
+      note:
+        description: 'This workflow is retired. Use picobot-ci.yml instead.'
+        default: 'retired'
 jobs:
-  build-and-deploy:
-    name: 'Build Patched Picobot'
+  retired:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    env:
-      HAS_DEPLOY_SECRETS: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
-
     steps:
-      - name: Checkout LiveClaw (for patches)
-        uses: actions/checkout@v6
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Clone picobot source
-        run: |
-          REF="${{ inputs.picobot_ref || 'v0.2.0' }}"
-          echo "Cloning ${PICOBOT_REPO} @ ${REF}"
-          git clone --depth 1 --branch "${REF}" "https://github.com/${PICOBOT_REPO}.git" picobot-src || \
-          git clone --depth 1 "https://github.com/${PICOBOT_REPO}.git" picobot-src
-          cd picobot-src && echo "Picobot commit: $(git rev-parse --short HEAD)"
-
-      - name: Apply LiveClaw patches
-        run: |
-          echo "=== Applying Telegram file handling patch ==="
-          cp patches/picobot/telegram.go picobot-src/internal/channels/telegram.go
-          echo "✓ telegram.go patched"
-
-          cd picobot-src
-          echo "=== Verifying build compiles ==="
-          go build ./...
-          echo "✓ Build verification passed"
-
-      - name: Build picobot binary (linux/amd64)
-        run: |
-          cd picobot-src
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../picobot-patched ./cmd/picobot
-          ls -lh ../picobot-patched
-          echo "✓ Binary built"
-
-      - name: Deploy to production
-        if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.DO_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 2m
-          script: |
-            echo "Preparing for patched picobot deploy..."
-
-      - name: Upload binary
-        if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DO_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DO_SSH_KEY }}
-          source: picobot-patched
-          target: /opt/liveclaw/backend/
-
-      - name: Install and reload
-        if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.DO_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 2m
-          script: |
-            set -euo pipefail
-            PICOBOT_DIR="/opt/liveclaw/backend"
-            BINARY="${PICOBOT_DIR}/picobot"
-            PATCHED="${PICOBOT_DIR}/picobot-patched"
-
-            # Backup current binary
-            if [ -f "$BINARY" ]; then
-              cp "$BINARY" "${BINARY}.bak"
-            fi
-
-            # Install patched binary
-            mv "$PATCHED" "$BINARY"
-            chmod +x "$BINARY"
-
-            # Verify it runs
-            if ! "$BINARY" version &>/dev/null; then
-              echo "::error::Patched binary failed verification!"
-              if [ -f "${BINARY}.bak" ]; then
-                mv "${BINARY}.bak" "$BINARY"
-                echo "Rolled back to previous version"
-              fi
-              exit 1
-            fi
-
-            # Record version
-            echo "patched-$(date +%Y%m%d)" > "${PICOBOT_DIR}/.picobot-version"
-
-            # Reload orchestrator (kills running picobots, respawns with new binary)
-            if pm2 describe liveclaw-orchestrator &>/dev/null; then
-              pm2 reload liveclaw-orchestrator --update-env
-              echo "✓ PM2 reloaded — bots will restart with patched picobot"
-            fi
-
-            rm -f "${BINARY}.bak"
-            echo "=== ✅ Patched picobot deployed ==="
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "## 🔧 Picobot Patched Build" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Patches applied:**" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`telegram.go\`: Document/Photo/Caption parsing + metadata injection" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Effect:** LLM sees \`[File received: name (type, size, file_id=X)]\` in message text" >> "$GITHUB_STEP_SUMMARY"
+      - run: echo 'This workflow is retired. picobot-ci.yml now handles all picobot builds and deploys.'

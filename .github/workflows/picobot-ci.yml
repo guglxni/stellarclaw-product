@@ -1,0 +1,381 @@
+name: Picobot CI/CD (Patched)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Unified pipeline for picobot: detects new upstream releases, applies
+# LiveClaw patches (Telegram file/photo/caption handling), builds from
+# source, and deploys. NEVER deploys an unpatched binary.
+#
+# Triggers:
+#   1. Schedule  — every 6h, checks for new upstream releases
+#   2. Push      — when patches/picobot/** changes on main
+#   3. Manual    — workflow_dispatch with optional ref override
+#   4. External  — repository_dispatch from upstream webhook
+#
+# Version tracking:
+#   Deployed binaries are tagged "v0.2.0-patched-a1b2c3d" where the suffix
+#   is the short SHA of the liveclaw commit that supplied the patches.
+# ═══════════════════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+
+  push:
+    branches: [main]
+    paths:
+      - 'patches/picobot/**'
+
+  workflow_dispatch:
+    inputs:
+      picobot_ref:
+        description: 'Upstream picobot git ref (tag/branch/SHA). Leave empty for latest release.'
+        required: false
+        default: ''
+        type: string
+      force:
+        description: 'Force rebuild even if version matches'
+        required: false
+        default: false
+        type: boolean
+      skip_deploy:
+        description: 'Build only — do not deploy to production'
+        required: false
+        default: false
+        type: boolean
+
+  repository_dispatch:
+    types: [picobot-release]
+
+concurrency:
+  group: picobot-ci
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PICOBOT_REPO: louisho5/picobot
+  GO_VERSION: '1.23'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 1: Resolve upstream version and decide if build is needed
+  # ─────────────────────────────────────────────────────────────────────────
+  resolve:
+    name: Resolve upstream version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      build_needed: ${{ steps.decide.outputs.build_needed }}
+      upstream_ref: ${{ steps.decide.outputs.upstream_ref }}
+      upstream_tag: ${{ steps.decide.outputs.upstream_tag }}
+      patched_version: ${{ steps.decide.outputs.patched_version }}
+      trigger: ${{ steps.meta.outputs.trigger }}
+
+    steps:
+      - name: Checkout LiveClaw
+        uses: actions/checkout@v4
+
+      - name: Capture trigger metadata
+        id: meta
+        run: |
+          echo "trigger=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MANUAL_REF="${{ inputs.picobot_ref }}"
+          if [ -n "$MANUAL_REF" ]; then
+            echo "Using manual ref: ${MANUAL_REF}"
+            echo "ref=${MANUAL_REF}" >> "$GITHUB_OUTPUT"
+            echo "tag=${MANUAL_REF}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          RELEASE=$(curl -sf \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${PICOBOT_REPO}/releases/latest")
+
+          TAG=$(echo "$RELEASE" | jq -r '.tag_name')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Could not determine latest release tag"
+            exit 1
+          fi
+
+          echo "Latest upstream: ${TAG}"
+          echo "ref=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Check deployed version
+        id: deployed
+        continue-on-error: true
+        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 30s
+          script: |
+            VERSION_FILE="/opt/liveclaw/backend/.picobot-version"
+            if [ -f "$VERSION_FILE" ]; then
+              cat "$VERSION_FILE"
+            elif [ -x "/opt/liveclaw/backend/picobot" ]; then
+              /opt/liveclaw/backend/picobot version 2>/dev/null \
+                | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown"
+            else
+              echo "not-installed"
+            fi
+
+      - name: Decide if build is needed
+        id: decide
+        run: |
+          UPSTREAM_REF="${{ steps.upstream.outputs.ref }}"
+          UPSTREAM_TAG="${{ steps.upstream.outputs.tag }}"
+          DEPLOYED="${{ steps.deployed.outputs.stdout || 'not-installed' }}"
+          DEPLOYED=$(echo "$DEPLOYED" | tr -d '[:space:]')
+          FORCE="${{ inputs.force || 'false' }}"
+          EVENT="${{ github.event_name }}"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+
+          PATCHED_VERSION="${UPSTREAM_TAG}-patched-${SHORT_SHA}"
+
+          echo "upstream_ref=${UPSTREAM_REF}" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          echo "patched_version=${PATCHED_VERSION}" >> "$GITHUB_OUTPUT"
+
+          echo "Deployed:  ${DEPLOYED}"
+          echo "Target:    ${PATCHED_VERSION}"
+
+          BUILD_NEEDED="false"
+
+          if [ "$EVENT" = "push" ]; then
+            echo "Patch changed — build required"
+            BUILD_NEEDED="true"
+          elif [ "$FORCE" = "true" ]; then
+            echo "Forced build"
+            BUILD_NEEDED="true"
+          elif ! echo "$DEPLOYED" | grep -qF "$UPSTREAM_TAG"; then
+            echo "New upstream release (${UPSTREAM_TAG}) — build required"
+            BUILD_NEEDED="true"
+          elif ! echo "$DEPLOYED" | grep -qF "$SHORT_SHA"; then
+            echo "Patch SHA mismatch — build required"
+            BUILD_NEEDED="true"
+          else
+            echo "Already up-to-date: ${DEPLOYED}"
+          fi
+
+          echo "build_needed=${BUILD_NEEDED}" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Picobot Resolve" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | \`${{ steps.meta.outputs.trigger }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Upstream | \`${{ steps.decide.outputs.upstream_ref }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | \`${{ steps.decide.outputs.patched_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deployed | \`${{ steps.deployed.outputs.stdout || 'unknown' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build needed | \`${{ steps.decide.outputs.build_needed }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 2: Clone upstream, apply patches, build linux/amd64 binary
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build patched binary
+    needs: resolve
+    if: needs.resolve.outputs.build_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+
+    steps:
+      - name: Checkout LiveClaw (for patches)
+        uses: actions/checkout@v4
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Artifact names
+        id: names
+        run: |
+          echo "artifact_name=picobot-${{ needs.resolve.outputs.patched_version }}-linux-amd64" >> "$GITHUB_OUTPUT"
+
+      - name: Clone picobot source
+        run: |
+          REF="${{ needs.resolve.outputs.upstream_ref }}"
+          echo "Cloning ${PICOBOT_REPO} @ ${REF}..."
+          git clone --depth 1 --branch "${REF}" \
+            "https://github.com/${PICOBOT_REPO}.git" picobot-src 2>/dev/null || {
+            echo "Tag clone failed — full clone + checkout"
+            git clone "https://github.com/${PICOBOT_REPO}.git" picobot-src
+            cd picobot-src && git checkout "${REF}"
+          }
+          cd picobot-src && echo "Checked out: $(git log --oneline -1)"
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-picobot-${{ env.GO_VERSION }}-${{ hashFiles('picobot-src/go.sum') }}
+          restore-keys: go-picobot-${{ env.GO_VERSION }}-
+
+      - name: Apply LiveClaw patches
+        run: |
+          echo "=== Applying patches ==="
+
+          # telegram.go — Document/Photo/Caption parsing + file_id metadata injection
+          cp patches/picobot/telegram.go picobot-src/internal/channels/telegram.go
+          echo "  Applied: telegram.go"
+
+          # Future patches follow the same pattern:
+          # cp patches/picobot/foo.go picobot-src/path/to/foo.go
+
+          echo "=== Verifying patched source compiles ==="
+          cd picobot-src && go build ./...
+          echo "Compilation check passed"
+
+      - name: Build picobot (linux/amd64)
+        run: |
+          cd picobot-src
+          VERSION="${{ needs.resolve.outputs.patched_version }}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o ../picobot ./cmd/picobot
+          cd .. && chmod +x picobot
+          ls -lh picobot
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: picobot
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Build summary
+        if: always()
+        run: |
+          SIZE=$(ls -lh picobot 2>/dev/null | awk '{print $5}' || echo "N/A")
+          SHA=$(sha256sum picobot 2>/dev/null | awk '{print $1}' || echo "N/A")
+          echo "## Picobot Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${{ needs.resolve.outputs.patched_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Size | ${SIZE} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SHA256 | \`${SHA:0:16}...\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Patches | \`telegram.go\` (file/photo/caption) |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 3: Deploy to production with rollback safety
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to production
+    needs: [resolve, build]
+    if: |
+      needs.build.result == 'success'
+      && inputs.skip_deploy != true
+      && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+
+      - name: Backup + Upload + Install
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 30s
+          script: |
+            set -euo pipefail
+            PICOBOT_DIR="/opt/liveclaw/backend"
+            BINARY="${PICOBOT_DIR}/picobot"
+            ROLLBACK_DIR="${PICOBOT_DIR}/.picobot-rollback"
+
+            # Backup current binary (keep last 3)
+            mkdir -p "$ROLLBACK_DIR"
+            if [ -f "$BINARY" ]; then
+              CURRENT_VER=$(cat "${PICOBOT_DIR}/.picobot-version" 2>/dev/null || echo "unknown")
+              cp "$BINARY" "${ROLLBACK_DIR}/picobot.${CURRENT_VER}"
+              ls -t "${ROLLBACK_DIR}"/picobot.* 2>/dev/null | tail -n +4 | xargs -r rm -f
+              echo "Backed up: ${CURRENT_VER}"
+            fi
+
+      - name: Upload patched binary
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          source: picobot
+          target: /opt/liveclaw/backend/
+          overwrite: true
+
+      - name: Install and reload
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 3m
+          script: |
+            set -euo pipefail
+            PICOBOT_DIR="/opt/liveclaw/backend"
+            BINARY="${PICOBOT_DIR}/picobot"
+            VERSION_FILE="${PICOBOT_DIR}/.picobot-version"
+            ROLLBACK_DIR="${PICOBOT_DIR}/.picobot-rollback"
+            PATCHED_VERSION="${{ needs.resolve.outputs.patched_version }}"
+
+            chmod +x "$BINARY"
+
+            # Verify binary works
+            if ! "$BINARY" version &>/dev/null; then
+              echo "::error::Binary verification failed!"
+              LATEST_BACKUP=$(ls -t "${ROLLBACK_DIR}"/picobot.* 2>/dev/null | head -1)
+              if [ -n "$LATEST_BACKUP" ]; then
+                cp "$LATEST_BACKUP" "$BINARY"
+                chmod +x "$BINARY"
+                echo "Rolled back to: $(basename "$LATEST_BACKUP")"
+              fi
+              exit 1
+            fi
+
+            echo "${PATCHED_VERSION}" > "$VERSION_FILE"
+            SIZE=$(ls -lh "$BINARY" | awk '{print $5}')
+            echo "Installed: ${PATCHED_VERSION} (${SIZE})"
+
+            # Reload orchestrator
+            if pm2 describe liveclaw-orchestrator &>/dev/null; then
+              pm2 reload liveclaw-orchestrator --update-env
+              sleep 2
+              echo "PM2 reloaded — bots restarting with patched picobot"
+            else
+              echo "Warning: orchestrator not running via PM2"
+            fi
+
+      - name: Deploy summary
+        if: always()
+        run: |
+          echo "## Picobot Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${{ needs.resolve.outputs.patched_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | \`${{ needs.resolve.outputs.trigger }}\` |" >> "$GITHUB_STEP_SUMMARY"
