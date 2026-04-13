@@ -198,9 +198,25 @@ async function peekLatestDocument() {
         // File doesn't exist or is invalid — fall through to getUpdates
     }
 
-    // Note: getUpdates fallback was removed — it causes 409 Conflict errors with
-    // picobot's polling (Telegram only supports one getUpdates consumer per bot token).
-    // With patched picobot, file_id is passed directly to the tool by the LLM.
+    // Fallback: peek at recent Telegram updates. This only works if picobot hasn't
+    // confirmed the file update yet (brief window during LLM processing). Safe now
+    // that the parallel file interceptor is removed (no competing getUpdates calls).
+    try {
+        const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-5&limit=5&timeout=0`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const updates = (data.result || []).reverse();
+        for (const update of updates) {
+            const msg = update.message || update.edited_message;
+            if (!msg) continue;
+            if (msg.document) return { type: 'document', file_id: msg.document.file_id, file_name: msg.document.file_name, mime_type: msg.document.mime_type, file_size: msg.document.file_size };
+            if (msg.photo) {
+                const largest = msg.photo[msg.photo.length - 1];
+                return { type: 'photo', file_id: largest.file_id, file_name: 'photo.jpg', mime_type: 'image/jpeg', file_size: largest.file_size };
+            }
+        }
+    } catch (_) { /* non-fatal */ }
 
     return null;
 }

@@ -16,7 +16,7 @@ on:
       picobot_ref:
         description: 'Picobot git ref to build from (tag, branch, or SHA)'
         required: false
-        default: 'main'
+        default: 'v0.2.0'
 
 concurrency:
   group: picobot-patch-build
@@ -46,7 +46,7 @@ jobs:
 
       - name: Clone picobot source
         run: |
-          REF="${{ inputs.picobot_ref || 'main' }}"
+          REF="${{ inputs.picobot_ref || 'v0.2.0' }}"
           echo "Cloning ${PICOBOT_REPO} @ ${REF}"
           git clone --depth 1 --branch "${REF}" "https://github.com/${PICOBOT_REPO}.git" picobot-src || \
           git clone --depth 1 "https://github.com/${PICOBOT_REPO}.git" picobot-src
