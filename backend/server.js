@@ -1854,6 +1854,7 @@ Never as a formal notice — weave it in conversationally.
         HOME: userDir, // picobot reads $HOME/.picobot/config.json
         // Shared across all MCP servers
         WORKSPACE_DIR: workspaceDir,
+        PICOBOT_SHOW_TOOL_ACTIVITY: 'false', // suppress "Running:"/"done" messages to users
         // Vision MCP
         ...(config.openrouterApiKey ? {
             OPENROUTER_API_KEY: config.openrouterApiKey,

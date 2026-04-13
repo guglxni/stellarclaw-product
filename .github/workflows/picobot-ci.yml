@@ -102,8 +102,9 @@ jobs:
 
           TAG=$(echo "$RELEASE" | jq -r '.tag_name')
           if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "::error::Could not determine latest release tag"
-            exit 1
+            # Fallback to known-good tag if releases API fails
+            TAG="v0.2.0"
+            echo "::warning::Could not fetch latest release, falling back to ${TAG}"
           fi
 
           echo "Latest upstream: ${TAG}"

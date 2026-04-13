@@ -141,13 +141,9 @@ func NewAgentLoop(b *chat.Hub, provider providers.LLMProvider, model string, max
 		log.Printf("MCP server %q: registered %d tools", name, len(client.Tools()))
 	}
 
-	// Read enableToolActivityIndicator from config (default: true for backwards compat)
-	showToolActivity := true
-	if loadedCfg, loadErr := config.LoadConfig(); loadErr == nil {
-		if loadedCfg.Agents.Defaults.EnableToolActivityIndicator != nil {
-			showToolActivity = *loadedCfg.Agents.Defaults.EnableToolActivityIndicator
-		}
-	}
+	// Read PICOBOT_SHOW_TOOL_ACTIVITY env var (default: true for backwards compat).
+	// Set to "false" to suppress "Running:"/"done" messages sent to users.
+	showToolActivity := os.Getenv("PICOBOT_SHOW_TOOL_ACTIVITY") != "false"
 
 	return &AgentLoop{hub: b, provider: provider, tools: reg, sessions: sm, context: ctx, memory: mem, model: model, maxIterations: maxIterations, mcpClients: mcpClients, showToolActivity: showToolActivity}
 }
