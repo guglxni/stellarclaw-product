@@ -117,21 +117,25 @@ async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.
             } catch (_) { /* fall through */ }
         }
 
-        // Reactivate and update provider config + budget + rate limits for the new deploy
+        // Reactivate and update provider config + budget for the new deploy
         const data = await bifrostRequest(`/api/governance/virtual-keys/${encodeURIComponent(existingId)}`, {
             method: 'PUT',
             body: JSON.stringify({
                 provider_configs: [providerConfig],
                 budget: { max_limit: creditLimit, reset_duration: '1M' },
-                rate_limit: {
-                    request_max_limit: 500,
-                    request_reset_duration: '1h',
-                    token_max_limit: 500000,
-                    token_reset_duration: '1d',
-                },
                 is_active: true,
             }),
         });
+
+        // Update rate limits in a separate call (Bifrost requires dedicated endpoint)
+        try {
+            await updateVirtualKeyRateLimit(existingId, {
+                request_max_limit: 500,
+                request_reset_duration: '1h',
+                token_max_limit: 500000,
+                token_reset_duration: '1d',
+            });
+        } catch (_) { /* non-fatal — existing limits still apply */ }
         const vk = data.virtual_key || data;
         return {
             id: existingId,
