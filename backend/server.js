@@ -1230,7 +1230,7 @@ app.use((req, res, next) => {
 
 // ─── Rate Limiters ──────────────────────────────────────────────────────────
 const isTest = config.nodeEnv === 'test';
-const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/readyz']);
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/readyz', '/livez']);
 
 const deployLimiter = rateLimit({
     windowMs: 60 * 1000,   // 1 minute
@@ -1874,6 +1874,15 @@ Never as a formal notice — weave it in conversationally.
 
     return child.pid;
 }
+
+// ─── GET /livez ─────────────────────────────────────────────────────────────
+// Liveness probe: confirms the Node.js event loop is responsive.
+// No DB check, no external calls — if this endpoint responds, the process is alive.
+// Use /readyz for dependency checks. Separate probes per Kubernetes best practices:
+// a stuck event loop should restart the pod, but a transient DB outage should not.
+app.get('/livez', (_req, res) => {
+    res.status(200).json({ status: 'ok', ts: new Date().toISOString() });
+});
 
 // ─── GET /readyz ────────────────────────────────────────────────────────────
 // Minimal readiness probe: verifies API can reach its primary datastore.

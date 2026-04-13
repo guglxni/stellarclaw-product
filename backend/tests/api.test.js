@@ -75,6 +75,32 @@ describe('GET /health', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// GET /livez — Liveness probe (no DB, no external calls)
+// ═══════════════════════════════════════════════════════════════════════════
+describe('GET /livez', () => {
+    it('returns 200 with status ok', async () => {
+        const res = await request(app)
+            .get('/livez')
+            .expect(200);
+
+        expect(res.body.status).toBe('ok');
+        expect(res.body).toHaveProperty('ts');
+    });
+
+    it('does NOT include db or dependency checks (pure liveness)', async () => {
+        const res = await request(app).get('/livez').expect(200);
+        expect(res.body).not.toHaveProperty('checks');
+        expect(res.body).not.toHaveProperty('memory');
+    });
+
+    it('responds fast (no external calls, no DB)', async () => {
+        const start = Date.now();
+        await request(app).get('/livez').expect(200);
+        expect(Date.now() - start).toBeLessThan(100); // < 100ms
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // GET /readyz
 // ═══════════════════════════════════════════════════════════════════════════
 describe('GET /readyz', () => {

@@ -149,6 +149,45 @@ function validateImageUrl(url) {
     }
 }
 
+// ─── Circuit Breaker (OpenRouter API) ────────────────────────────────────────
+// Lightweight three-state circuit breaker: prevents cascading failures when
+// OpenRouter is down. Fails fast instead of burning per-request timeouts.
+// States: CLOSED (normal) → OPEN (reject) → HALF_OPEN (test one request)
+
+const breaker = {
+    state: 'CLOSED',         // CLOSED | OPEN | HALF_OPEN
+    failures: 0,
+    lastFailure: 0,
+    threshold: 5,            // consecutive failures to trip
+    resetMs: 30000,          // 30s cooldown before half-open
+};
+
+function breakerAllow() {
+    if (breaker.state === 'CLOSED') return true;
+    if (breaker.state === 'OPEN') {
+        if (Date.now() - breaker.lastFailure > breaker.resetMs) {
+            breaker.state = 'HALF_OPEN';
+            return true; // allow one test request
+        }
+        return false;
+    }
+    // HALF_OPEN — already allowing one test
+    return true;
+}
+
+function breakerSuccess() {
+    breaker.failures = 0;
+    breaker.state = 'CLOSED';
+}
+
+function breakerFailure() {
+    breaker.failures++;
+    breaker.lastFailure = Date.now();
+    if (breaker.failures >= breaker.threshold || breaker.state === 'HALF_OPEN') {
+        breaker.state = 'OPEN';
+    }
+}
+
 // ─── Image fetching ───────────────────────────────────────────────────────────
 
 /**
@@ -178,6 +217,11 @@ async function fetchAsBase64(url) {
 // ─── OpenRouter Vision Call ───────────────────────────────────────────────────
 
 async function callVisionModel(imageUrl, prompt) {
+    // Circuit breaker — fail fast if OpenRouter is down
+    if (!breakerAllow()) {
+        throw new Error('Vision API circuit breaker OPEN — too many recent failures. Will retry in 30s.');
+    }
+
     let imageData;
 
     if (imageUrl.startsWith('data:')) {
@@ -193,35 +237,42 @@ async function callVisionModel(imageUrl, prompt) {
 
     const userPrompt = prompt || 'Describe this image in detail.';
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        signal: AbortSignal.timeout(30000),
-        headers: {
-            'Authorization': `Bearer ${API_KEY}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://liveclaw.xyz',
-            'X-Title': 'LiveClaw Vision',
-        },
-        body: JSON.stringify({
-            model: MODEL,
-            messages: [{
-                role: 'user',
-                content: [
-                    { type: 'image_url', image_url: { url: imageData } },
-                    { type: 'text', text: userPrompt },
-                ],
-            }],
-            max_tokens: 1024,
-        }),
-    });
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: AbortSignal.timeout(30000),
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://liveclaw.xyz',
+                'X-Title': 'LiveClaw Vision',
+            },
+            body: JSON.stringify({
+                model: MODEL,
+                messages: [{
+                    role: 'user',
+                    content: [
+                        { type: 'image_url', image_url: { url: imageData } },
+                        { type: 'text', text: userPrompt },
+                    ],
+                }],
+                max_tokens: 1024,
+            }),
+        });
 
-    if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(`OpenRouter ${response.status}: ${body}`);
+        if (!response.ok) {
+            const body = await response.text().catch(() => '');
+            breakerFailure();
+            throw new Error(`OpenRouter ${response.status}: ${body}`);
+        }
+
+        const data = await response.json();
+        breakerSuccess();
+        return data.choices?.[0]?.message?.content || 'No response from vision model.';
+    } catch (err) {
+        if (!err.message.startsWith('OpenRouter')) breakerFailure();
+        throw err;
     }
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || 'No response from vision model.';
 }
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
@@ -259,14 +310,24 @@ async function main() {
                 };
             }
 
-            const result = await callVisionModel(image_url, prompt);
-
-            return {
-                content: [{
-                    type: 'text',
-                    text: `${result}\n\n_(Vision usage today: ${used}/${limit})_`,
-                }],
-            };
+            try {
+                const result = await callVisionModel(image_url, prompt);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `${result}\n\n_(Vision usage today: ${used}/${limit})_`,
+                    }],
+                };
+            } catch (err) {
+                process.stderr.write(`vision-mcp: image_analysis error: ${err.message}\n`);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Image analysis failed: ${err.message}`,
+                    }],
+                    isError: true,
+                };
+            }
         }
     );
 
@@ -278,3 +339,16 @@ main().catch(err => {
     process.stderr.write(`vision-mcp fatal: ${err.message}\n`);
     process.exit(1);
 });
+
+// ─── Graceful Shutdown ───────────────────────────────────────────────────────
+// MCP stdio servers must handle SIGTERM cleanly — flush stderr, close DB pool.
+// Without this, the OS pipe buffer can fill and freeze the process.
+function shutdown(signal) {
+    process.stderr.write(`vision-mcp: ${signal} received, shutting down\n`);
+    if (db) {
+        try { db.close(); } catch (_) {}
+    }
+    process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
