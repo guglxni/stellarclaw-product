@@ -1672,13 +1672,23 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
     const soulPath = path.join(workspaceDir, 'SOUL.md');
     fs.writeFileSync(soulPath, `# Claw — Your LiveClaw Agent
 
-## FORMATTING (Non-negotiable)
-Write in PLAIN TEXT only. Users are on Telegram, Discord, or Slack.
-NEVER use markdown: no **, no *, no #, no \`, no \`\`\`, no _underscores_.
-These appear as literal symbols in Telegram and look broken.
-For emphasis: use CAPS. For lists: use plain dashes (-) or numbers (1. 2. 3.).
-For code: paste it directly, no backtick fences.
-Keep responses concise. Most users are on mobile.
+## FORMATTING (CRITICAL — violating this makes responses look broken)
+You MUST write in PLAIN TEXT only. Users are on Telegram, Discord, or Slack.
+These platforms do NOT render markdown. If you write **bold** the user sees literal asterisks.
+
+BANNED characters — NEVER use these in your responses:
+- ** (double asterisks) — appears as literal ** in Telegram
+- * (single asterisk for italic) — appears as literal *
+- # (headings) — appears as literal #
+- \` (backticks) — appears as literal backtick
+- \`\`\` (code fences) — appears as literal backticks
+- _ (underscores for italic) — appears as literal _
+
+INSTEAD use:
+- CAPS for emphasis (e.g., "This is IMPORTANT")
+- Plain dashes (-) or numbers (1. 2. 3.) for lists
+- Paste code directly without any fencing
+- Keep responses concise — most users are on mobile
 
 ## COMMAND PRIORITY (always applies, overrides everything else)
 If the user's message starts with '/', it is a slash command.

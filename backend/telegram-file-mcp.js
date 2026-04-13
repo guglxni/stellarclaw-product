@@ -532,11 +532,13 @@ For PDFs: extracts text via vision OCR. For other files: saves to workspace for 
                     const fileSizeKb = Math.round(stat.size / 1024);
 
                     if (!OPENROUTER_API_KEY) {
+                        process.stderr.write('image-analysis: OPENROUTER_API_KEY not set in env\n');
                         return {
-                            content: [{ type: 'text', text: `Image received: "${fileName}" (${fileSizeKb}KB) but vision API not configured.` }],
+                            content: [{ type: 'text', text: `Image received but vision API key is not configured. This is a server configuration issue.` }],
                             isError: true,
                         };
                     }
+                    process.stderr.write(`image-analysis: starting for ${fileName} (${fileSizeKb}KB), model=${OCR_MODEL || VISION_MODEL}\n`);
 
                     try {
                         const ext = path.extname(localPath).slice(1).toLowerCase() || 'png';
@@ -544,7 +546,8 @@ For PDFs: extracts text via vision OCR. For other files: saves to workspace for 
                         const b64 = fs.readFileSync(localPath).toString('base64');
                         const dataUrl = `data:${mimeType};base64,${b64}`;
 
-                        const visionModel = VISION_MODEL || 'bytedance-seed/seed-1.6-flash';
+                        // Use OCR_MODEL (Qwen3-VL) for images too — more reliable than VISION_MODEL
+                        const visionModel = OCR_MODEL || VISION_MODEL || 'qwen/qwen3-vl-32b-instruct';
                         const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                             method: 'POST',
                             headers: {
@@ -582,10 +585,12 @@ For PDFs: extracts text via vision OCR. For other files: saves to workspace for 
                             }],
                         };
                     } catch (imgErr) {
+                        // Log full error details for debugging
+                        process.stderr.write(`image-analysis error: model=${visionModel} file=${fileName} err=${imgErr.message}\n`);
                         return {
                             content: [{
                                 type: 'text',
-                                text: `Image received: "${fileName}" (${fileSizeKb}KB) — analysis failed: ${imgErr.message}. The image is saved to workspace.`,
+                                text: `Image "${fileName}" (${fileSizeKb}KB) downloaded but vision analysis failed: ${imgErr.message}. Tell the user you received their image but the analysis service is temporarily unavailable. Ask them to describe what they need help with.`,
                             }],
                             isError: true,
                         };
