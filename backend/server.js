@@ -1687,13 +1687,14 @@ Commands always work regardless of whether the user has completed onboarding or 
 See the COMMANDS section below for what each command does.
 
 ## STARTUP PROTOCOL — only for the VERY FIRST non-command message in a session
+IMPORTANT: Before running this protocol, check if the message contains [File received: ...] or [Photo received: ...].
+If it does, handle the file FIRST (see RECEIVING FILES AND PHOTOS above), THEN do startup.
+
 When the user sends their first message that does NOT start with '/':
 1. Use the filesystem read tool to read the file "workspace/profile.md"
 2. If it exists and has content:
    - SILENTLY internalize the name, template, and persona. DO NOT print or echo the profile content.
-   - Check: does the user's message mention a file, PDF, document, syllabus, report, or similar? Or does their message appear empty or very short (just an attachment with no text)?
-     YES → call get_telegram_document IMMEDIATELY before responding.
-     NO → greet the user briefly by name and help with what they asked.
+   - Greet the user briefly by name and help with what they asked.
    - Do NOT run onboarding again.
 3. If it does NOT exist (file missing or empty): run the ONBOARDING FLOW below.
 Do this check exactly once per session. After that, just respond normally.
@@ -1751,26 +1752,39 @@ Once workspace/profile.md is read at session start:
 - Still handle all commands and general questions — the persona shapes HOW you respond, not WHAT topics you allow
 - Occasionally remind them: "You can check your usage with /usage or top up with /recharge"
 
-## RECEIVING DOCUMENTS FROM THE USER (HIGH PRIORITY — overrides other protocols)
-ANY TIME a user sends a file, document, or PDF — whether it's their first message or their hundredth — handle it IMMEDIATELY.
-Trigger conditions (if ANY of these are true, call the tool):
-- User's message mentions: file, PDF, document, syllabus, report, attachment, resume, paper, invoice, receipt, spreadsheet, CSV
-- User's message is empty or very short (just an attachment with no text)
-- User says "analyse this", "read this", "check this", "look at this", "what does this say"
-- User just sent a file without any text at all (you may see an empty or minimal message)
+## RECEIVING FILES AND PHOTOS (HIGHEST PRIORITY — overrides ALL other protocols)
+When the user's message contains [File received: ...] or [Photo received: ...], handle it IMMEDIATELY.
+This takes priority over startup protocol, onboarding, greeting — everything.
 
-Steps:
-1. Call get_telegram_document IMMEDIATELY — before ANY other action (before reading profile.md, before greeting, before anything).
-2. If it returns document content: ANALYZE it based on what the user asked for.
-   NEVER echo the raw extracted text back. Instead:
+DETECTING FILES — look for these patterns in the user's message:
+1. [File received: filename (mime_type, size bytes, file_id=XXXX)] — a document/PDF/file was sent
+2. [Photo received: file_id=XXXX] — a photo was sent
+3. User mentions: file, PDF, document, syllabus, report, attachment, resume, paper
+
+HANDLING FILES:
+1. Extract the file_id from the pattern (the string after "file_id=").
+2. Extract file_name and mime_type if present.
+3. Call get_telegram_document with file_id, file_name, and mime_type parameters.
+4. ANALYZE the returned content based on what the user asked for.
+   NEVER echo raw extracted text back. Instead:
    - For health reports: extract key metrics, flag abnormal values, give actionable recommendations
    - For academic content: summarize, explain key concepts, answer questions
    - For business docs: extract key data, provide insights, highlight action items
    - For any document: understand it first, then respond intelligently to the user's request
    The tool extracts the raw text — YOUR job is to be the intelligent layer that makes sense of it.
-3. If it returns a file path (non-PDF): read the file from workspace and process it.
-4. If it fails or says no document found: tell the user "I can see you sent something, but I'm not able to receive it directly. Please paste the key text here, or send photos/screenshots of the pages."
-Do this automatically — never say "I don't see a document" without trying the tool first.
+5. If it returns a file path (non-PDF): read the file from workspace and process it.
+
+HANDLING PHOTOS:
+1. Extract the file_id from [Photo received: file_id=XXXX].
+2. Use the image_analysis tool to analyze the photo.
+
+EXAMPLE:
+User message: "[File received: report.pdf (application/pdf, 20172 bytes, file_id=BQACAgIAAx)]\\nAnalyse this report"
+Your action: call get_telegram_document with file_id="BQACAgIAAx", file_name="report.pdf", mime_type="application/pdf"
+
+If there is NO [File received:] or [Photo received:] pattern but the user mentions a file:
+Call get_telegram_document without file_id — it will try to find it automatically.
+If that also fails: tell the user to resend the document or paste the key text.
 
 ## ERROR HANDLING
 If a tool call fails or returns an error:
@@ -1897,99 +1911,19 @@ Never as a formal notice — weave it in conversationally.
         throw new Error(`Picobot process exited immediately after spawn (pid ${child.pid})`, { cause: err });
     }
 
-    // ── Telegram File Interceptor ───────────────────────────────────────
-    // Telegram's getUpdates offset is GLOBAL — once picobot calls getUpdates
-    // with offset=N+1, update N is gone for all callers. A timer-based poller
-    // (setInterval) loses the race because picobot's long-poll returns and
-    // confirms the update within milliseconds.
+    // ── Telegram File Interceptor — REMOVED ─────────────────────────────
+    // The external file interceptor was removed because:
+    // 1. Telegram's getUpdates only supports ONE consumer per bot token.
+    //    A second poller causes 409 Conflict errors, corrupting picobot's polling.
+    // 2. Picobot's Telegram goroutine confirms updates immediately after receiving
+    //    them (offset=N+1), before the LLM even starts processing.
+    //    No external poller can reliably capture the file before it's gone.
     //
-    // Fix: use a long-poll loop (timeout=25) so the interceptor always has a
-    // pending getUpdates call open. When a file arrives, Telegram delivers it
-    // to BOTH pending connections simultaneously — before picobot can confirm.
-    // First iteration uses timeout=0 to quickly drain old updates and sync
-    // the offset, then switches to long-poll immediately.
-    if (telegramToken) {
-        const fileMetadataPath = path.join(workspaceDir, '.incoming_files.json');
-
-        (async () => {
-            let offset = 0;
-            let synced = false; // false = first drain pass, true = long-poll mode
-
-            while (true) {
-                // Stop when picobot process dies
-                try { process.kill(child.pid, 0); } catch (_) { return; }
-
-                try {
-                    // First call: timeout=0 to drain any stale queued updates fast.
-                    // All subsequent calls: timeout=25 (long-poll) so we receive
-                    // file updates at the same moment picobot's long-poll does.
-                    const pollTimeout = synced ? 25 : 0;
-                    const url = `https://api.telegram.org/bot${telegramToken}/getUpdates?offset=${offset}&limit=100&timeout=${pollTimeout}&allowed_updates=%5B%22message%22%5D`;
-                    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-
-                    if (!res.ok) {
-                        synced = true;
-                        await new Promise(r => setTimeout(r, 2000));
-                        continue;
-                    }
-
-                    const data = await res.json();
-                    const updates = data.result || [];
-
-                    if (updates.length > 0) {
-                        const maxId = Math.max(...updates.map(u => u.update_id));
-                        offset = maxId + 1;
-
-                        // Only persist metadata after the initial drain — stale files
-                        // from previous sessions would confuse the MCP tool.
-                        if (synced) {
-                            const files = [];
-                            for (const update of updates) {
-                                const msg = update.message;
-                                if (!msg) continue;
-                                if (msg.document) {
-                                    files.push({
-                                        type: 'document',
-                                        file_id: msg.document.file_id,
-                                        file_name: msg.document.file_name || 'document',
-                                        mime_type: msg.document.mime_type || 'application/octet-stream',
-                                        file_size: msg.document.file_size || 0,
-                                        ts: new Date().toISOString(),
-                                        update_id: update.update_id,
-                                    });
-                                }
-                                if (msg.photo && msg.photo.length > 0) {
-                                    const largest = msg.photo[msg.photo.length - 1];
-                                    files.push({
-                                        type: 'photo',
-                                        file_id: largest.file_id,
-                                        file_name: 'photo.jpg',
-                                        mime_type: 'image/jpeg',
-                                        file_size: largest.file_size || 0,
-                                        ts: new Date().toISOString(),
-                                        update_id: update.update_id,
-                                    });
-                                }
-                            }
-
-                            if (files.length > 0) {
-                                let existing = [];
-                                try { existing = JSON.parse(fs.readFileSync(fileMetadataPath, 'utf8')); } catch (_) { /* file may not exist yet */ }
-                                const merged = [...existing, ...files].slice(-20);
-                                fs.writeFileSync(fileMetadataPath, JSON.stringify(merged, null, 2), 'utf8');
-                            }
-                        }
-                    }
-
-                    synced = true; // switch to long-poll from next iteration
-                } catch (_) {
-                    // Non-fatal — interceptor failures must never crash the orchestrator
-                    synced = true;
-                    await new Promise(r => setTimeout(r, 2000));
-                }
-            }
-        })().catch(() => {});
-    }
+    // The fix: patched picobot (patches/picobot/telegram.go) now parses
+    // Document/Photo/Caption fields and injects file metadata into the message
+    // text as [File received: name (type, size, file_id=XXX)]. The LLM sees
+    // the file_id and passes it directly to get_telegram_document({file_id}).
+    // See .github/workflows/picobot-patch-build.yml to build the patched binary.
 
     return child.pid;
 }

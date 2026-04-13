@@ -198,23 +198,9 @@ async function peekLatestDocument() {
         // File doesn't exist or is invalid — fall through to getUpdates
     }
 
-    // Source 2: Fallback — peek at Telegram updates (may fail if picobot already consumed)
-    try {
-        const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-10&limit=10&timeout=0`;
-        const res = await fetch(url);
-        if (!res.ok) return null;
-        const data = await res.json();
-        const updates = (data.result || []).reverse();
-        for (const update of updates) {
-            const msg = update.message || update.edited_message;
-            if (!msg) continue;
-            if (msg.document) return { type: 'document', file_id: msg.document.file_id, file_name: msg.document.file_name, mime_type: msg.document.mime_type, file_size: msg.document.file_size };
-            if (msg.photo) {
-                const largest = msg.photo[msg.photo.length - 1];
-                return { type: 'photo', file_id: largest.file_id, file_name: 'photo.jpg', mime_type: 'image/jpeg', file_size: largest.file_size };
-            }
-        }
-    } catch (_) {}
+    // Note: getUpdates fallback was removed — it causes 409 Conflict errors with
+    // picobot's polling (Telegram only supports one getUpdates consumer per bot token).
+    // With patched picobot, file_id is passed directly to the tool by the LLM.
 
     return null;
 }
@@ -433,21 +419,53 @@ Returns success or an error message if the file cannot be sent.`,
 
     server.tool(
         'get_telegram_document',
-        `Retrieve and extract content from the most recent document or file the user sent in Telegram.
-Use this when the user's message appears empty or they mention sending a file/document/PDF.
-This tool fetches the file and extracts its content so YOU (the agent) can analyze it.
+        `Retrieve and extract content from a document or file the user sent in Telegram.
+
+WHEN TO CALL:
+- When the user's message contains [File received: name (type, size, file_id=XXX)]
+- When the user mentions sending a file/document/PDF
+- When the user's message appears empty (likely a file without caption)
+
+HOW TO CALL:
+- If you see file_id in the message (e.g. file_id=BQACAgIAA...), pass it as the file_id parameter
+- If you see a file name, pass it as file_name
+- If you see a mime type, pass it as mime_type
+
 IMPORTANT: The extracted text is raw data for YOU to process — do NOT echo it back verbatim.
-Instead, read the content, understand it, and respond to the user's request about it
-(e.g. summarize, analyze health reports, answer questions, extract key data points).
-For PDFs: extracts text via vision OCR. For other files: saves to workspace for reading.
-Always call this tool first before telling the user you cannot read their file.`,
-        {},
-        async () => {
+Instead, read the content, understand it, and respond to the user's request about it.
+For PDFs: extracts text via vision OCR. For other files: saves to workspace for reading.`,
+        {
+            file_id: z.string().optional().describe(
+                'Telegram file_id from the [File received: ... file_id=XXX] pattern in the message. Pass this for direct download — no polling needed.'
+            ),
+            file_name: z.string().optional().describe(
+                'Original file name (e.g. "report.pdf") — helps determine file type for processing.'
+            ),
+            mime_type: z.string().optional().describe(
+                'MIME type (e.g. "application/pdf") — helps determine processing method.'
+            ),
+        },
+        async ({ file_id, file_name, mime_type }) => {
             try {
-                const doc = await peekLatestDocument();
+                // Resolve file metadata — either from direct file_id or fallback sources
+                let doc = null;
+
+                if (file_id) {
+                    // Direct file_id from patched picobot — most reliable path
+                    doc = {
+                        file_id,
+                        file_name: file_name || 'received_file',
+                        mime_type: mime_type || 'application/octet-stream',
+                        file_size: 0,
+                    };
+                } else {
+                    // Fallback: try .incoming_files.json (populated by orchestrator interceptor)
+                    doc = await peekLatestDocument();
+                }
+
                 if (!doc) {
                     return {
-                        content: [{ type: 'text', text: 'No recent document found. The user may not have sent a file, or the file was sent too long ago. Ask the user to resend the document.' }],
+                        content: [{ type: 'text', text: 'No file found. If the user sent a file, look for [File received: ... file_id=XXX] in the message and pass the file_id parameter. Otherwise ask the user to resend the document.' }],
                         isError: true,
                     };
                 }
@@ -462,21 +480,16 @@ Always call this tool first before telling the user you cannot read their file.`
                 const localPath = await downloadTelegramFile(doc.file_id, doc.file_name);
                 const fileName = path.basename(localPath);
 
-                // PDF path — vision OCR only (Qwen3-VL-32B).
-                // No parallel pdftotext: OCR is strictly superior in quality for all PDF types
-                // (scanned, text-embedded, mixed layouts, tables). pdftotext degrades quality.
-                // Resilience is handled via retry/backoff inside ocrImagesViaVision, not fallback.
+                // Determine if PDF — check mime_type, file extension, and provided mime_type param
                 const isPdf = (doc.mime_type || '').includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
                 if (isPdf) {
-                    const fileSizeKb = Math.round((doc.file_size || 0) / 1024);
+                    const stat = fs.statSync(localPath);
+                    const fileSizeKb = Math.round(stat.size / 1024);
                     const pageImages = await pdfToImages(localPath, 3, 150);
 
                     try {
                         const ocrText = await ocrImagesViaVision(pageImages);
                         const pageCount = pageImages.length || 0;
-                        // Return extracted content as structured data for the LLM to analyze.
-                        // The LLM should NOT echo this raw text — it should process it
-                        // (summarize, analyze, answer questions) based on the user's request.
                         return {
                             content: [{
                                 type: 'text',
@@ -492,15 +505,27 @@ Always call this tool first before telling the user you cannot read their file.`
                             isError: true,
                         };
                     } finally {
-                        // Always clean up temp page images
                         for (const img of pageImages) { try { fs.unlinkSync(img); } catch (_) {} }
                     }
+                }
+
+                // Determine if image — check mime_type or file extension
+                const isImage = (doc.mime_type || '').startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(fileName);
+                if (isImage) {
+                    const stat = fs.statSync(localPath);
+                    const fileSizeKb = Math.round(stat.size / 1024);
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: `Image received: "${fileName}" (${fileSizeKb}KB). Saved to workspace at "${localPath}". Use the image_analysis tool to analyze this image if needed.`,
+                        }],
+                    };
                 }
 
                 return {
                     content: [{
                         type: 'text',
-                        text: `File received: "${fileName}" (${doc.mime_type || 'unknown type'}, ${Math.round((doc.file_size || 0) / 1024)}KB). Saved to workspace. You can now read or process it from the workspace directory.`,
+                        text: `File received: "${fileName}" (${doc.mime_type || 'unknown type'}, ${Math.round(fs.statSync(localPath).size / 1024)}KB). Saved to workspace. You can now read or process it from the workspace directory.`,
                     }],
                 };
             } catch (e) {
