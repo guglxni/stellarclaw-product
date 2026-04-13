@@ -312,7 +312,6 @@ jobs:
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
           command_timeout: 3m
-          script_stop: true
           script: |
             set -euo pipefail
             PICOBOT_DIR="/opt/liveclaw/backend"
@@ -324,13 +323,11 @@ jobs:
 
             # Step 1: Stop orchestrator (kills all picobot processes, frees binary)
             echo "=== Stopping orchestrator ==="
-            if pm2 describe liveclaw-orchestrator &>/dev/null; then
-              pm2 stop liveclaw-orchestrator 2>/dev/null || true
-              sleep 2
-            fi
+            pm2 stop liveclaw-orchestrator 2>/dev/null || true
+            sleep 2
 
-            # Kill any remaining picobot processes
-            pkill -f "picobot gateway" 2>/dev/null || true
+            # Kill any remaining picobot processes (|| true prevents exit on no-match)
+            killall -q picobot 2>/dev/null || true
             sleep 1
 
             # Step 2: Backup current binary
