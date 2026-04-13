@@ -1945,7 +1945,7 @@ Never as a formal notice — weave it in conversationally.
                 if (files.length > 0) {
                     // Merge with existing file metadata (keep last 20 entries)
                     let existing = [];
-                    try { existing = JSON.parse(fs.readFileSync(fileMetadataPath, 'utf8')); } catch (_) {}
+                    try { existing = JSON.parse(fs.readFileSync(fileMetadataPath, 'utf8')); } catch (_) { /* file may not exist yet */ }
                     const merged = [...existing, ...files].slice(-20);
                     fs.writeFileSync(fileMetadataPath, JSON.stringify(merged, null, 2), 'utf8');
                 }
