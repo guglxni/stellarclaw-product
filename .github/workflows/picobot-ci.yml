@@ -113,7 +113,6 @@ jobs:
       - name: Check deployed version
         id: deployed
         continue-on-error: true
-        if: ${{ secrets.DO_DROPLET_IP != '' && secrets.DO_SSH_KEY != '' }}
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -287,7 +286,7 @@ jobs:
     needs: [resolve, build]
     if: |
       needs.build.result == 'success'
-      && inputs.skip_deploy != true
+      && github.event.inputs.skip_deploy != 'true'
       && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
