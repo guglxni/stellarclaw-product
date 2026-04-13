@@ -160,6 +160,10 @@ jobs:
           if [ "$DEPLOYED" = "$LATEST" ] && [ "$FORCE" != "true" ]; then
             echo "Already up-to-date — skipping deploy"
             echo "updated=false" >> "$GITHUB_OUTPUT"
+          elif echo "$DEPLOYED" | grep -q "^patched-" && [ "$FORCE" != "true" ]; then
+            echo "Patched build detected (${DEPLOYED}) — skipping auto-update to preserve LiveClaw patches."
+            echo "Use force=true or picobot-patch-build.yml to update."
+            echo "updated=false" >> "$GITHUB_OUTPUT"
           else
             echo "Update needed: ${DEPLOYED} → ${LATEST}"
             echo "updated=true" >> "$GITHUB_OUTPUT"
