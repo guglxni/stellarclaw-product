@@ -128,17 +128,53 @@ function validateImageUrl(url) {
     }
 }
 
+// ─── Image fetching ───────────────────────────────────────────────────────────
+
+/**
+ * Download an image URL and return it as a base64 data URI.
+ *
+ * This is the core reliability fix: we download the image ourselves rather than
+ * passing the URL to the model provider. Some providers (ByteDance Seed, etc.)
+ * can't access Telegram CDN URLs or other restricted hosts, causing silent
+ * failures. By downloading here and sending base64, ANY model works with ANY URL.
+ *
+ * Size cap: 8MB after download (Telegram max photo is ~5MB).
+ */
+async function fetchAsBase64(url) {
+    const MAX_BYTES = 8 * 1024 * 1024;
+    const res = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
+        headers: { 'User-Agent': 'LiveClaw-Vision/1.0' },
+    });
+    if (!res.ok) throw new Error(`Image fetch failed: ${res.status} ${url}`);
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    const mimeType = contentType.split(';')[0].trim();
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_BYTES) throw new Error(`Image too large (${Math.round(buf.length / 1024 / 1024)}MB, max 8MB)`);
+    return `data:${mimeType};base64,${buf.toString('base64')}`;
+}
+
 // ─── OpenRouter Vision Call ───────────────────────────────────────────────────
 
 async function callVisionModel(imageUrl, prompt) {
-    // Allow base64 data URIs to pass through; validate all other URLs for SSRF
-    if (!imageUrl.startsWith('data:')) {
-        imageUrl = validateImageUrl(imageUrl);
+    let imageData;
+
+    if (imageUrl.startsWith('data:')) {
+        // Already base64 — use directly
+        imageData = imageUrl;
+    } else {
+        // SSRF guard then download as base64.
+        // Downloading ourselves means the model provider never needs to fetch the URL —
+        // critical for Telegram CDN URLs which some providers (ByteDance) can't access.
+        validateImageUrl(imageUrl); // throws on private IPs / invalid URLs
+        imageData = await fetchAsBase64(imageUrl);
     }
+
     const userPrompt = prompt || 'Describe this image in detail.';
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: {
             'Authorization': `Bearer ${API_KEY}`,
             'Content-Type': 'application/json',
@@ -147,15 +183,13 @@ async function callVisionModel(imageUrl, prompt) {
         },
         body: JSON.stringify({
             model: MODEL,
-            messages: [
-                {
-                    role: 'user',
-                    content: [
-                        { type: 'image_url', image_url: { url: imageUrl } },
-                        { type: 'text', text: userPrompt },
-                    ],
-                },
-            ],
+            messages: [{
+                role: 'user',
+                content: [
+                    { type: 'image_url', image_url: { url: imageData } },
+                    { type: 'text', text: userPrompt },
+                ],
+            }],
             max_tokens: 1024,
         }),
     });
