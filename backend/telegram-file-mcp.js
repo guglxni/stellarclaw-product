@@ -433,11 +433,13 @@ Returns success or an error message if the file cannot be sent.`,
 
     server.tool(
         'get_telegram_document',
-        `Retrieve the most recent document or file that the user sent to you in Telegram.
+        `Retrieve and extract content from the most recent document or file the user sent in Telegram.
 Use this when the user's message appears empty or they mention sending a file/document/PDF.
-Picobot cannot pass document contents directly — this tool fetches and processes them.
-For PDFs: runs full vision OCR via Qwen3-VL-32B (handles text, scanned, tables, mixed layouts).
-For other files: downloads to workspace and returns the file path.
+This tool fetches the file and extracts its content so YOU (the agent) can analyze it.
+IMPORTANT: The extracted text is raw data for YOU to process — do NOT echo it back verbatim.
+Instead, read the content, understand it, and respond to the user's request about it
+(e.g. summarize, analyze health reports, answer questions, extract key data points).
+For PDFs: extracts text via vision OCR. For other files: saves to workspace for reading.
 Always call this tool first before telling the user you cannot read their file.`,
         {},
         async () => {
@@ -471,11 +473,14 @@ Always call this tool first before telling the user you cannot read their file.`
 
                     try {
                         const ocrText = await ocrImagesViaVision(pageImages);
-                        const pageNote = pageImages.length > 0 ? `, ${pageImages.length} page${pageImages.length > 1 ? 's' : ''} analysed` : '';
+                        const pageCount = pageImages.length || 0;
+                        // Return extracted content as structured data for the LLM to analyze.
+                        // The LLM should NOT echo this raw text — it should process it
+                        // (summarize, analyze, answer questions) based on the user's request.
                         return {
                             content: [{
                                 type: 'text',
-                                text: `PDF received: "${fileName}" (${fileSizeKb}KB${pageNote})\n\nExtracted text:\n\n${ocrText.slice(0, 8000)}${ocrText.length > 8000 ? '\n\n[Truncated at 8000 chars — full file saved to workspace]' : ''}`,
+                                text: `[DOCUMENT CONTENT — analyze this, do NOT echo it verbatim to the user]\nFile: ${fileName} (${fileSizeKb}KB, ${pageCount} pages)\n\n${ocrText.slice(0, 8000)}${ocrText.length > 8000 ? '\n\n[Content truncated at 8000 chars]' : ''}`,
                             }],
                         };
                     } catch (ocrErr) {
