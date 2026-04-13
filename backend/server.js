@@ -1886,81 +1886,97 @@ Never as a formal notice — weave it in conversationally.
     }
 
     // ── Telegram File Interceptor ───────────────────────────────────────
-    // picobot polls Telegram via getUpdates and consumes all updates (including
-    // file/document metadata) before our MCP tool can see them. This interceptor
-    // polls in parallel, saving file metadata to .incoming_files.json so the
-    // get_telegram_document MCP tool can find recently sent files.
+    // Telegram's getUpdates offset is GLOBAL — once picobot calls getUpdates
+    // with offset=N+1, update N is gone for all callers. A timer-based poller
+    // (setInterval) loses the race because picobot's long-poll returns and
+    // confirms the update within milliseconds.
     //
-    // Uses a separate tracking offset so it doesn't interfere with picobot's
-    // polling. Polls every 2s — fast enough to catch files before picobot
-    // acknowledges them on most requests.
+    // Fix: use a long-poll loop (timeout=25) so the interceptor always has a
+    // pending getUpdates call open. When a file arrives, Telegram delivers it
+    // to BOTH pending connections simultaneously — before picobot can confirm.
+    // First iteration uses timeout=0 to quickly drain old updates and sync
+    // the offset, then switches to long-poll immediately.
     if (telegramToken) {
-        let fileInterceptorOffset = 0;
         const fileMetadataPath = path.join(workspaceDir, '.incoming_files.json');
-        const FILE_INTERCEPTOR_INTERVAL = 2000;
 
-        const fileInterceptor = setInterval(async () => {
-            // Stop if the picobot process died
-            try { process.kill(child.pid, 0); } catch (_) {
-                clearInterval(fileInterceptor);
-                return;
-            }
+        (async () => {
+            let offset = 0;
+            let synced = false; // false = first drain pass, true = long-poll mode
 
-            try {
-                const url = `https://api.telegram.org/bot${telegramToken}/getUpdates?offset=${fileInterceptorOffset}&limit=20&timeout=0&allowed_updates=["message"]`;
-                const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-                if (!res.ok) return;
-                const data = await res.json();
-                const updates = data.result || [];
-                if (updates.length === 0) return;
+            while (true) {
+                // Stop when picobot process dies
+                try { process.kill(child.pid, 0); } catch (_) { return; }
 
-                // Track the highest update_id we've seen (don't acknowledge — just track)
-                const maxId = Math.max(...updates.map(u => u.update_id));
-                fileInterceptorOffset = maxId + 1;
+                try {
+                    // First call: timeout=0 to drain any stale queued updates fast.
+                    // All subsequent calls: timeout=25 (long-poll) so we receive
+                    // file updates at the same moment picobot's long-poll does.
+                    const pollTimeout = synced ? 25 : 0;
+                    const url = `https://api.telegram.org/bot${telegramToken}/getUpdates?offset=${offset}&limit=100&timeout=${pollTimeout}&allowed_updates=%5B%22message%22%5D`;
+                    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
 
-                // Extract file metadata from updates
-                const files = [];
-                for (const update of updates) {
-                    const msg = update.message;
-                    if (!msg) continue;
-                    if (msg.document) {
-                        files.push({
-                            type: 'document',
-                            file_id: msg.document.file_id,
-                            file_name: msg.document.file_name || 'document',
-                            mime_type: msg.document.mime_type || 'application/octet-stream',
-                            file_size: msg.document.file_size || 0,
-                            ts: new Date().toISOString(),
-                            update_id: update.update_id,
-                        });
+                    if (!res.ok) {
+                        synced = true;
+                        await new Promise(r => setTimeout(r, 2000));
+                        continue;
                     }
-                    if (msg.photo && msg.photo.length > 0) {
-                        const largest = msg.photo[msg.photo.length - 1];
-                        files.push({
-                            type: 'photo',
-                            file_id: largest.file_id,
-                            file_name: 'photo.jpg',
-                            mime_type: 'image/jpeg',
-                            file_size: largest.file_size || 0,
-                            ts: new Date().toISOString(),
-                            update_id: update.update_id,
-                        });
+
+                    const data = await res.json();
+                    const updates = data.result || [];
+
+                    if (updates.length > 0) {
+                        const maxId = Math.max(...updates.map(u => u.update_id));
+                        offset = maxId + 1;
+
+                        // Only persist metadata after the initial drain — stale files
+                        // from previous sessions would confuse the MCP tool.
+                        if (synced) {
+                            const files = [];
+                            for (const update of updates) {
+                                const msg = update.message;
+                                if (!msg) continue;
+                                if (msg.document) {
+                                    files.push({
+                                        type: 'document',
+                                        file_id: msg.document.file_id,
+                                        file_name: msg.document.file_name || 'document',
+                                        mime_type: msg.document.mime_type || 'application/octet-stream',
+                                        file_size: msg.document.file_size || 0,
+                                        ts: new Date().toISOString(),
+                                        update_id: update.update_id,
+                                    });
+                                }
+                                if (msg.photo && msg.photo.length > 0) {
+                                    const largest = msg.photo[msg.photo.length - 1];
+                                    files.push({
+                                        type: 'photo',
+                                        file_id: largest.file_id,
+                                        file_name: 'photo.jpg',
+                                        mime_type: 'image/jpeg',
+                                        file_size: largest.file_size || 0,
+                                        ts: new Date().toISOString(),
+                                        update_id: update.update_id,
+                                    });
+                                }
+                            }
+
+                            if (files.length > 0) {
+                                let existing = [];
+                                try { existing = JSON.parse(fs.readFileSync(fileMetadataPath, 'utf8')); } catch (_) { /* file may not exist yet */ }
+                                const merged = [...existing, ...files].slice(-20);
+                                fs.writeFileSync(fileMetadataPath, JSON.stringify(merged, null, 2), 'utf8');
+                            }
+                        }
                     }
-                }
 
-                if (files.length > 0) {
-                    // Merge with existing file metadata (keep last 20 entries)
-                    let existing = [];
-                    try { existing = JSON.parse(fs.readFileSync(fileMetadataPath, 'utf8')); } catch (_) { /* file may not exist yet */ }
-                    const merged = [...existing, ...files].slice(-20);
-                    fs.writeFileSync(fileMetadataPath, JSON.stringify(merged, null, 2), 'utf8');
+                    synced = true; // switch to long-poll from next iteration
+                } catch (_) {
+                    // Non-fatal — interceptor failures must never crash the orchestrator
+                    synced = true;
+                    await new Promise(r => setTimeout(r, 2000));
                 }
-            } catch (_) {
-                // Non-fatal — interceptor failures should never crash the orchestrator
             }
-        }, FILE_INTERCEPTOR_INTERVAL);
-
-        fileInterceptor.unref();
+        })().catch(() => {});
     }
 
     return child.pid;
