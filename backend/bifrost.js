@@ -144,9 +144,9 @@ async function createVirtualKey(userId, model = 'minimax-m2.7', creditLimit = 0.
             reset_duration: '1M',
         },
         rate_limit: {
-            request_max_limit: 100,
+            request_max_limit: 500,
             request_reset_duration: '1h',
-            token_max_limit: 50000,
+            token_max_limit: 200000,
             token_reset_duration: '1d',
         },
         is_active: true,
