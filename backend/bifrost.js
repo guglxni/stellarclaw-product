@@ -348,6 +348,30 @@ function getProviderConfig(model) {
     return providers[model] || providers['minimax-m2.7'];
 }
 
+/**
+ * Updates a Virtual Key's rate limits.
+ * Used by the watchdog to proactively increase limits when a bot
+ * approaches its token cap, preventing the generic "Sorry, I encountered
+ * an error" message that picobot shows on 429 responses.
+ *
+ * @param  {string} vkId              - Virtual Key ID
+ * @param  {object} rateLimitConfig   - New rate limit settings
+ * @param  {number} rateLimitConfig.token_max_limit       - Max tokens per window
+ * @param  {string} rateLimitConfig.token_reset_duration   - e.g. '1d'
+ * @param  {number} [rateLimitConfig.request_max_limit]    - Max requests per window
+ * @param  {string} [rateLimitConfig.request_reset_duration] - e.g. '1h'
+ * @returns {Promise<object>}
+ */
+async function updateVirtualKeyRateLimit(vkId, rateLimitConfig) {
+    if (!vkId || typeof vkId !== 'string') {
+        throw new TypeError('vkId must be a non-empty string');
+    }
+    return bifrostRequest(`/api/governance/virtual-keys/${encodeURIComponent(vkId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ rate_limit: rateLimitConfig }),
+    });
+}
+
 // ─── Exports ────────────────────────────────────────────────────────────────
 module.exports = {
     createVirtualKey,
@@ -355,6 +379,7 @@ module.exports = {
     getVirtualKey,
     getVirtualKeyUsage,
     deactivateVirtualKey,
+    updateVirtualKeyRateLimit,
     getGatewayUrl,
     getProviderConfig,
 };

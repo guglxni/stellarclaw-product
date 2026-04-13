@@ -1754,6 +1754,13 @@ When the user's message appears empty or they mention sending a file/PDF/documen
 4. If it fails or says no document found: tell the user "I can see you sent something, but I'm not able to receive it directly. Please paste the key text here, or send photos/screenshots of the pages."
 Do this automatically — never say "I don't see a document" without trying the tool first.
 
+## ERROR HANDLING
+If a tool call fails or returns an error:
+- Tell the user what specifically went wrong. NEVER just say "I encountered an error."
+- Include the error code or reason if available (e.g. "rate limit exceeded", "file too large", "connection timeout").
+- Suggest what they can do: retry in a few minutes, check their usage with /usage, send the content as text instead, etc.
+- If multiple tool calls fail in a row, tell the user: "There seems to be a service issue. Try again in a few minutes. If it persists, your credits may be exhausted — check with /usage."
+
 ## CAPABILITIES
 Answering questions, analysis, writing, coding, brainstorming, research, productivity.
 Analyze images the user sends as photos (use the image_analysis tool).
@@ -2336,6 +2343,49 @@ if (config.nodeEnv !== 'test') {
                     process.kill(zombiePid, 'SIGTERM');
                     log.watchdog.warn('Killed orphaned picobot', { pid: zombiePid });
                 } catch (_) { /* already dead */ }
+            }
+
+            // ── Proactive Rate Limit Monitor ──────────────────────────────
+            // Bifrost returns 429 when a VK hits its token limit. picobot shows
+            // a generic "Sorry, I encountered an error" to the user with no way
+            // to override the message. Prevention > cure: check VK usage and
+            // auto-increase the limit before the bot goes silent.
+            for (const bot of currentBots) {
+                if (!bot.bifrost_vk_id) continue;
+                try {
+                    const vkData = await bifrost.getVirtualKey(bot.bifrost_vk_id);
+                    const vk = vkData.virtual_key || vkData;
+                    const rl = vk.rate_limit || {};
+                    const tokenUsed = rl.token_current_usage ?? rl.current_token_usage ?? 0;
+                    const tokenLimit = rl.token_max_limit ?? 200000;
+                    const usagePct = tokenLimit > 0 ? (tokenUsed / tokenLimit) * 100 : 0;
+
+                    if (usagePct >= 80) {
+                        const newLimit = tokenLimit * 2;
+                        await bifrost.updateVirtualKeyRateLimit(bot.bifrost_vk_id, {
+                            token_max_limit: newLimit,
+                            token_reset_duration: '1d',
+                            request_max_limit: 500,
+                            request_reset_duration: '1h',
+                        });
+                        log.watchdog.warn('VK token limit auto-increased', {
+                            userId: bot.user_id,
+                            vkId: bot.bifrost_vk_id,
+                            tokenUsed,
+                            oldLimit: tokenLimit,
+                            newLimit,
+                            usagePct: Math.round(usagePct),
+                        });
+                        logEvent(bot.user_id, 'vk_rate_limit_auto_increased', {
+                            tokenUsed, oldLimit: tokenLimit, newLimit,
+                        });
+                    }
+                } catch (err) {
+                    // Non-fatal — VK check failure should not break the watchdog
+                    log.watchdog.error('VK rate limit check failed', {
+                        userId: bot.user_id, vkId: bot.bifrost_vk_id, error: err.message,
+                    });
+                }
             }
 
             // ── Memory Pressure Alert ──────────────────────────────────────
