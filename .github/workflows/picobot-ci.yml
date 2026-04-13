@@ -298,27 +298,51 @@ jobs:
         with:
           name: ${{ needs.build.outputs.artifact_name }}
 
-      - name: Backup + Upload + Install
+      - name: Prepare binary for upload
+        run: |
+          chmod +x picobot
+          base64 picobot > picobot.b64
+          echo "Binary size: $(ls -lh picobot | awk '{print $5}')"
+          echo "Base64 size: $(ls -lh picobot.b64 | awk '{print $5}')"
+
+      - name: Deploy patched binary
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 30s
+          command_timeout: 3m
+          script_stop: true
           script: |
             set -euo pipefail
             PICOBOT_DIR="/opt/liveclaw/backend"
             BINARY="${PICOBOT_DIR}/picobot"
+            BINARY_TMP="${PICOBOT_DIR}/picobot.new"
+            VERSION_FILE="${PICOBOT_DIR}/.picobot-version"
             ROLLBACK_DIR="${PICOBOT_DIR}/.picobot-rollback"
+            PATCHED_VERSION="${{ needs.resolve.outputs.patched_version }}"
 
-            # Backup current binary (keep last 3)
+            # Step 1: Stop orchestrator (kills all picobot processes, frees binary)
+            echo "=== Stopping orchestrator ==="
+            if pm2 describe liveclaw-orchestrator &>/dev/null; then
+              pm2 stop liveclaw-orchestrator 2>/dev/null || true
+              sleep 2
+            fi
+
+            # Kill any remaining picobot processes
+            pkill -f "picobot gateway" 2>/dev/null || true
+            sleep 1
+
+            # Step 2: Backup current binary
             mkdir -p "$ROLLBACK_DIR"
             if [ -f "$BINARY" ]; then
-              CURRENT_VER=$(cat "${PICOBOT_DIR}/.picobot-version" 2>/dev/null || echo "unknown")
+              CURRENT_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
               cp "$BINARY" "${ROLLBACK_DIR}/picobot.${CURRENT_VER}"
               ls -t "${ROLLBACK_DIR}"/picobot.* 2>/dev/null | tail -n +4 | xargs -r rm -f
               echo "Backed up: ${CURRENT_VER}"
             fi
+
+            echo "=== Binary is now free for replacement ==="
 
       - name: Upload patched binary
         uses: appleboy/scp-action@v0.1.7
@@ -330,7 +354,7 @@ jobs:
           target: /opt/liveclaw/backend/
           overwrite: true
 
-      - name: Install and reload
+      - name: Install and restart
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -356,6 +380,8 @@ jobs:
                 chmod +x "$BINARY"
                 echo "Rolled back to: $(basename "$LATEST_BACKUP")"
               fi
+              # Start orchestrator back up with old binary
+              pm2 start liveclaw-orchestrator 2>/dev/null || true
               exit 1
             fi
 
@@ -363,11 +389,12 @@ jobs:
             SIZE=$(ls -lh "$BINARY" | awk '{print $5}')
             echo "Installed: ${PATCHED_VERSION} (${SIZE})"
 
-            # Reload orchestrator
+            # Start orchestrator (spawns bots with new binary)
             if pm2 describe liveclaw-orchestrator &>/dev/null; then
-              pm2 reload liveclaw-orchestrator --update-env
-              sleep 2
-              echo "PM2 reloaded — bots restarting with patched picobot"
+              pm2 start liveclaw-orchestrator --update-env
+              sleep 3
+              pm2 status liveclaw-orchestrator
+              echo "PM2 started — bots restarting with patched picobot"
             else
               echo "Warning: orchestrator not running via PM2"
             fi
