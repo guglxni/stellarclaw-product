@@ -60,18 +60,31 @@ async function fetchUsage() {
         throw new Error(`Bifrost ${res.status}: ${body.slice(0, 120)}`);
     }
     const data = await res.json();
-    const budget = data.budget || {};
+    const vk = data.virtual_key || data;
+
+    // Budget (monthly USD cap)
+    const budget = vk.budget || {};
     const spent  = parseFloat(budget.current_usage ?? budget.used ?? budget.spend ?? budget.usage ?? 0);
     const limit  = parseFloat(budget.max_limit     ?? budget.limit ?? 0);
     const remaining = Math.max(0, limit - spent);
     const usedPct   = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+
+    // Rate limit (daily token cap)
+    const rl = vk.rate_limit || {};
+    const tokensUsed  = rl.token_current_usage ?? rl.current_token_usage ?? 0;
+    const tokenLimit  = rl.token_max_limit ?? 0;
+    const tokenPct    = tokenLimit > 0 ? Math.round((tokensUsed / tokenLimit) * 100) : 0;
+
     return {
         spentUsd:     Number(spent.toFixed(4)),
         limitUsd:     Number(limit.toFixed(4)),
         remainingUsd: Number(remaining.toFixed(4)),
         usedPct,
         remainingPct: Math.max(0, 100 - usedPct),
-        isActive: data.is_active !== false,
+        isActive: vk.is_active !== false,
+        tokensUsedToday: tokensUsed,
+        tokenDailyLimit: tokenLimit,
+        tokenPct,
     };
 }
 
@@ -137,18 +150,33 @@ Returns a formatted plain-text usage summary.`,
         async () => {
             try {
                 const u = await fetchUsage();
-                const warning = u.usedPct >= 80
-                    ? `\nWarning: credits running low. Use /recharge <amount> to top up.`
-                    : u.usedPct >= 50
-                    ? `\nTip: you have used over half your monthly budget.`
+
+                // Budget status line
+                const budgetStatus = u.isActive ? 'Active' : 'Budget exhausted — wait for monthly reset or /recharge';
+
+                // Daily tokens info
+                const tokenLine = u.tokenDailyLimit > 0
+                    ? `  Today: ${u.tokensUsedToday.toLocaleString()} / ${u.tokenDailyLimit.toLocaleString()} tokens (${u.tokenPct}% — resets midnight UTC)`
                     : '';
+
+                // Contextual advice
+                let advice = '';
+                if (u.usedPct >= 95) {
+                    advice = '\nCredits almost exhausted! Top up now with /recharge <amount> or wait for your monthly billing reset.';
+                } else if (u.usedPct >= 80) {
+                    advice = '\nCredits running low. Top up with /recharge <amount> to avoid interruptions, or wait for monthly reset.';
+                } else if (u.usedPct >= 50) {
+                    advice = '\nOver halfway through your monthly budget. Top up anytime with /recharge <amount>.';
+                }
+
                 const text = [
-                    `Credit Usage for this billing cycle:`,
-                    `  Spent:     $${u.spentUsd.toFixed(2)} of $${u.limitUsd.toFixed(2)} (${u.usedPct}% used)`,
-                    `  Remaining: $${u.remainingUsd.toFixed(2)} (${u.remainingPct}% left)`,
-                    u.isActive ? `  Status: Active` : `  Status: Budget exhausted`,
-                    warning,
+                    'Credit Usage:',
+                    `  Monthly: $${u.spentUsd.toFixed(2)} / $${u.limitUsd.toFixed(2)} (${u.usedPct}% used, $${u.remainingUsd.toFixed(2)} remaining)`,
+                    tokenLine,
+                    `  Status: ${budgetStatus}`,
+                    advice,
                 ].filter(l => l !== '').join('\n');
+
                 return { content: [{ type: 'text', text }] };
             } catch (e) {
                 return {

@@ -2345,22 +2345,26 @@ if (config.nodeEnv !== 'test') {
                 } catch (_) { /* already dead */ }
             }
 
-            // ── Proactive Rate Limit Monitor ──────────────────────────────
-            // Bifrost returns 429 when a VK hits its token limit. picobot shows
-            // a generic "Sorry, I encountered an error" to the user with no way
-            // to override the message. Prevention > cure: check VK usage and
-            // auto-increase the limit before the bot goes silent.
+            // ── Proactive Usage Monitor (rate limits + budget) ─────────────
+            // Two layers of protection:
+            // 1. Rate limit (tokens/day): auto-increase when near limit to prevent 429
+            // 2. Budget ($USD/month): alert user via Telegram when credits run low
+            //
+            // picobot hardcodes "Sorry, I encountered an error" on 429 — we CANNOT
+            // change that message. The only fix is preventing the 429 entirely.
             for (const bot of currentBots) {
                 if (!bot.bifrost_vk_id) continue;
                 try {
                     const vkData = await bifrost.getVirtualKey(bot.bifrost_vk_id);
                     const vk = vkData.virtual_key || vkData;
+
+                    // ── Rate limit auto-scaling ──────────────────────────────
                     const rl = vk.rate_limit || {};
                     const tokenUsed = rl.token_current_usage ?? rl.current_token_usage ?? 0;
                     const tokenLimit = rl.token_max_limit ?? 200000;
-                    const usagePct = tokenLimit > 0 ? (tokenUsed / tokenLimit) * 100 : 0;
+                    const tokenPct = tokenLimit > 0 ? (tokenUsed / tokenLimit) * 100 : 0;
 
-                    if (usagePct >= 80) {
+                    if (tokenPct >= 80) {
                         const newLimit = tokenLimit * 2;
                         await bifrost.updateVirtualKeyRateLimit(bot.bifrost_vk_id, {
                             token_max_limit: newLimit,
@@ -2369,20 +2373,61 @@ if (config.nodeEnv !== 'test') {
                             request_reset_duration: '1h',
                         });
                         log.watchdog.warn('VK token limit auto-increased', {
-                            userId: bot.user_id,
-                            vkId: bot.bifrost_vk_id,
-                            tokenUsed,
-                            oldLimit: tokenLimit,
-                            newLimit,
-                            usagePct: Math.round(usagePct),
+                            userId: bot.user_id, tokenUsed, oldLimit: tokenLimit, newLimit,
                         });
-                        logEvent(bot.user_id, 'vk_rate_limit_auto_increased', {
-                            tokenUsed, oldLimit: tokenLimit, newLimit,
-                        });
+                    }
+
+                    // ── Budget alert to user via Telegram ────────────────────
+                    const budget = vk.budget || {};
+                    const spent = parseFloat(budget.current_usage ?? budget.used ?? 0);
+                    const limit = parseFloat(budget.max_limit ?? 0);
+                    const budgetPct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+
+                    // Alert thresholds: 80% and 95%. Deduplicate with event_logs —
+                    // only send if we haven't alerted at this tier today.
+                    if (budgetPct >= 80 && bot.telegram_chat_id && config.masterBotToken) {
+                        const tier = budgetPct >= 95 ? 'critical' : 'warning';
+                        const alertKey = `budget_alert_${tier}`;
+                        const today = new Date().toISOString().slice(0, 10);
+
+                        // Check if we already sent this alert tier today
+                        const alreadySent = await db.get(
+                            `SELECT 1 FROM event_logs WHERE user_id = ? AND event = ? AND ts >= ?`,
+                            [bot.user_id, alertKey, today]
+                        );
+
+                        if (!alreadySent) {
+                            const remaining = Math.max(0, limit - spent).toFixed(2);
+                            const emoji = tier === 'critical' ? '🔴' : '⚡';
+                            const msg = tier === 'critical'
+                                ? `${emoji} Credits nearly exhausted!\n\nYou have used ${budgetPct}% of your $${limit.toFixed(2)} monthly budget ($${remaining} remaining).\n\nTo keep your bot running, top up with /recharge <amount> or wait for the monthly reset.\n\nCheck details: /usage`
+                                : `${emoji} Credits running low\n\nYou have used ${budgetPct}% of your $${limit.toFixed(2)} monthly budget ($${remaining} remaining).\n\nTop up anytime with /recharge <amount>, or your budget will reset on your next billing date.\n\nCheck details: /usage`;
+
+                            try {
+                                const telegramToken = bot.telegram_token ? decryptToken(bot.telegram_token) : config.masterBotToken;
+                                await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        chat_id: bot.telegram_chat_id,
+                                        text: msg,
+                                    }),
+                                    signal: AbortSignal.timeout(10000),
+                                });
+                                logEvent(bot.user_id, alertKey, {
+                                    budgetPct, spent: spent.toFixed(4), limit: limit.toFixed(2), remaining,
+                                });
+                                log.watchdog.info('Budget alert sent', { userId: bot.user_id, tier, budgetPct });
+                            } catch (sendErr) {
+                                log.watchdog.error('Budget alert send failed', {
+                                    userId: bot.user_id, error: sendErr.message,
+                                });
+                            }
+                        }
                     }
                 } catch (err) {
                     // Non-fatal — VK check failure should not break the watchdog
-                    log.watchdog.error('VK rate limit check failed', {
+                    log.watchdog.error('VK usage check failed', {
                         userId: bot.user_id, vkId: bot.bifrost_vk_id, error: err.message,
                     });
                 }
