@@ -46,17 +46,27 @@ if (!API_KEY) {
 
 // ─── Database ────────────────────────────────────────────────────────────────
 
-const db = createDatabase({ databaseUrl: DATABASE_URL || undefined, dbPath: DB_PATH });
+let db = null;
+let dbAvailable = false;
 
 async function initDb() {
-    await db.exec(`
-        CREATE TABLE IF NOT EXISTS vision_usage (
-            user_id TEXT NOT NULL,
-            day     TEXT NOT NULL,
-            count   INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, day)
-        )
-    `);
+    try {
+        db = createDatabase({ databaseUrl: DATABASE_URL || undefined, dbPath: DB_PATH });
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS vision_usage (
+                user_id TEXT NOT NULL,
+                day     TEXT NOT NULL,
+                count   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, day)
+            )
+        `);
+        dbAvailable = true;
+    } catch (err) {
+        // DB unavailable — continue without daily cap tracking rather than crashing.
+        // vision analysis will still work; usage won't be rate-limited until DB recovers.
+        process.stderr.write(`vision-mcp: DB init failed (cap tracking disabled): ${err.message}\n`);
+        dbAvailable = false;
+    }
 }
 
 /** Returns current UTC date as YYYY-MM-DD */
@@ -67,32 +77,43 @@ function utcDay() {
 /**
  * Atomically check the daily cap and increment if allowed.
  * Returns { allowed: boolean, used: number, limit: number }
+ * If DB is unavailable, always allows (cap tracking skipped).
  */
 async function checkAndIncrement() {
-    const day = utcDay();
-    const row = await db.get(
-        'SELECT count FROM vision_usage WHERE user_id = ? AND day = ?',
-        [USER_ID, day]
-    );
-    const used = row ? row.count : 0;
-
-    if (used >= DAILY_LIMIT) {
-        return { allowed: false, used, limit: DAILY_LIMIT };
+    if (!dbAvailable) {
+        return { allowed: true, used: 0, limit: DAILY_LIMIT };
     }
 
-    if (row) {
-        await db.run(
-            'UPDATE vision_usage SET count = count + 1 WHERE user_id = ? AND day = ?',
+    try {
+        const day = utcDay();
+        const row = await db.get(
+            'SELECT count FROM vision_usage WHERE user_id = ? AND day = ?',
             [USER_ID, day]
         );
-    } else {
-        await db.run(
-            'INSERT INTO vision_usage (user_id, day, count) VALUES (?, ?, 1)',
-            [USER_ID, day]
-        );
-    }
+        const used = row ? row.count : 0;
 
-    return { allowed: true, used: used + 1, limit: DAILY_LIMIT };
+        if (used >= DAILY_LIMIT) {
+            return { allowed: false, used, limit: DAILY_LIMIT };
+        }
+
+        if (row) {
+            await db.run(
+                'UPDATE vision_usage SET count = count + 1 WHERE user_id = ? AND day = ?',
+                [USER_ID, day]
+            );
+        } else {
+            await db.run(
+                'INSERT INTO vision_usage (user_id, day, count) VALUES (?, ?, 1)',
+                [USER_ID, day]
+            );
+        }
+
+        return { allowed: true, used: used + 1, limit: DAILY_LIMIT };
+    } catch (err) {
+        // DB query failed mid-flight — allow the request rather than blocking vision
+        process.stderr.write(`vision-mcp: DB query failed (allowing request): ${err.message}\n`);
+        return { allowed: true, used: 0, limit: DAILY_LIMIT };
+    }
 }
 
 // ─── URL Validation (SSRF Protection) ────────────────────────────────────────
@@ -206,6 +227,7 @@ async function callVisionModel(imageUrl, prompt) {
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
 async function main() {
+    // Non-fatal — if DB is unavailable, vision still works without daily cap tracking
     await initDb();
 
     const server = new McpServer({

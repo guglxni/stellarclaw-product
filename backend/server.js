@@ -1823,6 +1823,8 @@ Never as a formal notice — weave it in conversationally.
             OCR_MODEL: config.ocrModel,
             DB_PATH: config.dbPath || '',
             ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
+            // Keep vision-mcp PG pool tiny — it runs per-bot and only does 1 query per image call
+            PG_POOL_MAX: '2',
         } : {}),
         // Telegram file MCP
         ...(telegramToken ? {
