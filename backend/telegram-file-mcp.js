@@ -238,8 +238,15 @@ async function downloadTelegramFile(fileId, fileName) {
     const fileRes = await fetch(downloadUrl);
     if (!fileRes.ok) throw new Error(`Download failed: ${fileRes.status}`);
 
-    // Sanitize filename
-    const safeName = (fileName || 'received_file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    // Use extension from Telegram's file_path (e.g., "photos/file_XX.jpg" → ".jpg")
+    // This is critical for photos which have no user-provided filename
+    let safeName = (fileName || 'received_file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const telegramExt = path.extname(filePath);   // e.g., ".jpg"
+    const localExt = path.extname(safeName);       // e.g., "" for "received_file"
+    if (!localExt && telegramExt) {
+        safeName += telegramExt;                    // "received_file" → "received_file.jpg"
+    }
+
     const localPath = path.join(WORKSPACE, safeName);
     const buffer = Buffer.from(await fileRes.arrayBuffer());
     fs.writeFileSync(localPath, buffer);
@@ -496,8 +503,15 @@ For PDFs: extracts text via vision OCR. For other files: saves to workspace for 
                 const localPath = await downloadTelegramFile(doc.file_id, doc.file_name);
                 const fileName = path.basename(localPath);
 
-                // Determine if PDF — check mime_type, file extension, and provided mime_type param
-                const isPdf = (doc.mime_type || '').includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+                // Detect actual mime type from file extension (more reliable than parameter)
+                const extLower = path.extname(fileName).slice(1).toLowerCase();
+                const detectedMime = {
+                    pdf: 'application/pdf',
+                    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+                    gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+                }[extLower] || doc.mime_type || 'application/octet-stream';
+
+                const isPdf = detectedMime.includes('pdf');
                 if (isPdf) {
                     const stat = fs.statSync(localPath);
                     const fileSizeKb = Math.round(stat.size / 1024);
@@ -526,7 +540,7 @@ For PDFs: extracts text via vision OCR. For other files: saves to workspace for 
                 }
 
                 // Image path — analyze directly via vision model (same as PDF OCR approach)
-                const isImage = (doc.mime_type || '').startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(fileName);
+                const isImage = detectedMime.startsWith('image/');
                 if (isImage) {
                     const stat = fs.statSync(localPath);
                     const fileSizeKb = Math.round(stat.size / 1024);
