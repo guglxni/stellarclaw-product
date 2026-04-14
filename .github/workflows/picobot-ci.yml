@@ -25,6 +25,12 @@ on:
     paths:
       - 'patches/picobot/**'
 
+  # Re-deploy patched binary after every CI/CD deploy (which may overwrite it)
+  workflow_run:
+    workflows: ["LiveClaw CI/CD"]
+    types: [completed]
+    branches: [main]
+
   workflow_dispatch:
     inputs:
       picobot_ref:
