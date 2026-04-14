@@ -1,0 +1,67 @@
+name: Server Diagnostic
+on:
+  workflow_dispatch:
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run diagnostics
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 60s
+          script: |
+            echo "=== 1. Picobot binary ==="
+            ls -la /opt/liveclaw/backend/picobot
+            cat /opt/liveclaw/backend/.picobot-version 2>/dev/null || echo "no version file"
+            sha256sum /opt/liveclaw/backend/picobot
+
+            echo ""
+            echo "=== 2. Running picobot processes ==="
+            ps aux | grep picobot | grep -v grep || echo "no picobot processes"
+
+            echo ""
+            echo "=== 3. PM2 status ==="
+            pm2 status
+
+            echo ""
+            echo "=== 4. Check if patched (look for Photo in binary) ==="
+            strings /opt/liveclaw/backend/picobot | grep -c "Photo received" || echo "0 matches"
+            strings /opt/liveclaw/backend/picobot | grep -c "PICOBOT_SHOW_TOOL_ACTIVITY" || echo "0 matches"
+
+            echo ""
+            echo "=== 5. Bot config check ==="
+            # Find a bot's config.json and check enableToolActivityIndicator
+            FIRST_BOT=$(ls -d /opt/liveclaw/bots/*/  2>/dev/null | head -1)
+            if [ -n "$FIRST_BOT" ]; then
+              echo "Bot dir: $FIRST_BOT"
+              cat "${FIRST_BOT}.picobot/config.json" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -30 || echo "no config.json"
+              echo ""
+              echo "--- SOUL.md first 5 lines ---"
+              head -5 "${FIRST_BOT}.picobot/workspace/SOUL.md" 2>/dev/null || echo "no SOUL.md"
+              echo ""
+              echo "--- profile.md ---"
+              cat "${FIRST_BOT}.picobot/workspace/profile.md" 2>/dev/null || echo "no profile.md"
+              echo ""
+              echo "--- workspace files ---"
+              ls -la "${FIRST_BOT}.picobot/workspace/" 2>/dev/null | head -15
+            else
+              echo "no bot directories found"
+            fi
+
+            echo ""
+            echo "=== 6. Picobot process environment ==="
+            PICO_PID=$(pgrep -f "picobot gateway" | head -1)
+            if [ -n "$PICO_PID" ]; then
+              echo "PID: $PICO_PID"
+              cat /proc/$PICO_PID/environ 2>/dev/null | tr '\0' '\n' | grep -E "PICOBOT_SHOW|OPENROUTER|VISION|OCR" || echo "env not readable"
+            else
+              echo "no picobot process found"
+            fi
+
+            echo ""
+            echo "=== 7. Recent orchestrator logs ==="
+            pm2 logs liveclaw-orchestrator --lines 20 --nostream 2>/dev/null || echo "no logs"
