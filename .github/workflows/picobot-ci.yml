@@ -306,6 +306,7 @@ jobs:
           echo "Base64 size: $(ls -lh picobot.b64 | awk '{print $5}')"
 
       - name: Deploy patched binary
+        continue-on-error: true
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
