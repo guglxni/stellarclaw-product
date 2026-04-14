@@ -533,7 +533,10 @@ jobs:
               echo "  Observability stack launched"
             ) || echo "  Warning: observability stack failed (non-blocking)"
 
-            echo "=== 5/7 Reload orchestrator (zero-downtime) ==="
+            echo "=== 5/7 Kill old picobot + reload orchestrator ==="
+            # Kill all picobot processes so they restart with updated config/SOUL.md
+            killall -9 picobot 2>/dev/null || true
+            sleep 1
             if pm2 describe liveclaw-orchestrator &>/dev/null; then
               pm2 reload liveclaw-orchestrator --update-env
             else

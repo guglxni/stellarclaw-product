@@ -326,9 +326,18 @@ jobs:
             pm2 stop liveclaw-orchestrator 2>/dev/null || true
             sleep 2
 
-            # Kill any remaining picobot processes (|| true prevents exit on no-match)
-            killall -q picobot 2>/dev/null || true
-            sleep 1
+            # Force-kill ALL picobot processes (SIGKILL — cannot be ignored)
+            killall -9 picobot 2>/dev/null || true
+            # Also kill by pattern in case binary was renamed
+            pgrep -f "picobot gateway" | xargs -r kill -9 2>/dev/null || true
+            sleep 2
+            # Verify no picobot processes remain
+            if pgrep -f "picobot" >/dev/null 2>&1; then
+              echo "WARNING: picobot processes still running after SIGKILL"
+              ps aux | grep picobot | grep -v grep
+            else
+              echo "All picobot processes terminated"
+            fi
 
             # Step 2: Backup current binary
             mkdir -p "$ROLLBACK_DIR"
@@ -384,13 +393,32 @@ jobs:
 
             echo "${PATCHED_VERSION}" > "$VERSION_FILE"
             SIZE=$(ls -lh "$BINARY" | awk '{print $5}')
+            SHA=$(sha256sum "$BINARY" | awk '{print $1}')
             echo "Installed: ${PATCHED_VERSION} (${SIZE})"
+            echo "SHA256: ${SHA}"
+
+            # Verify no old picobot processes survived
+            if pgrep -f "picobot" >/dev/null 2>&1; then
+              echo "ERROR: old picobot still running — force killing"
+              killall -9 picobot 2>/dev/null || true
+              sleep 1
+            fi
 
             # Start orchestrator (spawns bots with new binary)
             if pm2 describe liveclaw-orchestrator &>/dev/null; then
               pm2 start liveclaw-orchestrator --update-env
-              sleep 3
+              sleep 5
+
+              # Verify bots are running with the NEW binary
+              echo "=== Post-deploy verification ==="
               pm2 status liveclaw-orchestrator
+              echo "Version file: $(cat "$VERSION_FILE")"
+              echo "Binary hash: $(sha256sum "$BINARY" | awk '{print $1}')"
+
+              # Check if picobot processes are running
+              sleep 3
+              PCOUNT=$(pgrep -fc "picobot gateway" 2>/dev/null || echo "0")
+              echo "Picobot processes running: ${PCOUNT}"
               echo "PM2 started — bots restarting with patched picobot"
             else
               echo "Warning: orchestrator not running via PM2"
