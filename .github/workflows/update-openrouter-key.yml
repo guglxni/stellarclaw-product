@@ -1,0 +1,85 @@
+name: Update OpenRouter Key
+on:
+  workflow_dispatch:
+    inputs:
+      new_key:
+        description: "New OpenRouter API key (sk-or-v1-...)"
+        required: true
+        type: string
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Update key in Bifrost and .env
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 90s
+          script: |
+            NEW_KEY="${{ github.event.inputs.new_key }}"
+            echo "New key suffix: ...${NEW_KEY: -4}"
+
+            echo "=== Verify new key works directly on OpenRouter ==="
+            CHECK=$(curl -sS -w "\n---HTTP:%{http_code}" \
+              -H "Authorization: Bearer ${NEW_KEY}" \
+              https://openrouter.ai/api/v1/auth/key)
+            echo "$CHECK"
+            HTTP_CODE=$(echo "$CHECK" | grep "---HTTP:" | cut -d: -f2)
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "ERROR: key check failed (HTTP $HTTP_CODE) — aborting"
+              exit 1
+            fi
+
+            echo ""
+            echo "=== Update Bifrost provider key ==="
+            curl -sS -w "\n---HTTP:%{http_code}" \
+              -X PUT http://localhost:8080/api/providers/openrouter \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"name\": \"openrouter\",
+                \"keys\": [{
+                  \"id\": \"openrouter-key-1\",
+                  \"name\": \"openrouter-primary\",
+                  \"value\": {\"value\": \"${NEW_KEY}\", \"env_var\": \"\", \"from_env\": false},
+                  \"models\": [],
+                  \"blacklisted_models\": [],
+                  \"weight\": 1,
+                  \"enabled\": true,
+                  \"use_for_batch_api\": false
+                }],
+                \"network_config\": {
+                  \"default_request_timeout_in_seconds\": 30,
+                  \"max_retries\": 0,
+                  \"retry_backoff_initial\": 500,
+                  \"retry_backoff_max\": 5000,
+                  \"stream_idle_timeout_in_seconds\": 60,
+                  \"max_conns_per_host\": 5000
+                },
+                \"concurrency_and_buffer_size\": {\"concurrency\": 1000, \"buffer_size\": 5000},
+                \"send_back_raw_request\": false,
+                \"send_back_raw_response\": false,
+                \"store_raw_request_response\": false
+              }"
+
+            echo ""
+            echo "=== Update .env ==="
+            sed -i "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=${NEW_KEY}|" /opt/liveclaw/backend/.env
+            echo ".env updated. suffix: $(grep '^OPENROUTER_API_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tail -c5)"
+
+            echo ""
+            echo "=== Restart Bifrost to flush cache ==="
+            cd /opt/liveclaw && docker compose -f docker-compose.bifrost.yml restart bifrost
+            sleep 15
+            curl -sS http://localhost:8080/health
+
+            echo ""
+            echo "=== Test LLM call through Bifrost ==="
+            VK=$(cat /opt/liveclaw/bots/*/.picobot/config.json 2>/dev/null | grep apiKey | head -1 | cut -d'"' -f4)
+            curl -sS -X POST http://localhost:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${VK}" \
+              --max-time 30 \
+              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
