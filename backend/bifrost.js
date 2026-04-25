@@ -382,6 +382,61 @@ async function updateVirtualKeyRateLimit(vkId, rateLimitConfig) {
     });
 }
 
+// ─── Provider Bootstrap ─────────────────────────────────────────────────────
+
+/**
+ * Ensures the 'openrouter' provider is registered in Bifrost.
+ * Called at orchestrator startup — idempotent, non-fatal on failure.
+ *
+ * Without a registered provider, all VK-routed LLM calls silently fail with
+ * picobot's generic "Sorry, I encountered an error" message.
+ */
+async function ensureBifrostProvider() {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+        console.warn('[bifrost] OPENROUTER_API_KEY not set — skipping provider bootstrap');
+        return;
+    }
+
+    try {
+        const list = await bifrostRequest('/api/governance/providers');
+        const providers = list.providers || [];
+        const exists = Array.isArray(providers) && providers.some(p => p.name === 'openrouter');
+        if (exists) return; // already configured
+    } catch (err) {
+        // Can't check — attempt creation anyway
+        console.warn('[bifrost] Could not list providers:', err.message);
+    }
+
+    try {
+        await bifrostRequest('/api/governance/providers', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: 'openrouter',
+                network_config: {
+                    base_url: 'https://openrouter.ai/api/v1',
+                    default_request_timeout_in_seconds: 30,
+                    max_retries: 3,
+                    retry_on_status_codes: [429, 500, 502, 503, 504],
+                    concurrency_and_buffer_size: 100,
+                },
+                keys: [
+                    {
+                        value: apiKey,
+                        models: ['*'],
+                        rate_limit_per_minute_per_key: 0,
+                    },
+                ],
+            }),
+        });
+        console.log('[bifrost] OpenRouter provider registered successfully');
+    } catch (err) {
+        // 409 = already exists (race or different check), safe to ignore
+        if (err.statusCode === 409) return;
+        console.error('[bifrost] Failed to register OpenRouter provider:', err.message);
+    }
+}
+
 // ─── Exports ────────────────────────────────────────────────────────────────
 module.exports = {
     createVirtualKey,
@@ -392,4 +447,5 @@ module.exports = {
     updateVirtualKeyRateLimit,
     getGatewayUrl,
     getProviderConfig,
+    ensureBifrostProvider,
 };

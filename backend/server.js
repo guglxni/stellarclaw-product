@@ -2256,6 +2256,13 @@ if (config.nodeEnv !== 'test') {
         });
     }
 
+    // ─── Bifrost Provider Bootstrap ──────────────────────────────────────────
+    // Ensures the OpenRouter provider is registered in Bifrost before any bots
+    // try to make LLM calls. Without this, VK-routed requests fail silently.
+    bifrost.ensureBifrostProvider().catch(err => {
+        log.startup.warn('Bifrost provider bootstrap failed (non-fatal)', { error: err.message });
+    });
+
     // ─── Startup Bot Recovery ────────────────────────────────────────────────
     // After each deploy the orchestrator restarts and graceful shutdown marks all
     // bots as 'stopped'. On startup, re-spawn any bot with an active subscription

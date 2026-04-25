@@ -1,0 +1,59 @@
+name: Fix Bifrost Provider
+on:
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Register OpenRouter provider in Bifrost
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 60s
+          script: |
+            OPENROUTER_API_KEY=$(grep '^OPENROUTER_API_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tr -d '"' | tr -d "'")
+            echo "Key prefix: ${OPENROUTER_API_KEY:0:15}..."
+
+            echo "=== Current providers ==="
+            curl -sS http://localhost:8080/api/governance/providers
+
+            echo ""
+            echo "=== Registering openrouter provider ==="
+            HTTP_RESPONSE=$(curl -sS -w "\n---HTTP_STATUS:%{http_code}" \
+              -X POST http://localhost:8080/api/governance/providers \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"name\": \"openrouter\",
+                \"network_config\": {
+                  \"base_url\": \"https://openrouter.ai/api/v1\",
+                  \"default_request_timeout_in_seconds\": 30,
+                  \"max_retries\": 3,
+                  \"retry_on_status_codes\": [429, 500, 502, 503, 504],
+                  \"concurrency_and_buffer_size\": 100
+                },
+                \"keys\": [
+                  {
+                    \"value\": \"${OPENROUTER_API_KEY}\",
+                    \"models\": [\"*\"],
+                    \"rate_limit_per_minute_per_key\": 0
+                  }
+                ]
+              }")
+            echo "$HTTP_RESPONSE"
+
+            echo ""
+            echo "=== Providers after registration ==="
+            curl -sS http://localhost:8080/api/governance/providers
+
+            echo ""
+            echo "=== Test LLM call ==="
+            VK=$(cat /opt/liveclaw/bots/*/.picobot/config.json 2>/dev/null | grep apiKey | head -1 | cut -d'"' -f4)
+            echo "VK prefix: ${VK:0:20}"
+            curl -sS -X POST http://localhost:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${VK}" \
+              --max-time 30 \
+              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":3}'
