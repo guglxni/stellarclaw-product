@@ -1,0 +1,45 @@
+name: Bifrost Swagger Probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Get Bifrost API spec and probe endpoints
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 60s
+          script: |
+            echo "=== Swagger paths (provider/account/key related) ==="
+            curl -sS http://localhost:8080/swagger.yaml 2>/dev/null | grep -E "^\s*(\/api|post:|put:|get:)" | head -80 || \
+            curl -sS http://localhost:8080/swagger | python3 -c "
+            import sys, json
+            try:
+                d = json.load(sys.stdin)
+                paths = d.get('paths', {})
+                for p in sorted(paths.keys()):
+                    methods = list(paths[p].keys())
+                    print(p, '->', ', '.join(methods))
+            except Exception as e:
+                print('parse error:', e)
+            " 2>/dev/null || echo "could not parse swagger"
+
+            echo ""
+            echo "=== GET /api/governance/provider-keys ==="
+            curl -sS http://localhost:8080/api/governance/provider-keys
+
+            echo ""
+            echo "=== GET /api/accounts ==="
+            curl -sS http://localhost:8080/api/accounts
+
+            echo ""
+            echo "=== GET /api/providers ==="
+            curl -sS http://localhost:8080/api/providers
+
+            echo ""
+            echo "=== All files in bifrost-data dir ==="
+            ls -la /opt/liveclaw/bifrost-data/
