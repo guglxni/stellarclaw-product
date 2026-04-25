@@ -1,0 +1,76 @@
+name: Bifrost Diagnostic
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check Bifrost and LLM pipeline
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 120s
+          script: |
+            echo "=== Bifrost process / Docker ==="
+            docker ps 2>/dev/null | grep -i bifrost || echo "no bifrost docker container"
+            ps aux | grep -i bifrost | grep -v grep || echo "no bifrost process"
+
+            echo ""
+            echo "=== Bifrost health ==="
+            curl -sf http://localhost:8080/health 2>&1 && echo "" || echo "BIFROST DOWN"
+
+            echo ""
+            echo "=== Bifrost models endpoint ==="
+            curl -sf http://localhost:8080/v1/models 2>&1 | python3 -m json.tool 2>/dev/null | head -50 || echo "no /v1/models response"
+
+            echo ""
+            echo "=== Read VK key from bot config ==="
+            VK_KEY=$(python3 -c "
+import json, glob, sys
+configs = glob.glob('/opt/liveclaw/bots/*/.picobot/config.json')
+if not configs:
+    print('')
+    sys.exit(0)
+data = json.load(open(configs[0]))
+print(data.get('providers',{}).get('openai',{}).get('apiKey',''))
+print('apiBase:', data.get('providers',{}).get('openai',{}).get('apiBase',''))
+" 2>/dev/null)
+            echo "VK key: ${VK_KEY}"
+
+            VK=$(python3 -c "
+import json, glob
+configs = glob.glob('/opt/liveclaw/bots/*/.picobot/config.json')
+if configs:
+    data = json.load(open(configs[0]))
+    print(data.get('providers',{}).get('openai',{}).get('apiKey',''))
+" 2>/dev/null)
+
+            echo ""
+            echo "=== Test actual LLM call (5-token response) ==="
+            RESPONSE=$(curl -s -X POST http://localhost:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $VK" \
+              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
+              --max-time 30 2>&1)
+            echo "HTTP response: $RESPONSE"
+
+            echo ""
+            echo "=== Bifrost VK lookup ==="
+            VK_LIST=$(curl -s http://localhost:8080/api/governance/virtual-keys \
+              --max-time 10 2>&1)
+            echo "VK list response: $VK_LIST" | head -100
+
+            echo ""
+            echo "=== Orchestrator .env Bifrost vars ==="
+            grep -E "BIFROST|OPENROUTER" /opt/liveclaw/backend/.env 2>/dev/null | sed 's/=.*/=REDACTED/' || echo "no .env or no matching vars"
+
+            echo ""
+            echo "=== Recent orchestrator error logs ==="
+            pm2 logs liveclaw-orchestrator --err --lines 30 --nostream 2>/dev/null || echo "no error logs"
+
+            echo ""
+            echo "=== Recent orchestrator out logs ==="
+            pm2 logs liveclaw-orchestrator --lines 30 --nostream 2>/dev/null | tail -40 || echo "no out logs"
