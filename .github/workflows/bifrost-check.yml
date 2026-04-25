@@ -6,71 +6,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check Bifrost and LLM pipeline
+      - name: Check Bifrost
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
           username: root
           key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 120s
+          command_timeout: 90s
           script: |
-            echo "=== Bifrost process / Docker ==="
-            docker ps 2>/dev/null | grep -i bifrost || echo "no bifrost docker container"
-            ps aux | grep -i bifrost | grep -v grep || echo "no bifrost process"
+            echo "=== Bifrost Docker ==="
+            docker ps | grep -i bifrost || echo "BIFROST_NOT_RUNNING"
 
-            echo ""
             echo "=== Bifrost health ==="
-            curl -sf http://localhost:8080/health 2>&1 && echo "" || echo "BIFROST DOWN"
+            curl -fs http://localhost:8080/health || echo "BIFROST_DOWN"
 
-            echo ""
-            echo "=== Bifrost models endpoint ==="
-            curl -sf http://localhost:8080/v1/models 2>&1 | python3 -m json.tool 2>/dev/null | head -50 || echo "no /v1/models response"
+            echo "=== Bifrost providers ==="
+            curl -fs http://localhost:8080/api/governance/providers || echo "NO_PROVIDERS_ENDPOINT"
 
-            echo ""
-            echo "=== Read VK key from bot config ==="
-            VK_KEY=$(python3 -c "
-import json, glob, sys
-configs = glob.glob('/opt/liveclaw/bots/*/.picobot/config.json')
-if not configs:
-    print('')
-    sys.exit(0)
-data = json.load(open(configs[0]))
-print(data.get('providers',{}).get('openai',{}).get('apiKey',''))
-print('apiBase:', data.get('providers',{}).get('openai',{}).get('apiBase',''))
-" 2>/dev/null)
-            echo "VK key: ${VK_KEY}"
-
-            VK=$(python3 -c "
-import json, glob
-configs = glob.glob('/opt/liveclaw/bots/*/.picobot/config.json')
-if configs:
-    data = json.load(open(configs[0]))
-    print(data.get('providers',{}).get('openai',{}).get('apiKey',''))
-" 2>/dev/null)
-
-            echo ""
-            echo "=== Test actual LLM call (5-token response) ==="
-            RESPONSE=$(curl -s -X POST http://localhost:8080/v1/chat/completions \
+            echo "=== Test LLM call ==="
+            VK=$(cat /opt/liveclaw/bots/*/\.picobot/config.json 2>/dev/null | grep apiKey | head -1 | cut -d'"' -f4)
+            echo "VK prefix: $(echo $VK | cut -c1-20)"
+            curl -fs -X POST http://localhost:8080/v1/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $VK" \
-              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
-              --max-time 30 2>&1)
-            echo "HTTP response: $RESPONSE"
+              --max-time 20 \
+              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":3}' || echo "LLM_CALL_FAILED"
 
-            echo ""
-            echo "=== Bifrost VK lookup ==="
-            VK_LIST=$(curl -s http://localhost:8080/api/governance/virtual-keys \
-              --max-time 10 2>&1)
-            echo "VK list response: $VK_LIST" | head -100
+            echo "=== Orchestrator .env Bifrost/OpenRouter vars ==="
+            grep -iE "BIFROST|OPENROUTER" /opt/liveclaw/backend/.env | sed 's/=.*/=REDACTED/' || echo "NOT_FOUND"
 
-            echo ""
-            echo "=== Orchestrator .env Bifrost vars ==="
-            grep -E "BIFROST|OPENROUTER" /opt/liveclaw/backend/.env 2>/dev/null | sed 's/=.*/=REDACTED/' || echo "no .env or no matching vars"
-
-            echo ""
-            echo "=== Recent orchestrator error logs ==="
-            pm2 logs liveclaw-orchestrator --err --lines 30 --nostream 2>/dev/null || echo "no error logs"
-
-            echo ""
-            echo "=== Recent orchestrator out logs ==="
-            pm2 logs liveclaw-orchestrator --lines 30 --nostream 2>/dev/null | tail -40 || echo "no out logs"
+            echo "=== Last 30 orchestrator logs ==="
+            pm2 logs liveclaw-orchestrator --lines 30 --nostream 2>/dev/null | tail -35
