@@ -1,0 +1,42 @@
+name: Test OpenRouter Direct
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test OpenRouter key directly
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 60s
+          script: |
+            ORKEY=$(grep '^OPENROUTER_API_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tr -d '"' | tr -d "'")
+            MGMTKEY=$(grep '^OPENROUTER_MGMT_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tr -d '"' | tr -d "'")
+
+            echo "API key prefix: ${ORKEY:0:20}... suffix: ...${ORKEY: -4}"
+            echo "MGMT key prefix: ${MGMTKEY:0:20}... suffix: ...${MGMTKEY: -4}"
+
+            echo ""
+            echo "=== Direct OpenRouter call with API key ==="
+            curl -sS -w "\n---HTTP:%{http_code}" \
+              -X POST https://openrouter.ai/api/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${ORKEY}" \
+              --max-time 30 \
+              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":3}'
+
+            echo ""
+            echo "=== Check OpenRouter account credits with API key ==="
+            curl -sS -w "\n---HTTP:%{http_code}" \
+              -H "Authorization: Bearer ${ORKEY}" \
+              https://openrouter.ai/api/v1/auth/key
+
+            echo ""
+            echo "=== Check with MGMT key ==="
+            curl -sS -w "\n---HTTP:%{http_code}" \
+              -H "Authorization: Bearer ${MGMTKEY}" \
+              https://openrouter.ai/api/v1/auth/key
