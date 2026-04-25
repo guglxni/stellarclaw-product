@@ -1,0 +1,48 @@
+name: Bifrost API Probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe Bifrost API
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DO_DROPLET_IP }}
+          username: root
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 60s
+          script: |
+            echo "=== Bifrost API docs endpoints ==="
+            for EP in /swagger /swagger.json /docs /api-docs /openapi.json /api/v1/docs; do
+              CODE=$(curl -so /dev/null -w "%{http_code}" http://localhost:8080$EP)
+              echo "$EP → $CODE"
+            done
+
+            echo ""
+            echo "=== Probe governance endpoints (GET) ==="
+            for EP in /api/governance/providers /api/governance/accounts /api/governance/keys /api/governance/provider-keys /api/providers /api/accounts; do
+              RESP=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:8080$EP)
+              echo "$EP → $RESP"
+            done
+
+            echo ""
+            echo "=== Bifrost container env ==="
+            docker inspect bifrost-gateway --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -v PASSWORD | grep -v SECRET | grep -v KEY || echo "no env"
+
+            echo ""
+            echo "=== bifrost-config.json in container ==="
+            docker exec bifrost-gateway cat /app/config.json 2>/dev/null || echo "no config.json"
+
+            echo ""
+            echo "=== SQLite provider tables ==="
+            DBPATH=$(docker inspect bifrost-gateway --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}')
+            echo "DB volume: $DBPATH"
+            sqlite3 "$DBPATH/logs.db" ".tables" 2>/dev/null || sqlite3 "$DBPATH"/*.db ".tables" 2>/dev/null || echo "could not open db"
+            echo ""
+            echo "--- Provider/account rows ---"
+            sqlite3 "$DBPATH/logs.db" "SELECT * FROM providers LIMIT 5;" 2>/dev/null || \
+            sqlite3 "$DBPATH/logs.db" "SELECT * FROM accounts LIMIT 5;" 2>/dev/null || \
+            sqlite3 "$DBPATH/logs.db" "SELECT * FROM provider_keys LIMIT 5;" 2>/dev/null || \
+            echo "no provider/account table found"
