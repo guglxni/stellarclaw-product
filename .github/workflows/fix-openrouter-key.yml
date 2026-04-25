@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Update OpenRouter key and verify
+      - name: Provision new OpenRouter key and update Bifrost
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DO_DROPLET_IP }}
@@ -15,29 +15,80 @@ jobs:
           command_timeout: 120s
           script: |
             MGMTKEY=$(grep '^OPENROUTER_MGMT_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tr -d '"' | tr -d "'")
-            echo "MGMT key suffix: ...${MGMTKEY: -4}"
 
-            echo ""
-            echo "=== Test MGMT key directly on OpenRouter chat completions ==="
-            curl -sS -w "\n---HTTP:%{http_code}" \
-              -X POST https://openrouter.ai/api/v1/chat/completions \
+            echo "=== Create new OpenRouter API key via provisioning key ==="
+            NEW_KEY_RESP=$(curl -sS -w "\n---HTTP:%{http_code}" \
+              -X POST https://openrouter.ai/api/v1/auth/keys \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer ${MGMTKEY}" \
-              --max-time 30 \
-              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":3}'
+              -d '{"name":"liveclaw-production","label":"liveclaw-production","limit":null}')
+            echo "$NEW_KEY_RESP"
 
-            echo ""
-            echo "=== Restart Bifrost to flush in-memory key cache ==="
-            cd /opt/liveclaw && docker compose -f docker-compose.bifrost.yml restart bifrost
-            echo "Waiting 15s for Bifrost to be healthy..."
-            sleep 15
-            curl -sS http://localhost:8080/health
+            NEW_KEY=$(echo "$NEW_KEY_RESP" | python3 -c "
+            import sys, json
+            data = sys.stdin.read()
+            # Find the JSON part (before ---HTTP:)
+            json_part = data.split('---HTTP:')[0].strip()
+            try:
+                d = json.loads(json_part)
+                print(d.get('key', d.get('data', {}).get('key', 'NOT_FOUND')))
+            except Exception as e:
+                print('PARSE_ERROR:', e)
+            " 2>/dev/null)
+            echo "New key suffix: ...${NEW_KEY: -4}"
 
-            echo ""
-            echo "=== Test LLM call through Bifrost after restart ==="
-            VK=$(cat /opt/liveclaw/bots/*/.picobot/config.json 2>/dev/null | grep apiKey | head -1 | cut -d'"' -f4)
-            curl -sS -X POST http://localhost:8080/v1/chat/completions \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${VK}" \
-              --max-time 30 \
-              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
+            if [[ "$NEW_KEY" == sk-or-* ]]; then
+              echo ""
+              echo "=== Updating Bifrost provider with new key ==="
+              curl -sS -w "\n---HTTP:%{http_code}" \
+                -X PUT http://localhost:8080/api/providers/openrouter \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"name\": \"openrouter\",
+                  \"keys\": [{
+                    \"id\": \"openrouter-key-1\",
+                    \"name\": \"openrouter-primary\",
+                    \"value\": {\"value\": \"${NEW_KEY}\", \"env_var\": \"\", \"from_env\": false},
+                    \"models\": [],
+                    \"blacklisted_models\": [],
+                    \"weight\": 1,
+                    \"enabled\": true,
+                    \"use_for_batch_api\": false
+                  }],
+                  \"network_config\": {
+                    \"default_request_timeout_in_seconds\": 30,
+                    \"max_retries\": 0,
+                    \"retry_backoff_initial\": 500,
+                    \"retry_backoff_max\": 5000,
+                    \"stream_idle_timeout_in_seconds\": 60,
+                    \"max_conns_per_host\": 5000
+                  },
+                  \"concurrency_and_buffer_size\": {\"concurrency\": 1000, \"buffer_size\": 5000},
+                  \"send_back_raw_request\": false,
+                  \"send_back_raw_response\": false,
+                  \"store_raw_request_response\": false
+                }"
+
+              echo ""
+              echo "=== Updating .env with new key ==="
+              sed -i "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=${NEW_KEY}|" /opt/liveclaw/backend/.env
+              echo "Done. .env suffix: $(grep '^OPENROUTER_API_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tail -c5)"
+
+              echo ""
+              echo "=== Restarting Bifrost to flush key cache ==="
+              cd /opt/liveclaw && docker compose -f docker-compose.bifrost.yml restart bifrost
+              sleep 15
+              curl -sS http://localhost:8080/health
+
+              echo ""
+              echo "=== Test LLM call through Bifrost ==="
+              VK=$(cat /opt/liveclaw/bots/*/.picobot/config.json 2>/dev/null | grep apiKey | head -1 | cut -d'"' -f4)
+              curl -sS -X POST http://localhost:8080/v1/chat/completions \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${VK}" \
+                --max-time 30 \
+                -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
+            else
+              echo "KEY_PROVISIONING_FAILED — new key not obtained, manual action required"
+              echo "Please create a new API key at openrouter.ai/keys and run: /update-openrouter-key <new_key>"
+            fi
