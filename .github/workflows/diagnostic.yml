@@ -57,11 +57,63 @@ jobs:
             PICO_PID=$(pgrep -f "picobot gateway" | head -1)
             if [ -n "$PICO_PID" ]; then
               echo "PID: $PICO_PID"
-              cat /proc/$PICO_PID/environ 2>/dev/null | tr '\0' '\n' | grep -E "PICOBOT_SHOW|OPENROUTER|VISION|OCR" || echo "env not readable"
+              cat /proc/$PICO_PID/environ 2>/dev/null | tr '\0' '\n' | grep -E "PICOBOT_SHOW|OPENROUTER|VISION|OCR|BIFROST|LIVECLAW" || echo "env not readable"
             else
               echo "no picobot process found"
             fi
 
             echo ""
             echo "=== 7. Recent orchestrator logs ==="
-            pm2 logs liveclaw-orchestrator --lines 20 --nostream 2>/dev/null || echo "no logs"
+            pm2 logs liveclaw-orchestrator --lines 50 --nostream 2>/dev/null || echo "no logs"
+
+            echo ""
+            echo "=== 8. Bifrost health ==="
+            curl -sf http://localhost:8080/health 2>&1 || echo "BIFROST DOWN or no /health endpoint"
+            echo ""
+            echo "--- Bifrost version ---"
+            curl -sf http://localhost:8080/v1/models 2>&1 | head -200 || echo "no /v1/models"
+
+            echo ""
+            echo "=== 9. Bifrost VK status ==="
+            VK_ID=$(cat /opt/liveclaw/bots/*/\\.picobot/config.json 2>/dev/null | python3 -c "
+import sys, json
+for line in sys.stdin:
+    pass
+" 2>/dev/null || true)
+            # Read VK key from first bot config
+            VK_KEY=$(python3 -c "
+import json, glob
+configs = glob.glob('/opt/liveclaw/bots/*/.picobot/config.json')
+if configs:
+    data = json.load(open(configs[0]))
+    print(data.get('providers',{}).get('openai',{}).get('apiKey','NOT_FOUND'))
+" 2>/dev/null || echo "NOT_FOUND")
+            echo "VK key prefix: ${VK_KEY:0:20}..."
+            echo ""
+            echo "--- VK API call to Bifrost ---"
+            curl -sf -H "Authorization: Bearer $VK_KEY" \
+              http://localhost:8080/api/governance/virtual-keys 2>&1 | python3 -m json.tool 2>/dev/null | head -30 || echo "VK API call failed"
+
+            echo ""
+            echo "=== 10. Test LLM call through Bifrost ==="
+            VK_KEY=$(python3 -c "
+import json, glob
+configs = glob.glob('/opt/liveclaw/bots/*/.picobot/config.json')
+if configs:
+    data = json.load(open(configs[0]))
+    print(data.get('providers',{}).get('openai',{}).get('apiKey',''))
+" 2>/dev/null || echo "")
+            if [ -n "$VK_KEY" ]; then
+              curl -sf -X POST http://localhost:8080/v1/chat/completions \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $VK_KEY" \
+                -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
+                2>&1 | head -200 || echo "LLM call failed (curl error)"
+            else
+              echo "Could not read VK key"
+            fi
+
+            echo ""
+            echo "=== 11. Bifrost Docker container ==="
+            docker ps 2>/dev/null | grep -i bifrost || echo "no bifrost docker container (or docker not available)"
+            docker logs bifrost --tail 20 2>/dev/null || echo "no bifrost docker logs"
