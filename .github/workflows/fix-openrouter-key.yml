@@ -14,55 +14,64 @@ jobs:
           key: ${{ secrets.DO_SSH_KEY }}
           command_timeout: 90s
           script: |
-            ORKEY=$(grep '^OPENROUTER_API_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tr -d '"' | tr -d "'")
-            echo "Env key suffix: ...${ORKEY: -4}"
+            MGMTKEY=$(grep '^OPENROUTER_MGMT_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tr -d '"' | tr -d "'")
+            echo "Using MGMT key suffix: ...${MGMTKEY: -4}"
 
             echo ""
-            echo "=== Current Bifrost provider key ==="
+            echo "=== Update Bifrost provider key via PUT /api/providers/openrouter ==="
+            curl -sS -w "\n---HTTP:%{http_code}" \
+              -X PUT http://localhost:8080/api/providers/openrouter \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"name\": \"openrouter\",
+                \"keys\": [{
+                  \"id\": \"openrouter-key-1\",
+                  \"name\": \"openrouter-primary\",
+                  \"value\": {\"value\": \"${MGMTKEY}\", \"env_var\": \"\", \"from_env\": false},
+                  \"models\": [],
+                  \"blacklisted_models\": [],
+                  \"weight\": 1,
+                  \"enabled\": true,
+                  \"use_for_batch_api\": false
+                }],
+                \"network_config\": {
+                  \"default_request_timeout_in_seconds\": 30,
+                  \"max_retries\": 0,
+                  \"retry_backoff_initial\": 500,
+                  \"retry_backoff_max\": 5000,
+                  \"stream_idle_timeout_in_seconds\": 60,
+                  \"max_conns_per_host\": 5000
+                },
+                \"concurrency_and_buffer_size\": {
+                  \"concurrency\": 1000,
+                  \"buffer_size\": 5000
+                },
+                \"send_back_raw_request\": false,
+                \"send_back_raw_response\": false,
+                \"store_raw_request_response\": false
+              }"
+
+            echo ""
+            echo "=== Update OPENROUTER_API_KEY in .env to match MGMT key ==="
+            sed -i "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=${MGMTKEY}|" /opt/liveclaw/backend/.env
+            echo "Updated. New API key suffix: $(grep '^OPENROUTER_API_KEY=' /opt/liveclaw/backend/.env | cut -d= -f2- | tail -c5)"
+
+            echo ""
+            echo "=== Verify provider key updated ==="
             curl -sS http://localhost:8080/api/providers | python3 -c "
             import sys, json
             d = json.load(sys.stdin)
             for p in d.get('providers', []):
                 for k in p.get('keys', []):
                     v = k.get('value', {})
-                    print('id:', k.get('id'), '| suffix: ...'+v.get('value','')[-4:], '| enabled:', k.get('enabled'))
+                    print('key suffix: ...'+v.get('value','')[-4:], '| enabled:', k.get('enabled'))
             " 2>/dev/null
 
             echo ""
-            echo "=== Try PUT /api/providers/openrouter ==="
-            RESP=$(curl -sS -w "\n---HTTP:%{http_code}" -X PUT http://localhost:8080/api/providers/openrouter \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"keys\": [{
-                  \"id\": \"openrouter-key-1\",
-                  \"name\": \"openrouter-primary\",
-                  \"value\": {\"value\": \"${ORKEY}\"},
-                  \"models\": [],
-                  \"weight\": 1,
-                  \"enabled\": true
-                }]
-              }")
-            echo "$RESP"
-
-            echo ""
-            echo "=== Try PATCH /api/providers/openrouter/keys/openrouter-key-1 ==="
-            RESP2=$(curl -sS -w "\n---HTTP:%{http_code}" -X PATCH http://localhost:8080/api/providers/openrouter/keys/openrouter-key-1 \
-              -H "Content-Type: application/json" \
-              -d "{\"value\": {\"value\": \"${ORKEY}\"}}")
-            echo "$RESP2"
-
-            echo ""
-            echo "=== Try PUT /api/providers/openrouter/keys/openrouter-key-1 ==="
-            RESP3=$(curl -sS -w "\n---HTTP:%{http_code}" -X PUT http://localhost:8080/api/providers/openrouter/keys/openrouter-key-1 \
-              -H "Content-Type: application/json" \
-              -d "{\"value\": {\"value\": \"${ORKEY}\"}}")
-            echo "$RESP3"
-
-            echo ""
-            echo "=== Test LLM call after attempts ==="
+            echo "=== Test LLM call through Bifrost ==="
             VK=$(cat /opt/liveclaw/bots/*/.picobot/config.json 2>/dev/null | grep apiKey | head -1 | cut -d'"' -f4)
             curl -sS -X POST http://localhost:8080/v1/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer ${VK}" \
               --max-time 30 \
-              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":3}'
+              -d '{"model":"minimax/minimax-m2.7","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'

@@ -385,55 +385,70 @@ async function updateVirtualKeyRateLimit(vkId, rateLimitConfig) {
 // ─── Provider Bootstrap ─────────────────────────────────────────────────────
 
 /**
- * Ensures the 'openrouter' provider is registered in Bifrost.
+ * Ensures the Bifrost OpenRouter provider key matches OPENROUTER_API_KEY.
  * Called at orchestrator startup — idempotent, non-fatal on failure.
  *
- * Without a registered provider, all VK-routed LLM calls silently fail with
- * picobot's generic "Sorry, I encountered an error" message.
+ * Bifrost stores providers in config.db (not the governance API). The correct
+ * endpoint is /api/providers. We update the key if it doesn't match the env var
+ * so a rotated OPENROUTER_API_KEY automatically propagates to Bifrost.
  */
 async function ensureBifrostProvider() {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-        console.warn('[bifrost] OPENROUTER_API_KEY not set — skipping provider bootstrap');
+        console.warn('[bifrost] OPENROUTER_API_KEY not set — skipping provider sync');
         return;
     }
 
+    let currentKeySuffix = null;
     try {
-        const list = await bifrostRequest('/api/governance/providers');
+        const list = await bifrostRequest('/api/providers');
         const providers = list.providers || [];
-        const exists = Array.isArray(providers) && providers.some(p => p.name === 'openrouter');
-        if (exists) return; // already configured
+        const or = providers.find(p => p.name === 'openrouter');
+        if (or && or.keys && or.keys.length > 0) {
+            const stored = or.keys[0].value?.value || '';
+            currentKeySuffix = stored.slice(-4);
+        }
     } catch (err) {
-        // Can't check — attempt creation anyway
-        console.warn('[bifrost] Could not list providers:', err.message);
+        console.warn('[bifrost] Could not read provider list:', err.message);
+        return;
     }
 
+    const wantSuffix = apiKey.slice(-4);
+    if (currentKeySuffix === wantSuffix) return; // key already matches
+
+    console.log(`[bifrost] OpenRouter key mismatch (stored: ...${currentKeySuffix}, want: ...${wantSuffix}) — updating`);
     try {
-        await bifrostRequest('/api/governance/providers', {
-            method: 'POST',
+        await bifrostRequest('/api/providers/openrouter', {
+            method: 'PUT',
             body: JSON.stringify({
                 name: 'openrouter',
+                keys: [{
+                    id: 'openrouter-key-1',
+                    name: 'openrouter-primary',
+                    value: { value: apiKey, env_var: '', from_env: false },
+                    models: [],
+                    blacklisted_models: [],
+                    weight: 1,
+                    enabled: true,
+                    use_for_batch_api: false,
+                }],
                 network_config: {
-                    base_url: 'https://openrouter.ai/api/v1',
                     default_request_timeout_in_seconds: 30,
-                    max_retries: 3,
-                    retry_on_status_codes: [429, 500, 502, 503, 504],
-                    concurrency_and_buffer_size: 100,
+                    max_retries: 0,
+                    retry_backoff_initial: 500,
+                    retry_backoff_max: 5000,
+                    stream_idle_timeout_in_seconds: 60,
+                    max_conns_per_host: 5000,
                 },
-                keys: [
-                    {
-                        value: apiKey,
-                        models: ['*'],
-                        rate_limit_per_minute_per_key: 0,
-                    },
-                ],
+                concurrency_and_buffer_size: { concurrency: 1000, buffer_size: 5000 },
+                send_back_raw_request: false,
+                send_back_raw_response: false,
+                store_raw_request_response: false,
             }),
         });
-        console.log('[bifrost] OpenRouter provider registered successfully');
+        console.log('[bifrost] OpenRouter provider key updated successfully');
     } catch (err) {
-        // 409 = already exists (race or different check), safe to ignore
-        if (err.statusCode === 409) return;
-        console.error('[bifrost] Failed to register OpenRouter provider:', err.message);
+        console.error('[bifrost] Failed to update OpenRouter provider key:', err.message);
     }
 }
 
