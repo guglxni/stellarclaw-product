@@ -53,7 +53,7 @@ nano backend/.env
 | `TOKEN_ENCRYPTION_KEY` | `openssl rand -hex 32` | AES-256-GCM key for encrypting Stellar secrets and Telegram tokens. Rotation invalidates all stored tokens. |
 | `ADMIN_SECRET` | `openssl rand -base64 32` | Bearer for `/admin/*` endpoints. |
 | `JWT_SECRET` | `openssl rand -base64 64` | Signs session JWTs. |
-| `DATABASE_URL` | Your Postgres connection string | Must be a writeable role with permission to create tables on first boot. |
+| `DATABASE_URL` | Your Postgres connection string | Must be a writeable role with permission to create tables on first boot. **Use a database dedicated to StellarClaw — never share a database namespace with another service.** |
 | `TELEGRAM_MASTER_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) | The master bot that sends inline keyboard messages. |
 | `GOOGLE_CLIENT_ID` | [Google Cloud Console → OAuth 2.0 Client IDs](https://console.cloud.google.com/apis/credentials) | Web Client. Add `https://stellarclaw.xyz` to authorised origins. |
 | `TURNSTILE_SECRET_KEY` | [Cloudflare → Turnstile](https://dash.cloudflare.com) | Used server-side. |
