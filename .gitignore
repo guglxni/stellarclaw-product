@@ -73,3 +73,4 @@ _agent/
 .gemini/
 *.db-shm
 *.db-wal
+**/.env

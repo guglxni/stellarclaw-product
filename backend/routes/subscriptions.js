@@ -1,5 +1,5 @@
 /**
- * LiveClaw — Subscription Routes
+ * StellarClaw — Subscription Routes
  *
  * Extracted from server.js. Uses factory pattern with dependency injection.
  *
@@ -105,8 +105,8 @@ function createSubscriptionRouter(deps) {
 
         try {
             const session = await dodo.createCheckoutSession(
-                plan, userId, email || `${userId}@liveclaw.xyz`,
-                'https://liveclaw.xyz?checkout=success',
+                plan, userId, email || `${userId}@stellarclaw.xyz`,
+                'https://stellarclaw.xyz?checkout=success',
                 discountCode,
                 earlyBird
             );
@@ -221,7 +221,7 @@ function createSubscriptionRouter(deps) {
             plans: {
                 standard: {
                     id: 'standard',
-                    name: 'LiveClaw',
+                    name: 'StellarClaw',
                     price: 9.99,
                     currency: 'usd',
                     interval: 'month',
@@ -324,8 +324,8 @@ function createSubscriptionRouter(deps) {
                 const session = await dodo.createCheckoutSession(
                     'beta',
                     userId,
-                    email || `${userId}@liveclaw.xyz`,
-                    'https://liveclaw.xyz?checkout=success',
+                    email || `${userId}@stellarclaw.xyz`,
+                    'https://stellarclaw.xyz?checkout=success',
                     code
                 );
                 await db.run(
@@ -381,7 +381,7 @@ function createSubscriptionRouter(deps) {
         return res.json({
             success: true,
             provisioned: true,
-            message: 'Founder access activated! Welcome to LiveClaw.',
+            message: 'Founder access activated! Welcome to StellarClaw.',
         });
     }));
 
@@ -414,9 +414,9 @@ function createSubscriptionRouter(deps) {
         try {
             const session = await dodo.createCreditsCheckout(
                 userId,
-                email || `${userId}@liveclaw.xyz`,
+                email || `${userId}@stellarclaw.xyz`,
                 amount,
-                'https://liveclaw.xyz?checkout=credits-success'
+                'https://stellarclaw.xyz?checkout=credits-success'
             );
             logEvent(userId, 'credits_checkout_created', { amount, sessionId: session.sessionId });
             return res.json({ checkoutUrl: session.checkoutUrl, sessionId: session.sessionId });
@@ -596,11 +596,11 @@ function createSubscriptionRouter(deps) {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        from: process.env.RESEND_FROM || 'LiveClaw <noreply@liveclaw.xyz>',
+                        from: process.env.RESEND_FROM || 'StellarClaw <noreply@stellarclaw.xyz>',
                         to: normalised,
-                        subject: 'Your LiveClaw verification code',
+                        subject: 'Your StellarClaw verification code',
                         html: `<div style="font-family:-apple-system,sans-serif;max-width:400px;margin:0 auto;padding:2rem;">
-                            <h2 style="color:#fff;margin:0 0 0.5rem;">LiveClaw</h2>
+                            <h2 style="color:#fff;margin:0 0 0.5rem;">StellarClaw</h2>
                             <p style="color:#a1a1aa;font-size:0.9375rem;margin:0 0 1.5rem;">Here's your verification code:</p>
                             <div style="background:#18181b;border:1px solid #27272a;border-radius:0.75rem;padding:1.25rem;text-align:center;margin:0 0 1.5rem;">
                                 <span style="font-size:2rem;font-weight:700;letter-spacing:0.3em;color:#e4e4e7;">${otp}</span>

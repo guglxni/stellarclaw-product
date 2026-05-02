@@ -1,5 +1,5 @@
 /**
- * LiveClaw — Admin Routes
+ * StellarClaw — Admin Routes
  *
  * Extracted from server.js. Uses factory pattern with dependency injection.
  *
@@ -136,7 +136,7 @@ function createAdminRouter(deps) {
             }
         } else {
             const totp = new TOTP({
-                issuer: 'LiveClaw',
+                issuer: 'StellarClaw',
                 label: 'admin',
                 secret: config.adminTotpSecret,
                 digits: 6,
@@ -201,7 +201,7 @@ function createAdminRouter(deps) {
         return res.status(dbOk ? 200 : 503).json({
             status,
             checks,
-            service: 'LiveClaw Orchestrator',
+            service: 'StellarClaw Orchestrator',
             version: '2.0.0',
             picobotVersion,
             env: config.nodeEnv,

@@ -1,8 +1,8 @@
-# LiveClaw
+# StellarClaw
 
 > Deploy your personal AI agent on Telegram in 60 seconds — $9.99/mo.
 
-LiveClaw is a subscription-based AI agent platform. Each subscriber gets an isolated [picobot](https://github.com/louisho5/picobot) agent instance managed by a Node.js orchestrator with financial governance via [Bifrost AI Gateway](https://github.com/maximhq/bifrost).
+StellarClaw is a subscription-based AI agent platform. Each subscriber gets an isolated [picobot](https://github.com/louisho5/picobot) agent instance managed by a Node.js orchestrator with financial governance via [Bifrost AI Gateway](https://github.com/maximhq/bifrost).
 
 **Channels:** Telegram (active) · Discord (planned) · WhatsApp (planned)
 
@@ -13,14 +13,14 @@ LiveClaw is a subscription-based AI agent platform. Each subscriber gets an isol
 ```
                          ┌─────────────────────────────────────┐
                          │        Frontend Droplet             │
-  Users ────────────────▶│  liveclaw.xyz  (Nginx, static)      │
+  Users ────────────────▶│  stellarclaw.xyz  (Nginx, static)      │
                          │  $4/mo · s-1vcpu-512mb              │
                          └────────────┬────────────────────────┘
                                       │ HTTPS
                                       ▼
                          ┌─────────────────────────────────────┐
                          │        Backend Droplet              │
-                         │  api.liveclaw.xyz  (Nginx → Node)   │
+                         │  api.stellarclaw.xyz  (Nginx → Node)   │
                          │  $12/mo · s-2vcpu-2gb               │
                          │                                     │
                          │  ┌─────────┐    ┌──────────┐       │
@@ -89,7 +89,7 @@ cp liveclaw-web/.env.example liveclaw-web/.env && nano liveclaw-web/.env
 ./scripts/enable-db-pool.sh --apply
 
 # Load-test + SLO evidence capture
-./scripts/run-load-test.sh --url https://api.liveclaw.xyz/health --connections 50 --duration 60
+./scripts/run-load-test.sh --url https://api.stellarclaw.xyz/health --connections 50 --duration 60
 ```
 
 See [CREDENTIALS.md](CREDENTIALS.md) for step-by-step key setup.

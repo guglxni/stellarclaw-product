@@ -1,5 +1,5 @@
 /**
- * LiveClaw — Webhook Routes
+ * StellarClaw — Webhook Routes
  *
  * Extracted from server.js. Uses factory pattern with dependency injection.
  *
@@ -36,11 +36,11 @@ function emailWrapper(body) {
     <tr><td align="center">
       <table width="480" cellpadding="0" cellspacing="0" style="background:#18181b;border:1px solid #27272a;border-radius:12px;overflow:hidden;">
         <tr><td style="padding:28px 32px 0;">
-          <p style="margin:0 0 24px;font-size:22px;font-weight:700;color:#fafafa;">LiveClaw</p>
+          <p style="margin:0 0 24px;font-size:22px;font-weight:700;color:#fafafa;">StellarClaw</p>
         </td></tr>
         <tr><td style="padding:0 32px 32px;">${body}</td></tr>
         <tr><td style="padding:20px 32px;border-top:1px solid #27272a;background:#0f0f11;">
-          <p style="margin:0;font-size:12px;color:#52525b;">LiveClaw &bull; <a href="https://liveclaw.xyz" style="color:#52525b;">liveclaw.xyz</a></p>
+          <p style="margin:0;font-size:12px;color:#52525b;">StellarClaw &bull; <a href="https://stellarclaw.xyz" style="color:#52525b;">stellarclaw.xyz</a></p>
         </td></tr>
       </table>
     </td></tr>
@@ -60,7 +60,7 @@ function emailWrapper(body) {
  */
 async function sendEmail(log, { to, subject, html }) {
     const apiKey = process.env.RESEND_API_KEY;
-    const from   = process.env.RESEND_FROM || 'LiveClaw <noreply@notifications.liveclaw.xyz>';
+    const from   = process.env.RESEND_FROM || 'StellarClaw <noreply@notifications.stellarclaw.xyz>';
     if (!apiKey || !EMAIL_RE.test(to)) return; // silently skip if unconfigured or bad address
     try {
         const res = await fetch('https://api.resend.com/emails', {
@@ -225,11 +225,11 @@ function createWebhookRouter(deps) {
                     if (eventType === 'subscription.active') {
                         await sendEmail(log, {
                             to: customerEmail,
-                            subject: 'Welcome to LiveClaw!',
+                            subject: 'Welcome to StellarClaw!',
                             html: emailWrapper(`
                                 <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#fafafa;">You're in.</p>
-                                <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">Your LiveClaw subscription is active. Your personal AI agent is ready to deploy.</p>
-                                <a href="https://liveclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Deploy your agent</a>
+                                <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">Your StellarClaw subscription is active. Your personal AI agent is ready to deploy.</p>
+                                <a href="https://stellarclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Deploy your agent</a>
                                 ${nextDate ? `<p style="margin:24px 0 0;font-size:13px;color:#71717a;">Next billing date: ${escHtml(nextDate)}</p>` : ''}
                             `),
                         });
@@ -237,12 +237,12 @@ function createWebhookRouter(deps) {
                         // subscription.renewed
                         await sendEmail(log, {
                             to: customerEmail,
-                            subject: 'LiveClaw subscription renewed',
+                            subject: 'StellarClaw subscription renewed',
                             html: emailWrapper(`
                                 <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#fafafa;">Subscription renewed</p>
-                                <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">Your LiveClaw subscription has been renewed successfully.</p>
+                                <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">Your StellarClaw subscription has been renewed successfully.</p>
                                 ${nextDate ? `<p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">Next billing date: <strong style="color:#fafafa;">${escHtml(nextDate)}</strong></p>` : ''}
-                                <a href="https://liveclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Go to dashboard</a>
+                                <a href="https://stellarclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Go to dashboard</a>
                             `),
                         });
                     }
@@ -367,12 +367,12 @@ function createWebhookRouter(deps) {
                     logEvent(paymentUserId, 'payment_failed', { paymentId: data?.payment_id });
                     await sendEmail(log, {
                         to: data?.customer?.email,
-                        subject: 'Action needed: LiveClaw payment failed',
+                        subject: 'Action needed: StellarClaw payment failed',
                         html: emailWrapper(`
                             <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#fafafa;">Payment unsuccessful</p>
-                            <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">We couldn't process your LiveClaw subscription payment. Please update your payment method to keep your agent running.</p>
-                            <a href="https://liveclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Update payment method</a>
-                            <p style="margin:24px 0 0;font-size:13px;color:#71717a;">If you continue to have issues, contact us at support@liveclaw.xyz</p>
+                            <p style="margin:0 0 20px;font-size:15px;color:#a1a1aa;">We couldn't process your StellarClaw subscription payment. Please update your payment method to keep your agent running.</p>
+                            <a href="https://stellarclaw.xyz" style="display:inline-block;padding:12px 24px;background:#fafafa;color:#09090b;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;">Update payment method</a>
+                            <p style="margin:24px 0 0;font-size:13px;color:#71717a;">If you continue to have issues, contact us at support@stellarclaw.xyz</p>
                         `),
                     });
                 }
