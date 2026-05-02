@@ -550,8 +550,8 @@ await db.exec(`
       encrypted_secret   TEXT NOT NULL,
       network            TEXT NOT NULL DEFAULT 'testnet',
       lifetime_sent_usdc REAL NOT NULL DEFAULT 0,
-      created_at         INTEGER NOT NULL,
-      updated_at         INTEGER NOT NULL
+      created_at         BIGINT NOT NULL,
+      updated_at         BIGINT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS stellar_intents (
       intent_id       TEXT PRIMARY KEY,
@@ -560,10 +560,10 @@ await db.exec(`
       payload_hash    TEXT NOT NULL,
       payload_json    TEXT NOT NULL,
       idempotency_key TEXT NOT NULL,
-      expires_at      INTEGER NOT NULL,
-      consumed_at     INTEGER,
+      expires_at      BIGINT NOT NULL,
+      consumed_at     BIGINT,
       result_hash     TEXT,
-      created_at      INTEGER NOT NULL,
+      created_at      BIGINT NOT NULL,
       UNIQUE (user_id, idempotency_key, tool)
     );
     CREATE INDEX IF NOT EXISTS idx_intents_user ON stellar_intents(user_id, created_at);
@@ -579,7 +579,7 @@ await db.exec(`
       tx_hash     TEXT,
       status      TEXT NOT NULL,
       reason      TEXT,
-      created_at  INTEGER NOT NULL
+      created_at  BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_audit_user ON stellar_audit(user_id, created_at);
 /* SCHEMA APPLIED */
@@ -1046,14 +1046,28 @@ async function runDeployCommand({ userId, telegramToken, model = 'minimax-m2.7',
     });
 
     const channelNames = activeChannels.map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(', ');
+    /* === STELLARCLAW: surface the bot's wallet for funding instructions === */
+    let _scStellarAddress = null;
+    let _scStellarNetwork = process.env.STELLARCLAW_DEFAULT_NETWORK || 'testnet';
+    let _scBotUsername = null;
+    try {
+        const row = (typeof db !== 'undefined' && typeof db.get === 'function')
+            ? await db.get('SELECT public_key, network FROM stellar_wallets WHERE user_id = ?', [userId])
+            : null;
+        if (row) { _scStellarAddress = row.public_key; _scStellarNetwork = row.network; }
+    } catch (_) { /* table may not exist on first boot */ }
+    try { _scBotUsername = (typeof tokenCheck !== 'undefined' && tokenCheck && tokenCheck.bot && tokenCheck.bot.username) || null; } catch (_) {}
     return {
         success: true,
         pid,
         model,
         creditLimit,
         channels: activeChannels,
-        message: `Your Claw agent is live on ${channelNames}!`,
-    };
+        botUsername: _scBotUsername,
+        stellarAddress: _scStellarAddress,
+        stellarNetwork: _scStellarNetwork,
+        message: `Your StellarClaw agent is live on ${channelNames}!`,
+    }; /* DEPLOY_RESPONSE APPLIED */
 }
 
 async function runStopCommand({ userId, verifiedUserId = null }) {
@@ -1723,7 +1737,11 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
     /* === STELLARCLAW: SOUL.md replaced by external renderer === */
     const stellarSoul = require(path.resolve(__dirname, '..', '..', 'StellarClaw-design', 'mvp', 'infra', 'soul-template.js'));
     let _scExistingRow = null;
-    try { _scExistingRow = (typeof db !== 'undefined' && db.prepare) ? db.prepare('SELECT public_key, network FROM stellar_wallets WHERE user_id = ?').get(userId) : null; } catch (_) { _scExistingRow = null; }
+    try {
+      _scExistingRow = (typeof db !== 'undefined' && typeof db.get === 'function')
+        ? await db.get('SELECT public_key, network FROM stellar_wallets WHERE user_id = ?', [userId])
+        : null;
+    } catch (_) { _scExistingRow = null; }
     fs.writeFileSync(soulPath, stellarSoul.render({
       stellarAddress: (_scExistingRow && _scExistingRow.public_key) || 'unfunded',
       network: (_scExistingRow && _scExistingRow.network) || (process.env.STELLARCLAW_DEFAULT_NETWORK || 'testnet'),
@@ -1773,12 +1791,15 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
         LIVECLAW_ORCHESTRATOR_URL:  config.orchestratorUrl,
         ...(config.liveClawInternalSecret ? { LIVECLAW_INTERNAL_SECRET: config.liveClawInternalSecret } : {}),
     };
-    /* === STELLARCLAW: per-bot Stellar wallet provisioning === */
+    /* === STELLARCLAW: per-bot Stellar wallet provisioning (persisted, async) === */
     let stellarKp;
     try {
       const StellarSdk = require('@stellar/stellar-sdk');
-      const row = (typeof db !== 'undefined' && db.prepare)
-        ? db.prepare('SELECT public_key, encrypted_secret, network FROM stellar_wallets WHERE user_id = ?').get(userId)
+      // Read existing wallet from the persistent DB (Postgres in prod, SQLite in dev).
+      // The DB wrapper exposes get/run/all (async). NEVER use db.prepare — that's
+      // better-sqlite3 only and will silently regenerate the wallet on every spawn.
+      const row = (typeof db !== 'undefined' && typeof db.get === 'function')
+        ? await db.get('SELECT public_key, encrypted_secret, network FROM stellar_wallets WHERE user_id = ?', [userId])
         : null;
       if (row && row.encrypted_secret && row.encrypted_secret !== 'EXTERNAL_ENV_ONLY') {
         const secret = decryptToken(row.encrypted_secret);
@@ -1792,17 +1813,37 @@ async function spawnPicobot(userId, bifrostVirtualKey, model = 'minimax-m2.7', c
           : StellarSdk.Keypair.random();
         const encrypted = encryptToken(kp.secret());
         const now = Date.now();
-        if (typeof db !== 'undefined' && db.prepare) {
-          db.prepare(
-            'INSERT OR REPLACE INTO stellar_wallets (user_id, public_key, encrypted_secret, network, lifetime_sent_usdc, created_at, updated_at) VALUES (?, ?, ?, ?, 0, COALESCE((SELECT created_at FROM stellar_wallets WHERE user_id = ?), ?), ?)'
-          ).run(userId, kp.publicKey(), encrypted, network, userId, now, now);
+        let inserted = false;
+        if (typeof db !== 'undefined' && typeof db.run === 'function') {
+          try {
+            await db.run(
+              'INSERT INTO stellar_wallets (user_id, public_key, encrypted_secret, network, lifetime_sent_usdc, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+              [userId, kp.publicKey(), encrypted, network, now, now]
+            );
+            inserted = true;
+          } catch (insertErr) {
+            // Race or pre-existing row from a partial earlier write — re-read.
+            try {
+              const re = await db.get('SELECT public_key, encrypted_secret, network FROM stellar_wallets WHERE user_id = ?', [userId]);
+              if (re && re.encrypted_secret && re.encrypted_secret !== 'EXTERNAL_ENV_ONLY') {
+                stellarKp = { publicKey: re.public_key, secret: decryptToken(re.encrypted_secret), network: re.network };
+              }
+            } catch (_) {}
+            if (!stellarKp) {
+              try { (log.startup || log.system || console).error({ userId, error: String(insertErr.message || insertErr) }, 'stellarclaw.wallet_insert_failed'); } catch (_) {}
+            }
+          }
         }
-        stellarKp = { publicKey: kp.publicKey(), secret: kp.secret(), network };
-        try { (log.startup || log.system || console).info({ userId, public_key: kp.publicKey(), network }, 'stellarclaw.wallet_provisioned'); } catch (_) {}
+        if (!stellarKp) {
+          stellarKp = { publicKey: kp.publicKey(), secret: kp.secret(), network };
+        }
+        if (inserted) {
+          try { (log.startup || log.system || console).info({ userId, public_key: stellarKp.publicKey, network: stellarKp.network }, 'stellarclaw.wallet_provisioned'); } catch (_) {}
+        }
       }
     } catch (e) {
       try { (log.startup || log.system || console).error({ userId, error: String(e) }, 'stellarclaw.wallet_provision_failed'); } catch (_) {}
-      stellarKp = { publicKey: null, secret: null, network: 'testnet' };
+      stellarKp = { publicKey: null, secret: null, network: process.env.STELLARCLAW_DEFAULT_NETWORK || 'testnet' };
     }
 
     /* === STELLARCLAW: inject Stellar env into picobot child process === */
